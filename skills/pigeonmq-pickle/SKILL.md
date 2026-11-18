@@ -1,6 +1,6 @@
 ---
 name: pigeonmq-pickle
-description: Set up Pickle on a PigeonMQ Cloud hub. The hub has no Pickle route yet, so this skill tells Pickle to stop and report route missing. Use when someone asks Pickle to connect to a PigeonMQ hub.
+description: Set up Pickle on a PigeonMQ hub. The hub has no Pickle route yet, so this skill tells Pickle to stop and report route missing. Use when someone asks Pickle to connect to a PigeonMQ hub.
 ---
 
 # PigeonMQ for Pickle

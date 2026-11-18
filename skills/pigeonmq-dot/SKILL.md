@@ -1,6 +1,6 @@
 ---
 name: pigeonmq-dot
-description: Set up Dot (ChatGPT) on a PigeonMQ Cloud hub from start to finish. Connects the /dot/mcp mailbox through the official OpenAI Secure MCP Tunnel, checks it, sets up MCP Events intake, and reports in one code block. Use when connecting Dot to a hub, or when its tunnel, mailbox, or Events stop working. Also use when the owner asks to check its PigeonMQ inbox.
+description: Set up Dot (ChatGPT) on a PigeonMQ hub from start to finish. Connects the /dot/mcp mailbox through the official OpenAI Secure MCP Tunnel, checks it, sets up MCP Events intake, and reports in one code block. Use when connecting Dot to a hub, or when its tunnel, mailbox, or Events stop working. Also use when the owner asks to check its PigeonMQ inbox.
 ---
 
 # PigeonMQ for Dot (ChatGPT)

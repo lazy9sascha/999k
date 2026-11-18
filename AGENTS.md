@@ -2,7 +2,7 @@
 
 If this checkout sits inside a parent workspace with [workspace instructions](../AGENTS.md), follow them too.
 
-PigeonMQ Cloud is a standalone queue and MCP hub for cloud agents, reached through a tunnel. It owns its own queue and does not depend on a PigeonMQ Local installation at build time or runtime. Read [docs/architecture.md](docs/architecture.md) before changing behavior.
+PigeonMQ runs a standalone queue and MCP hub on your Mac. Cloud agents connect through a tunnel. It owns its own queue and does not depend on a PigeonMQ Local installation at build time or runtime. Read [docs/architecture.md](docs/architecture.md) before changing behavior.
 
 ## Layout
 

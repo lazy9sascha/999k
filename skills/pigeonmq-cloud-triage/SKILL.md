@@ -1,6 +1,6 @@
 ---
 name: pigeonmq-cloud-triage
-description: Agent triage: classify an unfamiliar AI agent or service and pick its adapter type before connecting it to PigeonMQ Cloud. Use when an agent has no skill under skills/pigeonmq-<agent>/.
+description: Agent triage: classify an unfamiliar AI agent or service and pick its adapter type before connecting it to PigeonMQ. Use when an agent has no skill under skills/pigeonmq-<agent>/.
 ---
 
 # Agent triage
@@ -12,7 +12,7 @@ Then apply the [triage rules](../../docs/architecture.md#triage-rules).
 
 If the agent is already known, use its connect skill instead: [Grok](../pigeonmq-grok/SKILL.md), [Muse](../pigeonmq-muse/SKILL.md), [Dot](../pigeonmq-dot/SKILL.md), [Codex](../pigeonmq-codex/SKILL.md), [Pickle](../pigeonmq-pickle/SKILL.md), or [Vooy](../pigeonmq-vooy/SKILL.md).
 
-Identify how the service can act as a client of PigeonMQ Cloud. A service that exposes its own MCP server does not necessarily accept a custom MCP server.
+Identify how the service can act as a client of PigeonMQ. A service that exposes its own MCP server does not necessarily accept a custom MCP server.
 
 1. Record the exact product, app or web surface, and version if known. Use the vendor's documentation or a settings screen. Treat a chat answer as a lead, not proof.
 2. Identify who initiates the connection and where that client runs. Record the transport, authentication, and setup path. Note whether the operator must use a settings screen or whether the app accepts setup by prompt.

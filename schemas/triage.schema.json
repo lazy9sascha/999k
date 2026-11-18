@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "PigeonMQ Cloud triage record",
+  "title": "PigeonMQ triage record",
   "description": "A machine-readable triage record for init. Do not store tokens, live hosts, or URLs.",
   "type": "object",
   "additionalProperties": false,

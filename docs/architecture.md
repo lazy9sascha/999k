@@ -1,6 +1,6 @@
 # Architecture
 
-PigeonMQ Cloud is one hub process and one SQLite file on your Mac. The hard part is not the queue. The hard part is that **every agent reaches the outside world differently**. Some can call an MCP server but can't be called. Some can be woken by a webhook but can't hold a connection open. Some run on a VM that sleeps. Some only exist as a thread inside a desktop app.
+PigeonMQ is one hub process and one SQLite file on your Mac. The hard part is not the queue. The hard part is that **every agent reaches the outside world differently**. Some can call an MCP server but can't be called. Some can be woken by a webhook but can't hold a connection open. Some run on a VM that sleeps. Some only exist as a thread inside a desktop app.
 
 So this page is organized by **connection mode**, not by agent. New agents go through [agent triage](#agent-triage), which picks the mode that fits what the agent can do. Which agent uses which mode, and what was actually tested, is in [Agents and capabilities](agents.md).
 

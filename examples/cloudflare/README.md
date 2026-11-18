@@ -1,4 +1,4 @@
-# Cloudflare Tunnel for PigeonMQ Cloud
+# Cloudflare Tunnel for PigeonMQ
 
 Create a named, remotely managed tunnel for an HTTPS hostname in a Cloudflare zone you control. Use the existing PigeonMQ hub and queue on the same Mac as `cloudflared`. This example uses the reserved hostname `pigeon.example.com`, port `54843`, and only the Muse MCP route. Replace them with the approved hostname, actual hub port, and selected path. This is not an OpenAI Secure MCP Tunnel or a Cloudflare Quick Tunnel.
 

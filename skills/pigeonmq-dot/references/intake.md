@@ -4,7 +4,7 @@
 - On an event, read through the authenticated mailbox. Then act.
 - For an answer to your own request, call `pigeonmq_read`. Then call `pigeonmq_confirm_terminal` on that message.
 - Pass `cursor` to `pigeonmq_wait` to skip terminal answers you already saw. Pass `in_reply_to` to watch for the answer to one request.
-- Events delivery to a live ChatGPT Dot on the Cloud hub is unverified (route and local tests only). Report whether an event actually arrived.
+- Events delivery to a live ChatGPT Dot on this hub is unverified (route and local tests only). Report whether an event actually arrived.
 
 ## Drain the inbox
 

@@ -1,6 +1,6 @@
 ---
 name: pigeonmq-muse
-description: Set up Muse on a PigeonMQ Cloud hub from start to finish. Connects the /muse/mcp mailbox, checks it, sets up a 2-minute self-poll from the home directory, and reports in one code block. Use when connecting Muse to a hub, or when its mailbox or polling stops working, or when the owner asks to check its PigeonMQ inbox.
+description: Set up Muse on a PigeonMQ hub from start to finish. Connects the /muse/mcp mailbox, checks it, sets up a 2-minute self-poll from the home directory, and reports in one code block. Use when connecting Muse to a hub, or when its mailbox or polling stops working, or when the owner asks to check its PigeonMQ inbox.
 ---
 
 # PigeonMQ for Muse

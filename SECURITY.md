@@ -1,6 +1,6 @@
 # Security policy
 
-PigeonMQ Cloud exposes a queue on your Mac to cloud agents through a tunnel, so its auth checks matter. Thank you for reporting problems privately.
+PigeonMQ exposes a queue on your Mac to cloud agents through a tunnel, so its auth checks matter. Thank you for reporting problems privately.
 
 ## Supported versions
 

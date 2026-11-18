@@ -4,7 +4,7 @@ default-run = "pigeonmq-cloud"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "A lightweight message queue for direct agent-to-agent messaging."
+description = "A message queue for local and cloud AI agents. The hub runs on your Mac."
 license = "MIT"
 
 [dependencies]

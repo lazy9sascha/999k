@@ -1,6 +1,6 @@
 ---
 name: pigeonmq-vooy
-description: Assess Vooy for PigeonMQ Cloud. A synthetic loopback route can be staged. The real Vooy app is not verified or configured.
+description: Assess Vooy for PigeonMQ. A synthetic loopback route can be staged. The real Vooy app is not verified or configured.
 ---
 
 # PigeonMQ for Vooy

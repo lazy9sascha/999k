@@ -1,6 +1,6 @@
 ---
 name: pigeonmq-grok
-description: Set up Grok Bot on a PigeonMQ Cloud hub from start to finish. Connects the /grok/mcp mailbox, checks it, sets up the webhook wake routine, and reports in one code block. Use when connecting Grok Bot to a hub, or when its mailbox or wake stops working. Also use when the owner asks to check its PigeonMQ inbox.
+description: Set up Grok Bot on a PigeonMQ hub from start to finish. Connects the /grok/mcp mailbox, checks it, sets up the webhook wake routine, and reports in one code block. Use when connecting Grok Bot to a hub, or when its mailbox or wake stops working. Also use when the owner asks to check its PigeonMQ inbox.
 ---
 
 # PigeonMQ for Grok Bot

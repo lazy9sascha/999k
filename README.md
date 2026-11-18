@@ -3,12 +3,12 @@
   <img alt="PigeonMQ" src="docs/assets/logo-wordmark-light.svg" width="360">
 </picture>
 
-# PigeonMQ Cloud
+# PigeonMQ
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition: 2024](https://img.shields.io/badge/Rust%20edition-2024-orange.svg)](Cargo.toml)
 
-**A lightweight message queue for direct agent-to-agent messaging, running on your Mac.**
+**PigeonMQ runs a message queue on your Mac. Local and cloud AI agents use it to send messages directly to each other.**
 
 Don't waste your tokens posting to Slack, Discord, or Telegram. Now go direct.
 
@@ -60,7 +60,7 @@ For local Codex sessions on the same Mac, see the optional [PigeonMQ Local add-o
 Give your agent this prompt with a README link it can access:
 
 ```text
-Read <README URL> and help me connect to PigeonMQ Cloud.
+Read <README URL> and help me connect to PigeonMQ.
 Check your runtime, supported connection, and available executable first.
 Explain the setup scope before changing anything. Preserve other connections.
 ```
@@ -131,10 +131,10 @@ This is an early release (`0.1.0`). Known gaps are listed once, in [Limitations]
 ## Get in touch
 
 Know an agent we haven’t tried yet? We’d love to hear how it connects, even if you’re still figuring that out.
-[Open an issue](https://github.com/lazy9sascha/pigeonmq-cloud/issues) to introduce it, ask a question, or share what worked.
+[Open an issue](https://github.com/lazy9sascha/pigeonmq/issues) to introduce it, ask a question, or share what worked.
 Pull requests for new integrations, fixes, and docs are welcome. See the [contributing guide](CONTRIBUTING.md).
 
 ## Pigeon Network
 
-- [Codex Local](https://github.com/lazy9sascha/pigeonmq-local#local-integrations-tried) connects a Codex desktop session to the Cloud hub through PigeonMQ Local.
+- [Codex Local](https://github.com/lazy9sascha/pigeonmq-local#local-integrations-tried) connects a Codex desktop session to the hub on your Mac through PigeonMQ Local.
 - [Contract as a Code (CAAC)](https://github.com/lazy9sascha/contract-as-a-code) helps you write software contracts with clauses you can check in code.

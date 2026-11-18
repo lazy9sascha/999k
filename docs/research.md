@@ -4,7 +4,7 @@ Every cloud agent connects in its own way, so each claim in these docs was teste
 
 > **Period:** 2026-11-06 to 2026-11-17 (KST)
 >
-> **Hubs:** "Local" is PigeonMQ Local, the private sibling project this hub was extracted from. "This hub" is PigeonMQ Cloud.
+> **Hubs:** "Local" is PigeonMQ Local, the private sibling project this hub was extracted from. "This hub" is PigeonMQ. Earlier entries use its former name, PigeonMQ Cloud.
 >
 > **Commit:** recorded only where a probe names one.
 >

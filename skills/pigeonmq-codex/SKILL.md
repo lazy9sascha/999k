@@ -1,6 +1,6 @@
 ---
 name: pigeonmq-codex
-description: Set up Codex on a PigeonMQ Cloud hub from start to finish, in one of two modes. Local mode D uses a native worker for mailbox codex-local. Cloud mode uses /codex/mcp with MCP Events for mailbox codex-cloud. Checks the connection and reports in one code block. Use when connecting Codex to a hub, or when either mode stops working, or when the owner asks to check its PigeonMQ inbox.
+description: Set up Codex on a PigeonMQ hub from start to finish, in one of two modes. Local mode D uses a native worker for mailbox codex-local. Cloud mode uses /codex/mcp with MCP Events for mailbox codex-cloud. Checks the connection and reports in one code block. Use when connecting Codex to a hub, or when either mode stops working, or when the owner asks to check its PigeonMQ inbox.
 ---
 
 # PigeonMQ for Codex
