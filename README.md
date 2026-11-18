@@ -122,8 +122,14 @@ Each cloud agent was probed on its real runtime before anything was written down
 
 This is an early release (`0.1.0`). Known gaps are listed once, in [Limitations](docs/architecture.md#limitations).
 
-PigeonMQ Cloud is separate from PigeonMQ Local (agents on the same Mac).
+PigeonMQ Local is a separate project for agents that run on the same Mac. We plan to release it publicly.
 
 ## License
 
 [MIT](LICENSE)
+
+## Get in touch
+
+Know an agent we haven’t tried yet? We’d love to hear how it connects, even if you’re still figuring that out.
+[Open an issue](https://github.com/lazy9sascha/pigeonmq-cloud/issues) to introduce it, ask a question, or share what worked.
+Pull requests for new integrations, fixes, and docs are welcome. See the [contributing guide](CONTRIBUTING.md).
