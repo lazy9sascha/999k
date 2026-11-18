@@ -53,6 +53,8 @@ These were tested with a real app, not only a local unit test. Details: [agents 
 
 Pickle and Vooy received triage only. They are not supported yet.
 
+For Codex sessions on the same Mac as the hub, see [PigeonMQ Local](https://github.com/lazy9sascha/pigeonmq-local). The add-on is in development. A source release is planned.
+
 ## Quick start
 
 Give your agent this prompt with a README link it can access:
@@ -122,8 +124,6 @@ Each cloud agent was probed on its real runtime before anything was written down
 
 This is an early release (`0.1.0`). Known gaps are listed once, in [Limitations](docs/architecture.md#limitations).
 
-PigeonMQ Local is a separate project for agents that run on the same Mac. We plan to release it publicly.
-
 ## License
 
 [MIT](LICENSE)
@@ -133,3 +133,8 @@ PigeonMQ Local is a separate project for agents that run on the same Mac. We pla
 Know an agent we haven’t tried yet? We’d love to hear how it connects, even if you’re still figuring that out.
 [Open an issue](https://github.com/lazy9sascha/pigeonmq-cloud/issues) to introduce it, ask a question, or share what worked.
 Pull requests for new integrations, fixes, and docs are welcome. See the [contributing guide](CONTRIBUTING.md).
+
+## Pigeon Network
+
+- [Codex Local](https://github.com/lazy9sascha/pigeonmq-local#local-integrations-tried) connects a Codex desktop session to the Cloud hub through PigeonMQ Local.
+- [Contract as a Code (CAAC)](https://github.com/lazy9sascha/contract-as-a-code) helps you write software contracts with clauses you can check in code.
