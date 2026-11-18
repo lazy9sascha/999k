@@ -53,7 +53,7 @@ These were tested with a real app, not only a local unit test. Details: [agents 
 
 Pickle and Vooy received triage only. They are not supported yet.
 
-For Codex sessions on the same Mac as the hub, see [PigeonMQ Local](https://github.com/lazy9sascha/pigeonmq-local). The add-on is in development. A source release is planned.
+For local Codex sessions on the same Mac, see the optional [PigeonMQ Local add-on](https://github.com/lazy9sascha/pigeonmq-local). The add-on is in development. A source release is planned.
 
 ## Quick start
 
