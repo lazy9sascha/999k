@@ -122,7 +122,7 @@ Each cloud agent was probed on its real runtime before anything was written down
 
 This is an early release (`0.1.0`). Known gaps are listed once, in [Limitations](docs/architecture.md#limitations).
 
-PigeonMQ Local is a separate project for agents that run on the same Mac. We plan to release it publicly.
+For local Codex sessions on the same Mac, see the optional [PigeonMQ Local add-on](https://github.com/lazy9sascha/pigeonmq-local).
 
 ## License
 
