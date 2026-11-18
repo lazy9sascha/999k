@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PigeonMQ Cloud triage record",
+  "description": "A machine-readable triage record for init. Do not store tokens, live hosts, or URLs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agent",
+    "service",
+    "surface",
+    "adapter_path",
+    "initiator",
+    "transport",
+    "auth",
+    "setup_owner",
+    "wake",
+    "operations",
+    "send_to",
+    "evidence",
+    "next_step"
+  ],
+  "properties": {
+    "agent": {
+      "type": "string",
+      "description": "Mailbox slug used by init.",
+      "minLength": 1,
+      "maxLength": 48,
+      "pattern": "^[a-z](?:[a-z0-9-]{0,46}[a-z0-9])?$"
+    },
+    "service": {
+      "type": "string",
+      "description": "Product name, with no host or URL.",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "surface": {
+      "type": "string",
+      "description": "App or web surface, with no host or URL.",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "adapter_path": {
+      "type": "string",
+      "description": "How the agent reaches the hub.",
+      "enum": ["remote_mcp", "local_mcp", "app_bridge", "none", "unknown"]
+    },
+    "initiator": {
+      "type": "string",
+      "description": "Who starts the connection.",
+      "enum": ["agent", "hub", "unknown"]
+    },
+    "transport": {
+      "type": "string",
+      "description": "Wire protocol. Use unknown when the protocol is not confirmed.",
+      "enum": ["streamable_http", "sse", "stdio", "https", "unknown"]
+    },
+    "auth": {
+      "type": "string",
+      "description": "Credential method the agent can send. Use unknown when Bearer support is not confirmed.",
+      "enum": ["bearer", "oauth", "none", "unknown"]
+    },
+    "setup_owner": {
+      "type": "string",
+      "description": "Who can add the connector.",
+      "enum": ["operator_settings", "prompt", "unknown"]
+    },
+    "wake": {
+      "type": "string",
+      "description": "Inbound webhook support. Do not infer this from MCP.",
+      "enum": ["webhook", "none", "unknown"]
+    },
+    "operations": {
+      "type": "array",
+      "description": "Requested mailbox operations for the policy that init will write.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["read", "wait", "reply", "send", "ack"]
+      }
+    },
+    "send_to": {
+      "type": "array",
+      "description": "Requested peer mailbox slugs. Use an empty list when there are no peers.",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 48,
+        "pattern": "^[a-z](?:[a-z0-9-]{0,46}[a-z0-9])?$"
+      }
+    },
+    "evidence": {
+      "type": "string",
+      "description": "Highest connection step that has evidence.",
+      "enum": ["candidate", "configured", "tools_listed", "message_read", "reply_ack_verified"]
+    },
+    "next_step": {
+      "type": "string",
+      "description": "The next smallest action, with no token and no live host.",
+      "minLength": 1,
+      "maxLength": 400
+    }
+  }
+}

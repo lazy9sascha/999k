@@ -1,0 +1,2214 @@
+//! Loopback RPC transport and authenticated ordinary-message ingress.
+use crate::mailbox_startup::Binding;
+use crate::mcp_sdk;
+use catalog::Adapter;
+
+use crate::auth::{self, Operation, Principal};
+use pigeonmq::{DeadLetterInspection, Envelope, Error, Outcome, Queue, mailbox_catalog as catalog};
+use pigeonmq::{
+    mailbox_tools::registered_mailbox_tools,
+    mcp_request::{
+        accepted_cancellation, check_streamable_mailbox_body, registered_mailbox_fields,
+        registered_send,
+    },
+};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+use std::{
+    io::{self, Write},
+    net::{Ipv4Addr, TcpListener, TcpStream},
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+mod transport;
+#[cfg(test)]
+use std::io::Read;
+use transport::{Fault, Input, MAX_HEADERS, ProfileHandler, WireResponse, serve_profile_listeners};
+const MAX_HTTP_CONNECTION_WORKERS: usize = 8;
+const MAX_BODY: usize = 16384;
+// JSON may encode one body byte as six ASCII bytes (\uXXXX).
+const MAX_MUSE_ENVELOPE: usize = catalog::default_body_limit(MAX_HEADERS);
+
+#[path = "adapters/grok_bot/mod.rs"]
+mod grok_bot;
+pub(crate) use grok_bot::validate_grok_setup_policy;
+pub use grok_bot::{check_grok, prepare_grok};
+use pigeonmq::inbox_page;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestBody {
+    sender: String,
+    recipient: String,
+    body: String,
+    correlation_id: Option<String>,
+    in_reply_to: Option<String>,
+    idempotency_key: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiveBody {
+    recipient: String,
+    #[serde(default = "default_rpc_lease_seconds")]
+    lease_seconds: u64,
+}
+fn default_rpc_lease_seconds() -> u64 {
+    // Match the receive-request CLI default in main.rs.
+    30
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RespondBody {
+    recipient: String,
+    id: String,
+    receipt: String,
+    result: Outcome,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusBody {
+    requester: String,
+    id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DlqBody {
+    id: Option<String>,
+    continuation: Option<String>,
+}
+
+const GENERIC_ROUTES: &[(&str, usize)] = &[
+    ("/mcp", MAX_MUSE_ENVELOPE),
+    ("/rpc/request", MAX_BODY),
+    ("/rpc/receive", MAX_BODY),
+    ("/rpc/respond", MAX_BODY),
+    ("/rpc/status", MAX_BODY),
+    ("/messages/send", MAX_BODY),
+    ("/messages/dlq", MAX_BODY),
+];
+
+#[cfg(test)]
+fn route_body_limit(path: &str) -> Result<usize, Fault> {
+    catalog::http_by_route(path)
+        .map(|profile| profile.body_limit(MAX_HEADERS))
+        .or_else(|| {
+            GENERIC_ROUTES
+                .iter()
+                .find(|(route, _)| *route == path)
+                .map(|(_, limit)| *limit)
+        })
+        .ok_or((404, "route_not_found"))
+}
+#[cfg(test)]
+fn parse_head(bytes: &[u8], authority: &str) -> Result<Input, Fault> {
+    transport::parse_head(bytes, authority, route_body_limit)
+}
+fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, Fault> {
+    serde_json::from_slice(body).map_err(|_| (400, "invalid_json_or_fields"))
+}
+fn mapped(error: Error) -> Fault {
+    match error {
+        Error::Invalid(_) => (400, "invalid_input"),
+        Error::NotFound => (404, "not_found"),
+        Error::Conflict => (409, "conflict"),
+        Error::StaleReceipt => (409, "stale_receipt"),
+        Error::Database(_) => (503, "storage_unavailable"),
+        Error::Json(_) | Error::Schema(_) => (500, "internal_error"),
+    }
+}
+// Keep the same hidden/not-found response as each adapter's existing boundary.
+pub(crate) fn terminal_confirmation_fault(error: Error, mapped: fn(Error) -> Fault) -> Fault {
+    match error {
+        Error::Invalid("terminal_answer_required") => (400, "terminal_answer_required"),
+        Error::Invalid("existing_claim_requires_reconciliation") => {
+            (409, "existing_claim_requires_reconciliation")
+        }
+        Error::Invalid("invalid_terminal_relationship") => mapped(Error::NotFound),
+        other => mapped(other),
+    }
+}
+
+// Deferred adapters have their own exact-read body and field limits. Confirm
+// must not expose an ID that exact read would conceal.
+pub(crate) fn terminal_observation_fault(error: Fault) -> Fault {
+    match error.1 {
+        "message_not_available" | "invalid_identifier" | "invalid_body" => (404, "not_found"),
+        _ => error,
+    }
+}
+
+fn mcp_tools() -> Value {
+    json!([
+        {"name":"pigeonmq_send","description":"Enqueue an ordinary message. Requires authenticated send authority; does not run an agent or acknowledge a message. Single recipient only: central registration-backed subset preflight is unavailable in this generic profile.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
+        {"name":"pigeonmq_request","description":"Enqueue an RPC request. Returns message ID as request ID.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
+        {"name":"pigeonmq_receive","description":"Claim one RPC request for a recipient with a lease.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"lease_seconds":{"type":"integer"}},"required":["recipient"],"additionalProperties":false}},
+        {"name":"pigeonmq_respond","description":"Store a result and atomically end the claim.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"id":{"type":"string"},"receipt":{"type":"string"},"result":{"type":"object"}},"required":["recipient","id","receipt","result"],"additionalProperties":false}},
+        {"name":"pigeonmq_status","description":"Check request state and result.","inputSchema":{"type":"object","properties":{"requester":{"type":"string"},"id":{"type":"string"}},"required":["requester","id"],"additionalProperties":false}}
+    ])
+}
+
+fn call_mcp_tool(
+    queue: &mut Queue,
+    principal: &Principal,
+    name: &str,
+    args: Value,
+) -> Result<Value, Fault> {
+    Ok(match name {
+        "pigeonmq_send" => {
+            let b: RequestBody =
+                serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
+            send_message(queue, b, principal)?
+        }
+        "pigeonmq_request" => {
+            let b: RequestBody =
+                serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
+            principal.operation(Operation::Request)?;
+            principal.identity(&b.sender)?;
+            principal.target(&b.recipient)?;
+            serde_json::to_value(
+                queue
+                    .request(Envelope {
+                        sender: b.sender,
+                        recipient: b.recipient,
+                        body: b.body,
+                        correlation_id: b.correlation_id,
+                        in_reply_to: b.in_reply_to,
+                        idempotency_key: b.idempotency_key,
+                    })
+                    .map_err(mapped)?,
+            )
+            .map_err(|_| (500, "internal_error"))?
+        }
+        "pigeonmq_receive" => {
+            let b: ReceiveBody =
+                serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
+            principal.operation(Operation::Receive)?;
+            principal.mailbox(&b.recipient)?;
+            serde_json::to_value(
+                queue
+                    .receive_request(&b.recipient, Duration::from_secs(b.lease_seconds))
+                    .map_err(mapped)?,
+            )
+            .map_err(|_| (500, "internal_error"))?
+        }
+        "pigeonmq_respond" => {
+            let b: RespondBody =
+                serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
+            principal.operation(Operation::Respond)?;
+            principal.mailbox(&b.recipient)?;
+            serde_json::to_value(
+                queue
+                    .respond(&b.recipient, &b.id, &b.receipt, b.result)
+                    .map_err(mapped)?,
+            )
+            .map_err(|_| (500, "internal_error"))?
+        }
+        "pigeonmq_status" => {
+            let b: StatusBody =
+                serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
+            principal.operation(Operation::Status)?;
+            principal.identity(&b.requester)?;
+            serde_json::to_value(queue.status(&b.requester, &b.id).map_err(mapped)?)
+                .map_err(|_| (500, "internal_error"))?
+        }
+        _ => return Err((404, "unknown_tool")),
+    })
+}
+
+// Both wire formats use the same authority check before the first queue write.
+fn send_message(
+    queue: &mut Queue,
+    body: RequestBody,
+    principal: &Principal,
+) -> Result<Value, Fault> {
+    principal.operation(Operation::Send)?;
+    principal.identity(&body.sender)?;
+    principal.target(&body.recipient)?;
+    serde_json::to_value(
+        queue
+            .send(Envelope {
+                sender: body.sender,
+                recipient: body.recipient,
+                body: body.body,
+                correlation_id: body.correlation_id,
+                in_reply_to: body.in_reply_to,
+                idempotency_key: body.idempotency_key,
+            })
+            .map_err(mapped)?,
+    )
+    .map_err(|_| (500, "internal_error"))
+}
+
+fn dispatch(
+    queue: &mut Queue,
+    path: &str,
+    body: &[u8],
+    principal: &Principal,
+) -> Result<Value, Fault> {
+    let result = match path {
+        "/messages/send" => return send_message(queue, decode(body)?, principal),
+        "/rpc/request" => {
+            let b: RequestBody = decode(body)?;
+            principal.operation(Operation::Request)?;
+            principal.identity(&b.sender)?;
+            principal.target(&b.recipient)?;
+            serde_json::to_value(
+                queue
+                    .request(Envelope {
+                        sender: b.sender,
+                        recipient: b.recipient,
+                        body: b.body,
+                        correlation_id: b.correlation_id,
+                        in_reply_to: b.in_reply_to,
+                        idempotency_key: b.idempotency_key,
+                    })
+                    .map_err(mapped)?,
+            )
+        }
+        "/rpc/receive" => {
+            let b: ReceiveBody = decode(body)?;
+            principal.operation(Operation::Receive)?;
+            principal.mailbox(&b.recipient)?;
+            serde_json::to_value(
+                queue
+                    .receive_request(&b.recipient, Duration::from_secs(b.lease_seconds))
+                    .map_err(mapped)?,
+            )
+        }
+        "/rpc/respond" => {
+            let b: RespondBody = decode(body)?;
+            principal.operation(Operation::Respond)?;
+            principal.mailbox(&b.recipient)?;
+            serde_json::to_value(
+                queue
+                    .respond(&b.recipient, &b.id, &b.receipt, b.result)
+                    .map_err(mapped)?,
+            )
+        }
+        "/rpc/status" => {
+            let b: StatusBody = decode(body)?;
+            principal.operation(Operation::Status)?;
+            principal.identity(&b.requester)?;
+            serde_json::to_value(queue.status(&b.requester, &b.id).map_err(mapped)?)
+        }
+        _ => return Err((404, "route_not_found")),
+    };
+    result.map_err(|_| (500, "internal_error"))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_routes_stay_disabled_without_configured_profiles() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut routes = HubRoutes::default();
+        // Even generic auth must not provide fallback access to a disabled profile.
+        routes
+            .mount_generic(temp.path().join("absent-policy.json"))
+            .unwrap();
+        for definition in catalog::http_profiles() {
+            routes
+                .mount(
+                    definition.route,
+                    definition.body_limit(MAX_HEADERS),
+                    RouteHandler::Disabled,
+                )
+                .unwrap();
+        }
+        let state = HubState {
+            db: temp.path().join("absent.db"),
+            routes,
+            deadline: None,
+        };
+        for definition in catalog::http_profiles() {
+            let head = format!(
+                "POST {} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n",
+                definition.route
+            );
+            let input = parse_head(head.as_bytes(), "127.0.0.1:1234").unwrap();
+            assert!(matches!(
+                dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false),
+                transport::WireResponse::Json((Err((404, "profile_disabled")), 200))
+            ));
+        }
+    }
+
+    #[test]
+    fn generic_dlq_http_is_opt_in_scoped_and_read_only() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let db = temp.path().canonicalize().unwrap().join("queue.db");
+        let mut queue = Queue::open(&db).unwrap();
+        fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
+        let envelope = |recipient: &str, in_reply_to: Option<String>| Envelope {
+            sender: "synthetic-sender".into(),
+            recipient: recipient.into(),
+            body: "private synthetic body".into(),
+            correlation_id: None,
+            in_reply_to,
+            idempotency_key: None,
+        };
+        let first = queue.send(envelope("first", None)).unwrap().message.id;
+        let second = queue.send(envelope("second", None)).unwrap().message.id;
+        let hidden = queue.send(envelope("hidden", None)).unwrap().message.id;
+        let pending = queue.send(envelope("first", None)).unwrap().message.id;
+        let terminal = queue
+            .send(envelope("first", Some(first.clone())))
+            .unwrap()
+            .message
+            .id;
+        let mut visible = vec![first.clone(), second.clone()];
+        for i in 0..50 {
+            let recipient = if i % 2 == 0 { "first" } else { "second" };
+            visible.push(queue.send(envelope(recipient, None)).unwrap().message.id);
+        }
+        drop(queue);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for id in visible.iter().chain([&hidden, &terminal]) {
+            conn.execute(
+                "UPDATE messages SET attempts=5,dead_lettered_at_ms=123 WHERE id=?1",
+                [id],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let policy = temp.path().join("generic.json");
+        let principals: Vec<_> = [
+            ("inspect-token", "inspect_dlq", vec!["first", "second"]),
+            ("read-token", "read", vec!["first"]),
+            ("empty-token", "inspect_dlq", vec![]),
+        ]
+        .into_iter()
+        .map(|(token, op, mailboxes)| {
+            json!({
+                "id": token, "token_sha256": Sha256::digest(token)
+                    .iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                "operations": [op], "mailboxes": mailboxes, "send_to": [], "revoked": false,
+            })
+        })
+        .collect();
+        fs::write(&policy, json!({"principals": principals}).to_string()).unwrap();
+        fs::set_permissions(&policy, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut state = HubState {
+            db: db.clone(),
+            routes: HubRoutes::default(),
+            deadline: None,
+        };
+        let call = |state: &HubState, token: &str, body: Value| -> Result<Value, Fault> {
+            let authority = "127.0.0.1:1234";
+            let body = body.to_string();
+            let head = format!(
+                "POST /messages/dlq HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let input = transport::parse_head(head.as_bytes(), authority, |p| {
+                state.routes.get(p).map(|route| route.body_limit)
+            })?;
+            match dispatch_hub_request(state, authority, &input, body.as_bytes(), &|| false) {
+                transport::WireResponse::Json((result, 200)) => result.map(Option::unwrap),
+                _ => panic!("expected generic JSON response"),
+            }
+        };
+        assert_eq!(
+            call(&state, "inspect-token", json!({})),
+            Err((404, "route_not_found"))
+        );
+        state.routes.mount_generic(policy).unwrap();
+        assert_eq!(
+            call(&state, "invalid-token", json!({})),
+            Err((401, "unauthorized"))
+        );
+        assert_eq!(
+            call(&state, "read-token", json!({})),
+            Err((403, "forbidden"))
+        );
+        assert_eq!(
+            call(&state, "empty-token", json!({})).unwrap(),
+            json!({"entries":[],"next_continuation":null})
+        );
+        let before = fs::read(&db).unwrap();
+        let entry =
+            |id| json!({"id":id,"state":"dead_lettered","attempts":5,"dead_lettered_at_ms":123});
+        let first_page = call(&state, "inspect-token", json!({})).unwrap();
+        let cursor = first_page["next_continuation"].as_str().unwrap();
+        assert_eq!(
+            first_page,
+            json!({"entries":visible[..50].iter().map(entry).collect::<Vec<_>>(),
+                   "next_continuation":visible[49]})
+        );
+        assert_eq!(
+            call(&state, "inspect-token", json!({"continuation":cursor})).unwrap(),
+            json!({"entries":visible[50..].iter().map(entry).collect::<Vec<_>>(),
+                   "next_continuation":null})
+        );
+        for cursor in [hidden.as_str(), pending.as_str(), "absent"] {
+            assert_eq!(
+                call(&state, "inspect-token", json!({"continuation":cursor})),
+                Err((400, "invalid_continuation"))
+            );
+        }
+        assert_eq!(
+            call(&state, "empty-token", json!({"continuation":cursor})),
+            Err((400, "invalid_continuation"))
+        );
+        assert_eq!(
+            call(
+                &state,
+                "inspect-token",
+                json!({"id":second,"continuation":cursor})
+            ),
+            Err((400, "invalid_json_or_fields"))
+        );
+        assert_eq!(
+            call(&state, "inspect-token", json!({"id": second})).unwrap(),
+            entry(&second)
+        );
+        for id in [
+            hidden.as_str(),
+            pending.as_str(),
+            terminal.as_str(),
+            "absent",
+        ] {
+            assert_eq!(
+                call(&state, "inspect-token", json!({"id":id})).unwrap(),
+                json!({"state":"not_dead_lettered_or_missing"})
+            );
+        }
+        assert_eq!(
+            call(&state, "inspect-token", json!({"recipient":"hidden"})),
+            Err((400, "invalid_json_or_fields"))
+        );
+        assert_eq!(fs::read(&db).unwrap(), before);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn catalog_routes_enforce_exact_body_limits() {
+        // Pin the current wire limits independently of the route lookup and the caps it uses.
+        for (route, limit) in [
+            ("/muse/mcp", 106_496),
+            ("/grok/mcp", 106_496),
+            ("/dot/mcp", 32_768),
+            ("/codex/mcp", 106_496),
+            ("/receiver", 106_496),
+        ] {
+            let head = |length| {
+                format!(
+                    "POST {route} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n"
+                )
+            };
+            assert!(
+                parse_head(head(limit).as_bytes(), "127.0.0.1:1234").is_ok(),
+                "{route}"
+            );
+            assert!(
+                matches!(
+                    parse_head(head(limit + 1).as_bytes(), "127.0.0.1:1234"),
+                    Err((413, "body_too_large"))
+                ),
+                "{route}"
+            );
+        }
+    }
+
+    fn head(extra: &str) -> Vec<u8> {
+        format!("POST /rpc/status HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nContent-Type: application/json\r\nContent-Length: 2\r\n{extra}\r\n").into_bytes()
+    }
+    #[test]
+    fn rejects_browser_duplicate_framing_and_bad_host() {
+        for extra in [
+            "Origin: null\r\n",
+            "Sec-Fetch-Site: same-origin\r\n",
+            "Host: attacker.invalid\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "Content-Length: 2\r\n",
+        ] {
+            assert!(parse_head(&head(extra), "127.0.0.1:1234").is_err());
+        }
+        assert!(parse_head(&head(""), "127.0.0.1:1234").is_ok());
+        assert!(parse_head(&head(""), "localhost:1234").is_err());
+    }
+    #[test]
+    fn grok_and_muse_framing_accept_escaped_16_kib_text() {
+        assert_eq!(pigeonmq::grok_mailbox::MAX_TEXT, 16384);
+        assert_eq!(pigeonmq::muse_mailbox::MAX_REQUEST_BYTES, 16384);
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"pigeonmq_send","arguments":{{"recipient":"muse","body":"{}","idempotency_key":"framing-fixture"}}}}}}"#,
+            "\\u0061".repeat(pigeonmq::grok_mailbox::MAX_TEXT)
+        );
+        let decoded: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            decoded["params"]["arguments"]["body"]
+                .as_str()
+                .unwrap()
+                .len(),
+            pigeonmq::grok_mailbox::MAX_TEXT
+        );
+        for path in ["/grok/mcp", "/muse/mcp"] {
+            let request = |length| {
+                format!(
+                    "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n"
+                )
+            };
+            assert!(parse_head(request(body.len()).as_bytes(), "127.0.0.1:1234").is_ok());
+            assert_eq!(
+                parse_head(
+                    request(6 * 16384 + MAX_HEADERS + 1).as_bytes(),
+                    "127.0.0.1:1234"
+                )
+                .err(),
+                Some((413, "body_too_large"))
+            );
+        }
+    }
+    #[test]
+    fn missing_oauth_metadata_preserves_host_and_origin_checks() {
+        for path in [
+            "/.well-known/oauth-protected-resource/codex/mcp",
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-authorization-server",
+        ] {
+            let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n");
+            assert_eq!(
+                parse_head(request.as_bytes(), "127.0.0.1:1234").err(),
+                Some((404, "route_not_found"))
+            );
+            assert_eq!(
+                parse_head(request.as_bytes(), "attacker.invalid").err(),
+                Some((403, "loopback_host_required"))
+            );
+            let browser = request.replace("\r\n\r\n", "\r\nOrigin: null\r\n\r\n");
+            assert_eq!(
+                parse_head(browser.as_bytes(), "127.0.0.1:1234").err(),
+                Some((403, "browser_requests_forbidden"))
+            );
+        }
+        assert_eq!(
+            parse_head(
+                b"GET /codex/mcp HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n",
+                "127.0.0.1:1234"
+            )
+            .err(),
+            Some((405, "post_required"))
+        );
+    }
+    struct GenericFixture {
+        _dir: tempfile::TempDir,
+        state: HubState,
+    }
+
+    impl GenericFixture {
+        fn new() -> Self {
+            use sha2::{Digest, Sha256};
+            use std::{fs, os::unix::fs::PermissionsExt};
+            let dir = tempfile::tempdir().unwrap();
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let db = dir.path().join("generic.sqlite3");
+            drop(Queue::open(&db).unwrap());
+            fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
+            let policy = dir.path().join("generic.json");
+            let principals: Vec<_> = [
+                (
+                    "sender",
+                    vec!["send", "request", "status"],
+                    vec!["worker"],
+                    vec![],
+                ),
+                ("worker", vec!["receive", "respond"], vec![], vec!["worker"]),
+                ("observer", vec!["read"], vec![], vec!["worker"]),
+            ]
+            .into_iter()
+            .map(|(id, operations, send_to, mailboxes)| {
+                let token_sha256 = Sha256::digest(format!("{id}-fixture"))
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                json!({"id":id,"token_sha256":token_sha256,"operations":operations,
+                    "send_to":send_to,"mailboxes":mailboxes,"revoked":false})
+            })
+            .collect();
+            fs::write(&policy, json!({"principals":principals}).to_string()).unwrap();
+            fs::set_permissions(&policy, fs::Permissions::from_mode(0o600)).unwrap();
+            let mut routes = HubRoutes::default();
+            routes.mount_generic(policy).unwrap();
+            Self {
+                _dir: dir,
+                state: HubState {
+                    db,
+                    routes,
+                    deadline: None,
+                },
+            }
+        }
+
+        fn post(&self, path: &str, token: &str, headers: &str, body: &str) -> (u16, Vec<u8>) {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let address = listener.local_addr().unwrap();
+            let authority = address.to_string();
+            thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    let (stream, _) = listener.accept().unwrap();
+                    handle_hub_connection(stream, &authority, &self.state);
+                });
+                let mut stream = TcpStream::connect(address).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                write!(
+                    stream, "POST {path} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{headers}\r\n{body}",
+                    body.len(),
+                ).unwrap();
+                let mut wire = Vec::new();
+                stream.read_to_end(&mut wire).unwrap();
+                worker.join().unwrap();
+                let offset = wire.windows(4).position(|v| v == b"\r\n\r\n").unwrap();
+                let status = std::str::from_utf8(&wire[..offset])
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                (status, wire.split_off(offset + 4))
+            })
+        }
+
+        fn rpc(&self, token: &str, method: &str, params: Value) -> (u16, Value) {
+            let body = json!({"jsonrpc":"2.0","id":"generic-test","method":method,"params":params});
+            let (status, reply) = self.post("/mcp", token, ACCEPT_MCP, &body.to_string());
+            (
+                status,
+                serde_json::from_slice(&reply).unwrap_or_else(|_| {
+                    Value::String(String::from_utf8_lossy(&reply).into_owned())
+                }),
+            )
+        }
+
+        fn http(&self, path: &str, token: &str, body: Value) -> (u16, Value) {
+            let (status, reply) = self.post(path, token, "", &body.to_string());
+            (status, serde_json::from_slice(&reply).unwrap())
+        }
+
+        fn tool(&self, token: &str, name: &str, arguments: Value) -> (u16, Value) {
+            self.rpc(
+                token,
+                "tools/call",
+                json!({"name":name,"arguments":arguments}),
+            )
+        }
+    }
+    const ACCEPT_MCP: &str = "Accept: application/json, text/event-stream\r\n";
+
+    fn unpack((status, response): (u16, Value)) -> Value {
+        assert_eq!(status, 200, "{response}");
+        assert_eq!(response["jsonrpc"], "2.0");
+        assert_eq!(response["id"], "generic-test");
+        assert_eq!(response["result"]["isError"], false);
+        assert_eq!(response["result"]["content"][0]["type"], "text");
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn generic_mcp_uses_streamable_http_without_an_alias_or_fallback() {
+        let f = GenericFixture::new();
+        let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        for (path, token, headers, status) in [
+            ("/mcp", "wrong", "", 401),
+            ("/mcp", "sender-fixture", "", 406),
+            (
+                "/mcp",
+                "sender-fixture",
+                "Accept: application/json\r\n",
+                406,
+            ),
+            (
+                "/mcp",
+                "sender-fixture",
+                "Origin: http://localhost\r\n",
+                403,
+            ),
+            ("/mcp", "sender-fixture", ACCEPT_MCP, 200),
+            ("/mailbox/mcp", "sender-fixture", ACCEPT_MCP, 404),
+        ] {
+            assert_eq!(f.post(path, token, headers, ping).0, status);
+        }
+
+        let (status, reply) = f.rpc("sender-fixture", "initialize", json!({
+            "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}
+        }));
+        assert_eq!(status, 200);
+        assert_eq!(reply["id"], "generic-test");
+        assert_eq!(reply["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(reply["result"]["serverInfo"]["name"], "pigeonmq");
+        assert!(reply["result"]["capabilities"].get("events").is_none());
+
+        let initialized = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        assert_eq!(
+            f.post("/mcp", "sender-fixture", ACCEPT_MCP, initialized),
+            (202, Vec::new())
+        );
+        let (status, listed) = f.rpc("sender-fixture", "tools/list", json!({}));
+        assert_eq!(status, 200);
+        let tools = listed["result"]["tools"].as_array().unwrap();
+        assert!(tools.iter().any(|tool| tool["name"] == "pigeonmq_request"));
+        let find = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap();
+        let schema = &find("pigeonmq_send")["inputSchema"];
+        assert_eq!(schema["required"], json!(["sender", "recipient", "body"]));
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            find("pigeonmq_receive")["inputSchema"]["required"],
+            json!(["recipient"])
+        );
+        for method in ["resources/list", "events/list"] {
+            let (status, response) = f.rpc("sender-fixture", method, json!({}));
+            assert_eq!(status, 200);
+            assert_eq!(response["error"]["code"], -32601);
+        }
+
+        assert_eq!(
+            f.post(
+                "/mcp",
+                "sender-fixture",
+                ACCEPT_MCP,
+                r#"{"jsonrpc":"2.0","id":1,"method":"ping","method":"tools/list"}"#
+            )
+            .0,
+            400
+        );
+        for arguments in [json!(["sender", "worker"]), json!(false), json!("bad")] {
+            let (status, response) = f.tool("sender-fixture", "pigeonmq_request", arguments);
+            assert!(
+                matches!(status, 400 | 415) || response.get("error").is_some(),
+                "invalid arguments accepted: {status} {response}"
+            );
+        }
+        let (status, unknown) = f.tool("sender-fixture", "not_a_tool", json!({}));
+        assert_eq!(status, 200);
+        assert_eq!(unknown["error"]["code"], -32602);
+        let (status, invalid) = f.tool(
+            "worker-fixture",
+            "pigeonmq_receive",
+            json!({"lease_seconds":30}),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(invalid["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn generic_mcp_rpc_preserves_identity_operation_mailbox_and_receipt_guards() {
+        let f = GenericFixture::new();
+        let request = json!({"sender":"sender","recipient":"worker","body":"synthetic RPC"});
+        let forbidden = (403, json!({"error":{"code":"forbidden"}}));
+        assert_eq!(
+            f.tool("observer-fixture", "pigeonmq_request", request.clone()),
+            forbidden
+        );
+        for args in [
+            json!({"sender":"observer","recipient":"worker","body":"spoof"}),
+            json!({"sender":"sender","recipient":"outside","body":"outside target"}),
+        ] {
+            assert_eq!(
+                f.tool("sender-fixture", "pigeonmq_request", args),
+                forbidden
+            );
+        }
+        let queued = unpack(f.tool("sender-fixture", "pigeonmq_request", request));
+        let id = &queued["message"]["id"];
+        assert_eq!(
+            f.tool(
+                "worker-fixture",
+                "pigeonmq_receive",
+                json!({"recipient":"outside"})
+            ),
+            forbidden
+        );
+        let receive = unpack(f.tool(
+            "worker-fixture",
+            "pigeonmq_receive",
+            json!({"recipient":"worker"}),
+        ));
+        assert_eq!(&receive["message"]["id"], id);
+        let answer = json!({"outcome":"success","value":{"ok":true}});
+        assert_eq!(
+            f.tool(
+                "worker-fixture",
+                "pigeonmq_respond",
+                json!({"recipient":"worker","id":id,"receipt":"wrong","result":answer})
+            ),
+            (409, json!({"error":{"code":"stale_receipt"}})),
+        );
+        let completed = unpack(f.tool(
+            "worker-fixture",
+            "pigeonmq_respond",
+            json!({"recipient":"worker","id":id,"receipt":receive["receipt"],"result":answer}),
+        ));
+        assert_eq!(completed, answer);
+        assert_eq!(
+            f.tool(
+                "sender-fixture",
+                "pigeonmq_status",
+                json!({"requester":"worker","id":id})
+            ),
+            forbidden
+        );
+        let status = unpack(f.tool(
+            "sender-fixture",
+            "pigeonmq_status",
+            json!({"requester":"sender","id":id}),
+        ));
+        assert_eq!(status["state"], "answered");
+    }
+
+    #[test]
+    fn generic_raw_http_and_mcp_keep_their_operations_and_authority_separate() {
+        let f = GenericFixture::new();
+        let send = json!({"sender":"sender","recipient":"worker","body":"synthetic send"});
+        assert_eq!(
+            f.http("/messages/send", "sender-fixture", send.clone()).0,
+            200
+        );
+        assert_eq!(f.http("/messages/send", "observer-fixture", send).0, 403);
+        assert_eq!(
+            f.tool("sender-fixture", "pigeonmq_send", json!({"sender":"sender","recipient":"worker,observer","body":"synthetic","idempotency_key":"subset"})),
+            (503, json!({"error":{"code":"recipient_preflight_unavailable"}})),
+        );
+        let rows: i64 = rusqlite::Connection::open(&f.state.db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+
+        for invalid in [
+            json!(0),
+            Value::Null,
+            json!(u64::MAX),
+            json!(-1),
+            json!(1.5),
+            json!("30"),
+        ] {
+            let args = json!({"recipient":"worker","lease_seconds":invalid});
+            assert_eq!(
+                f.http("/rpc/receive", "worker-fixture", args.clone()).0,
+                400
+            );
+            let (status, response) = f.tool("worker-fixture", "pigeonmq_receive", args);
+            assert!(status == 400 || response["error"]["code"] == -32602);
+        }
+        for (mcp, args, seconds) in [
+            (true, json!({"recipient":"worker"}), 30),
+            (false, json!({"recipient":"worker"}), 30),
+            (true, json!({"recipient":"worker","lease_seconds":75}), 75),
+            (false, json!({"recipient":"worker","lease_seconds":75}), 75),
+        ] {
+            let (status, queued) = f.http(
+                "/rpc/request",
+                "sender-fixture",
+                json!({"sender":"sender","recipient":"worker","body":"synthetic RPC"}),
+            );
+            assert_eq!(status, 200);
+            let now = || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64
+            };
+            let before = now();
+            let delivery = if mcp {
+                unpack(f.tool("worker-fixture", "pigeonmq_receive", args))
+            } else {
+                let (status, result) = f.http("/rpc/receive", "worker-fixture", args);
+                assert_eq!(status, 200);
+                result
+            };
+            let after = now();
+            assert_eq!(delivery["message"]["id"], queued["message"]["id"]);
+            let until = delivery["lease_until_ms"].as_i64().unwrap();
+            assert!((before + seconds * 1000..=after + seconds * 1000).contains(&until));
+        }
+        assert_eq!(
+            f.http(
+                "/rpc/receive",
+                "worker-fixture",
+                json!({"recipient":"worker"})
+            ),
+            (200, Value::Null)
+        );
+    }
+
+    #[test]
+    fn request_fields_and_error_mapping_are_safe() {
+        assert!(decode::<StatusBody>(br#"{"requester":"a","id":"x","identity":"admin"}"#).is_err());
+        assert_eq!(
+            mapped(Error::Invalid("private data")),
+            (400, "invalid_input")
+        );
+        assert_eq!(mapped(Error::StaleReceipt), (409, "stale_receipt"));
+    }
+}
+
+// Muse is a separate authenticated profile of the existing loopback transport.
+// This path never creates a queue, emits Events, starts a model, or uses dot ACLs.
+use pigeonmq::muse_mailbox::{self, MailboxError, MuseScope};
+use rmcp::{
+    ErrorData,
+    model::{ErrorCode, RequestId},
+};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+};
+struct MuseState {
+    db: PathBuf,
+    policy: PathBuf,
+    deadline: Option<Instant>,
+    waiting: AtomicBool,
+    active: Mutex<HashMap<RequestId, Arc<AtomicBool>>>,
+}
+struct ActiveMuseRequest<'a> {
+    state: &'a MuseState,
+    key: RequestId,
+    cancelled: Arc<AtomicBool>,
+}
+impl Drop for ActiveMuseRequest<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.state.active.lock() {
+            active.remove(&self.key);
+        }
+    }
+}
+struct MuseWaitGuard<'a>(&'a AtomicBool);
+impl Drop for MuseWaitGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+impl MuseState {
+    fn begin(&self, key: RequestId) -> Result<ActiveMuseRequest<'_>, Fault> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| (503, "request_state_unavailable"))?;
+        if active.contains_key(&key) || active.len() >= MAX_HTTP_CONNECTION_WORKERS {
+            return Err((409, "request_already_active"));
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        active.insert(key.clone(), cancelled.clone());
+        Ok(ActiveMuseRequest {
+            state: self,
+            key,
+            cancelled,
+        })
+    }
+    fn check_open(&self, active: &ActiveMuseRequest<'_>, deadline: Instant) -> Result<(), Fault> {
+        if active.cancelled.load(Ordering::Acquire)
+            || Instant::now() >= deadline
+            || self.deadline.is_some_and(|end| Instant::now() >= end)
+        {
+            return Err((499, "request_cancelled"));
+        }
+        Ok(())
+    }
+    fn scope(
+        &self,
+        authorization: &[Vec<u8>],
+        operation: auth::MuseOperation,
+        active: &ActiveMuseRequest<'_>,
+        deadline: Instant,
+    ) -> Result<MuseScope, Fault> {
+        self.check_open(active, deadline)?;
+        auth::authenticate_muse(&self.policy, authorization)?.scope(operation)
+    }
+    fn send_checkpoint(
+        &self,
+        authorization: &[Vec<u8>],
+        active: &ActiveMuseRequest<'_>,
+        deadline: Instant,
+        recipient: &str,
+        thread_peers: Option<&[String]>,
+    ) -> Result<(), Fault> {
+        self.check_open(active, deadline)?;
+        let principal = auth::authenticate_muse(&self.policy, authorization)?;
+        let scope = principal.scope(auth::MuseOperation::Send)?;
+        auth::check_registered_send(&scope.allowed_senders, recipient, thread_peers, || {
+            self.check_open(active, deadline)?;
+            principal.require_operation(auth::MuseOperation::Read)
+        })
+    }
+    fn confirm_scope(
+        &self,
+        authorization: &[Vec<u8>],
+        active: &ActiveMuseRequest<'_>,
+        deadline: Instant,
+    ) -> Result<MuseScope, Fault> {
+        // Reload at each checkpoint, not once per request or per individual grant.
+        self.check_open(active, deadline)?;
+        let principal = auth::authenticate_muse(&self.policy, authorization)?;
+        let scope = principal.scope(auth::MuseOperation::Reply)?;
+        self.check_open(active, deadline)?;
+        principal.require_operation(auth::MuseOperation::Read)?;
+        Ok(scope)
+    }
+}
+
+fn muse_fault(error: MailboxError) -> Fault {
+    let status = match error.reason {
+        "forbidden" => 403,
+        "unauthorized" | "credential_expired" => 401,
+        "request_cancelled" => 499,
+        "message_not_available" => 404,
+        "wait_busy"
+        | "reply_conflict"
+        | "reconciliation_required"
+        | "existing_claim_requires_reconciliation" => 409,
+        "storage_unavailable" | "auth_unavailable" => 503,
+        _ => 400,
+    };
+    (status, error.reason)
+}
+
+#[cfg(test)]
+#[path = "inbox_page_host_tests.rs"]
+mod inbox_page_host_tests;
+
+fn dispatch_muse(
+    state: &MuseState,
+    authority: &str,
+    input: &Input,
+    body: &[u8],
+    (max_body, deadline): (usize, Instant),
+) -> Result<http::Response<Vec<u8>>, Fault> {
+    auth::authenticate_muse(&state.policy, &input.authorization)?;
+    if Instant::now() >= deadline {
+        return Err((499, "request_cancelled"));
+    }
+    check_streamable_mailbox_body(body)?;
+    let request = mcp_sdk::streamable_request(&input.path, &input.sdk_headers, body)?;
+    let mut active = None;
+    let response = mcp_sdk::dispatch_streamable(
+        "pigeonmq-muse",
+        registered_mailbox_tools("Muse", "muse"),
+        request,
+        authority,
+        (max_body, deadline),
+        |id, name, arguments| {
+            if active.is_none() {
+                active = Some(state.begin(id.clone())?);
+            }
+            call_muse_tool(
+                state,
+                &input.authorization,
+                active.as_ref().ok_or((500, "internal_error"))?,
+                deadline,
+                name,
+                &arguments,
+            )
+        },
+        |_, _| {
+            Ok(Err(ErrorData::new(
+                ErrorCode::METHOD_NOT_FOUND,
+                "method_not_found",
+                None,
+            )))
+        },
+    )?;
+    if let Some(id) = accepted_cancellation(response.status(), body)? {
+        let active = state
+            .active
+            .lock()
+            .map_err(|_| (503, "request_state_unavailable"))?;
+        if let Some(cancelled) = active.get(&id) {
+            cancelled.store(true, Ordering::Release);
+        }
+        // A completion that already committed is not undone.
+    }
+    Ok(response)
+}
+
+fn call_muse_tool(
+    state: &MuseState,
+    authorization: &[Vec<u8>],
+    active: &ActiveMuseRequest<'_>,
+    deadline: Instant,
+    name: &str,
+    arguments: &Value,
+) -> Result<Value, Fault> {
+    Ok(match name {
+        "pigeonmq_inbox" => inbox_page::list_muse(&state.db, "muse", arguments, deadline, || {
+            state
+                .scope(authorization, auth::MuseOperation::Read, active, deadline)
+                .map(|scope| scope.allowed_senders)
+        })?,
+        "pigeonmq_recipients" => {
+            registered_mailbox_fields(arguments, &[], &[])?;
+            let scope = state.scope(authorization, auth::MuseOperation::Send, active, deadline)?;
+            json!({"recipients":scope.allowed_senders,"connection_status":"unknown"})
+        }
+        "pigeonmq_confirm_terminal" => {
+            let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
+            let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
+            if message_id.trim().is_empty() || message_id.len() > 128 {
+                return Err((400, "invalid_fields"));
+            }
+            let confirm_scope = || state.confirm_scope(authorization, active, deadline);
+            let visible = |sender: &str| {
+                if confirm_scope()?
+                    .allowed_senders
+                    .iter()
+                    .any(|peer| peer == sender)
+                {
+                    Ok(())
+                } else {
+                    Err((404, "not_found"))
+                }
+            };
+            let observed = muse_mailbox::read(&state.db, message_id, &confirm_scope()?)
+                .map_err(|error| terminal_observation_fault(muse_fault(error)))?;
+            if observed.in_reply_to.is_none() {
+                visible(&observed.sender)?;
+                return Err((400, "terminal_answer_required"));
+            }
+            let mut queue = Queue::open_existing(&state.db).map_err(mapped)?;
+            let mut fault = None;
+            let result = queue.confirm_terminal_checked("muse", message_id, |sender| {
+                visible(sender).map_err(|error| {
+                    fault = Some(error);
+                    Error::Invalid("authorization_changed")
+                })
+            });
+            let duplicate = result.map_err(|error| {
+                fault.unwrap_or_else(|| terminal_confirmation_fault(error, mapped))
+            })?;
+            json!({"state":"acknowledged","message_id":message_id,"duplicate":duplicate})
+        }
+        pigeonmq::mailbox_tools::READ_THREAD => pigeonmq::conversation::read_thread_tool(
+            &state.db,
+            "muse",
+            muse_mailbox::MAX_REQUEST_BYTES as i64,
+            arguments,
+            || {
+                state
+                    .scope(authorization, auth::MuseOperation::Read, active, deadline)
+                    .map(|s| s.allowed_senders)
+            },
+        )?,
+        "pigeonmq_read" => {
+            let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
+            let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
+            let scope = state.scope(authorization, auth::MuseOperation::Read, active, deadline)?;
+            let observed = muse_mailbox::read(&state.db, message_id, &scope).map_err(muse_fault)?;
+            let current =
+                state.scope(authorization, auth::MuseOperation::Read, active, deadline)?;
+            if !current.allowed_senders.contains(&observed.sender) {
+                return Err((403, "forbidden"));
+            }
+            serde_json::to_value(observed).map_err(|_| (500, "serialization_failed"))?
+        }
+        "pigeonmq_wait" => {
+            let args = registered_mailbox_fields(arguments, &["timeout_ms"], &[])?;
+            let timeout = args["timeout_ms"]
+                .as_u64()
+                .filter(|value| *value <= 10000)
+                .ok_or((400, "invalid_timeout"))?;
+            state.scope(authorization, auth::MuseOperation::Wait, active, deadline)?;
+            if state
+                .waiting
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err((409, "wait_busy"));
+            }
+            let _waiting = MuseWaitGuard(&state.waiting);
+            let until = deadline.min(Instant::now() + Duration::from_millis(timeout));
+            // Internal raw-page position only. It is never accepted from
+            // clients, persisted, returned as a cursor, or treated as ACK.
+            // Requests take priority so a repeated terminal answer cannot
+            // hide a pending request. Terminal observation still does not ACK.
+            let mut after_seq = 0;
+            let mut terminal = false;
+            loop {
+                let scope =
+                    state.scope(authorization, auth::MuseOperation::Wait, active, deadline)?;
+                if timeout != 0 && Instant::now() >= until {
+                    break json!({"state":"timeout","message":null});
+                }
+                let page = muse_mailbox::scan_page(&state.db, &scope, after_seq, terminal)
+                    .map_err(muse_fault)?;
+                let current =
+                    state.scope(authorization, auth::MuseOperation::Wait, active, deadline)?;
+                if timeout != 0 && Instant::now() >= until {
+                    break json!({"state":"timeout","message":null});
+                }
+                if let Some(observed) = page.message {
+                    if !current.allowed_senders.contains(&observed.sender) {
+                        return Err((403, "forbidden"));
+                    }
+                    break json!({"state":"message","message":observed});
+                }
+                if page.scanned == muse_mailbox::SCAN_PAGE_SIZE {
+                    if timeout == 0 {
+                        // Do not misreport an incomplete zero-wait scan as
+                        // an empty mailbox. Use a bounded wait or read by ID.
+                        return Err((503, "observation_budget_exhausted"));
+                    }
+                    after_seq = page.next_seq;
+                    continue;
+                }
+                if !terminal {
+                    terminal = true;
+                    after_seq = 0;
+                    continue;
+                }
+                let now = Instant::now();
+                if timeout == 0 || now >= until {
+                    break json!({"state":"timeout","message":null});
+                }
+                after_seq = 0;
+                terminal = false;
+                thread::sleep((until - now).min(Duration::from_millis(100)));
+            }
+        }
+        "pigeonmq_reply" => {
+            let args = registered_mailbox_fields(arguments, &["message_id", "body"], &[])?;
+            let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
+            let body = args["body"].as_str().ok_or((400, "invalid_fields"))?;
+            let result = muse_mailbox::reply(&state.db, message_id, body, || {
+                state
+                    .scope(authorization, auth::MuseOperation::Reply, active, deadline)
+                    .map_err(|(_, reason)| MailboxError { reason })
+            })
+            .map_err(muse_fault)?;
+            serde_json::to_value(result).map_err(|_| (500, "serialization_failed"))?
+        }
+        "pigeonmq_send" => send_registered(
+            &state.db,
+            "muse",
+            muse_mailbox::MAX_REQUEST_BYTES as i64,
+            arguments,
+            || {
+                state
+                    .scope(authorization, auth::MuseOperation::Read, active, deadline)
+                    .map(|scope| scope.allowed_senders)
+            },
+            |recipient, peers| {
+                state.send_checkpoint(authorization, active, deadline, recipient, peers)
+            },
+        )?,
+        _ => return Err((404, "unknown_tool")),
+    })
+}
+
+fn send_registered(
+    db: &std::path::Path,
+    mailbox: &str,
+    request_bytes: i64,
+    arguments: &Value,
+    read_peers: impl FnOnce() -> Result<Vec<String>, Fault>,
+    mut send_checkpoint: impl FnMut(&str, Option<&[String]>) -> Result<(), Fault>,
+) -> Result<Value, Fault> {
+    let (envelope, parent) = registered_send(mailbox, arguments)?;
+    let recipient = envelope.recipient.clone();
+    let peers = parent.map(|_| read_peers()).transpose()?;
+    let mut fault = None;
+    // The queue calls this before locking, after locking and before committing.
+    // Never carry a policy or registry snapshot across those boundaries.
+    let authorize = || {
+        send_checkpoint(&recipient, peers.as_deref()).map_err(|error| {
+            fault = Some(error);
+            Error::Invalid("forbidden")
+        })
+    };
+    let mut queue = Queue::open_existing(db).map_err(mapped)?;
+    let result = match (parent, peers.as_deref()) {
+        (Some(parent), Some(peers)) => queue.continue_checked(
+            envelope,
+            parent,
+            pigeonmq::conversation::ThreadScope {
+                mailbox,
+                peers,
+                request_bytes,
+            },
+            authorize,
+        ),
+        _ => queue.send_checked(envelope, authorize),
+    };
+    let result = result.map_err(|error| fault.unwrap_or_else(|| mapped(error)))?;
+    serde_json::to_value(result).map_err(|_| (500, "internal_error"))
+}
+
+/// Read-only readiness. A policy file is configuration, not permission to create credentials.
+pub fn check_muse(db: &std::path::Path, policy: &std::path::Path) -> io::Result<bool> {
+    auth::require_private_file(db).map_err(|_| io::Error::other("private database required"))?;
+    auth::validate_muse(policy)
+        .map_err(|(_, reason)| auth::local_policy_error(reason, "invalid Muse policy"))?;
+    muse_mailbox::is_prepared(db).map_err(|_| io::Error::other("Muse storage unavailable"))
+}
+
+/// Explicit approved installation. Never called implicitly by check or serve.
+pub fn prepare_muse(db: &std::path::Path, policy: &std::path::Path) -> io::Result<()> {
+    auth::require_private_file(db).map_err(|_| io::Error::other("private database required"))?;
+    auth::local_muse_scope(policy, auth::MuseOperation::Reply)
+        .map_err(|(_, reason)| auth::local_policy_error(reason, "Muse preparation forbidden"))?;
+    muse_mailbox::prepare(db).map_err(|_| io::Error::other("Muse preparation failed"))
+}
+
+/// One listener/origin, fixed paths and separate authentication profiles.
+/// No token-based fallback, routing headers, new queue, credential or tunnel setup.
+struct ReceiverProfile {
+    policy: PathBuf,
+    registration: PathBuf,
+    identity: (u64, u64),
+}
+impl ReceiverProfile {
+    fn new(db: &std::path::Path, policy: PathBuf, registration: PathBuf) -> Result<Self, Fault> {
+        use std::os::unix::fs::MetadataExt;
+        auth::validate_private(&policy)?;
+        auth::require_private_file(&registration)?;
+        let metadata = pigeonmq::private_file::open_private_file(db)?
+            .metadata()
+            .map_err(|_| (503, "storage_unavailable"))?;
+        Ok(Self {
+            policy,
+            registration,
+            identity: (metadata.dev(), metadata.ino()),
+        })
+    }
+    fn check_queue(&self, db: &std::path::Path) -> Result<(), Fault> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = pigeonmq::private_file::open_private_file(db)?
+            .metadata()
+            .map_err(|_| (503, "storage_unavailable"))?;
+        if self.identity != (metadata.dev(), metadata.ino()) {
+            return Err((503, "queue_identity_changed"));
+        }
+        Ok(())
+    }
+}
+enum RouteHandler {
+    Disabled,
+    Generic(Arc<PathBuf>),
+    Muse(Arc<MuseState>),
+    Dot(pigeonmq::dot_profile::DotHost),
+    Grok(grok_bot::GrokState),
+    Mailbox(
+        crate::codex_mcp::Profile,
+        Option<Arc<crate::codex_events::Runtime>>,
+    ),
+    Receiver(ReceiverProfile),
+}
+
+struct HubRoute {
+    body_limit: usize,
+    handler: RouteHandler,
+}
+
+#[derive(Default)]
+struct HubRoutes(HashMap<String, HubRoute>);
+
+impl HubRoutes {
+    fn mount(&mut self, path: &str, body_limit: usize, handler: RouteHandler) -> io::Result<()> {
+        use std::collections::hash_map::Entry;
+        let Entry::Vacant(route) = self.0.entry(path.into()) else {
+            return Err(io::Error::other("duplicate hub route"));
+        };
+        route.insert(HubRoute {
+            body_limit,
+            handler,
+        });
+        Ok(())
+    }
+
+    fn mount_generic(&mut self, policy: PathBuf) -> io::Result<()> {
+        let policy = Arc::new(policy);
+        for &(path, limit) in GENERIC_ROUTES {
+            self.mount(path, limit, RouteHandler::Generic(policy.clone()))?;
+        }
+        Ok(())
+    }
+
+    fn get(&self, path: &str) -> Result<&HubRoute, Fault> {
+        self.0.get(path).ok_or((404, "route_not_found"))
+    }
+}
+
+struct HubState {
+    db: PathBuf,
+    routes: HubRoutes,
+    deadline: Option<Instant>,
+}
+
+fn dispatch_generic_hub(
+    state: &HubState,
+    policy: &std::path::Path,
+    input: &Input,
+    body: &[u8],
+    authority: &str,
+    limits: (usize, Instant),
+) -> Result<WireResponse, Fault> {
+    let principal = auth::authenticate_private(policy, &input.authorization)?;
+    if input.path == "/messages/dlq" {
+        principal.operation(Operation::InspectDlq)?;
+        let request: DlqBody = decode(body)?;
+        let result = match (request.id.as_deref(), request.continuation.as_deref()) {
+            (Some(_), Some(_)) => return Err((400, "invalid_json_or_fields")),
+            (Some(id), None) => {
+                Queue::inspect_mailbox_dead_letter(&state.db, principal.mailboxes(), id).map(
+                    |entry| match entry {
+                        Some(entry) => json!(entry),
+                        None => json!(DeadLetterInspection::NotDeadLetteredOrMissing),
+                    },
+                )
+            }
+            (None, continuation) => {
+                Queue::list_mailbox_dead_letters(&state.db, principal.mailboxes(), continuation)
+                    .map(|page| json!(page))
+            }
+        };
+        return result
+            .map(|value| (Ok(Some(value)), 200).into())
+            .map_err(|error| match error {
+                Error::Invalid(
+                    "names, identifiers and keys must not be blank" | "message ID too long",
+                ) => (400, "invalid_input"),
+                Error::Invalid("invalid_continuation") => (400, "invalid_continuation"),
+                _ => (503, "storage_unavailable"),
+            });
+    }
+    // Generic policy snapshots retain their existing in-flight revocation semantics.
+    // They never authorize a Muse deferred operation or a different profile.
+    auth::require_private_file(&state.db)?;
+    let mut queue = Queue::open_existing(&state.db).map_err(mapped)?;
+    if state.deadline.is_some_and(|end| Instant::now() >= end) {
+        return Err((499, "request_cancelled"));
+    }
+    if input.path == "/mcp" {
+        check_streamable_mailbox_body(body)?;
+        let request = mcp_sdk::streamable_request(&input.path, &input.sdk_headers, body)?;
+        return mcp_sdk::dispatch_generic_streamable(
+            mcp_tools(),
+            request,
+            authority,
+            limits,
+            |name, args| call_mcp_tool(&mut queue, &principal, name, args),
+        )
+        .map(WireResponse::Sdk);
+    }
+    dispatch(&mut queue, &input.path, body, &principal).map(|value| (Ok(Some(value)), 200).into())
+}
+fn dispatch_receiver(
+    state: &HubState,
+    profile: &ReceiverProfile,
+    input: &Input,
+    body: &[u8],
+    context: &pigeonmq::mcp_request::Context<'_>,
+) -> Result<Value, Fault> {
+    use pigeonmq::receiver_api::{Action, Request};
+    let principal = auth::authenticate_private(&profile.policy, &input.authorization)?;
+    let request: Request = decode(body)?;
+    let operation = if matches!(&request.action, Action::Complete { .. }) {
+        Operation::Reply
+    } else {
+        Operation::Receive
+    };
+    let denied = std::cell::Cell::new(None);
+    let recipient = request.recipient.clone();
+    let authorize = || {
+        let checked = (|| {
+            if context.cancelled() {
+                return Err((499, "request_cancelled"));
+            }
+            let latest = auth::authenticate_private(&profile.policy, &input.authorization)?;
+            if latest.id != principal.id {
+                return Err((403, "forbidden"));
+            }
+            latest.operation(operation)?;
+            latest.mailbox(&recipient)?;
+            profile.check_queue(&state.db)
+        })();
+        checked.map_err(|fault| {
+            denied.set(Some(fault));
+            Error::Invalid("receiver_authorization_failed")
+        })
+    };
+    authorize().map_err(|_| denied.get().unwrap_or((403, "forbidden")))?;
+    pigeonmq::receiver_api::execute(
+        &state.db,
+        &profile.registration,
+        &principal.id,
+        request,
+        authorize,
+    )
+    .map_err(|error| {
+        denied.get().unwrap_or_else(|| match error {
+            Error::Invalid(
+                reason @ ("sender_revoked_or_mailbox_mismatch"
+                | "recipient_revoked_or_mailbox_mismatch"
+                | "sender_not_registered"
+                | "recipient_not_registered"
+                | "runtime_owner_mismatch"),
+            ) => (403, reason),
+            Error::Invalid("auth_unavailable") => (503, "auth_unavailable"),
+            error => mapped(error),
+        })
+    })
+}
+fn dispatch_hub_request(
+    state: &HubState,
+    authority: &str,
+    input: &Input,
+    body: &[u8],
+    peer_closed: &(dyn Fn() -> bool + Sync),
+) -> transport::WireResponse {
+    let route = match state.routes.get(&input.path) {
+        Ok(route) => route,
+        Err(error) => return (Err(error), 200).into(),
+    };
+    let now = Instant::now();
+    // Dot and Codex Events apply the request deadline inside their wire handlers.
+    let handles_deadline = match &route.handler {
+        RouteHandler::Dot(_) => true,
+        RouteHandler::Mailbox(profile, _) => profile
+            .definition()
+            .is_ok_and(|definition| definition.events == catalog::EventsCapability::Codex),
+        _ => false,
+    };
+    if !handles_deadline && state.deadline.is_some_and(|end| now >= end) {
+        return (Err((499, "request_cancelled")), 200).into();
+    }
+    let deadline = state
+        .deadline
+        .unwrap_or(now + Duration::from_secs(15))
+        .min(now + Duration::from_secs(15));
+    let context = pigeonmq::mcp_request::Context::new(deadline, peer_closed);
+    let result = match &route.handler {
+        RouteHandler::Disabled => Err((404, "profile_disabled")),
+        RouteHandler::Generic(policy) => {
+            return dispatch_generic_hub(
+                state,
+                policy,
+                input,
+                body,
+                authority,
+                (route.body_limit, deadline),
+            )
+            .unwrap_or_else(|fault| (Err(fault), 200).into());
+        }
+        RouteHandler::Receiver(receiver) => {
+            dispatch_receiver(state, receiver, input, body, &context).map(Some)
+        }
+        RouteHandler::Muse(muse) => {
+            return match dispatch_muse(muse, authority, input, body, (route.body_limit, deadline)) {
+                Ok(response) => transport::WireResponse::Sdk(response),
+                Err(error) => (Err(error), 200).into(),
+            };
+        }
+        RouteHandler::Grok(grok) => {
+            return match grok_bot::dispatch_grok(grok, authority, input, body, route.body_limit) {
+                Ok(response) => transport::WireResponse::Sdk(response),
+                Err(error) => (Err(error), 200).into(),
+            };
+        }
+        RouteHandler::Dot(host) => {
+            return match dispatch_dot(host, authority, input, body, &context) {
+                Ok(response) => transport::WireResponse::Sdk(response),
+                Err(error) => (Err(error), 200).into(),
+            };
+        }
+        RouteHandler::Mailbox(profile, events) => {
+            return match profile.dispatch_streamable_http(
+                (authority, &input.path),
+                &input.sdk_headers,
+                &input.authorization,
+                body,
+                events.as_deref(),
+                (route.body_limit, &context),
+            ) {
+                Ok(response) => transport::WireResponse::Sdk(response),
+                Err(error) => (Err(error), 200).into(),
+            };
+        }
+    };
+    (result, 200).into()
+}
+
+fn dispatch_dot(
+    host: &pigeonmq::dot_profile::DotHost,
+    authority: &str,
+    input: &Input,
+    body: &[u8],
+    context: &pigeonmq::mcp_request::Context<'_>,
+) -> Result<http::Response<Vec<u8>>, Fault> {
+    let bearer = match input.authorization.as_slice() {
+        [value] => std::str::from_utf8(value)
+            .ok()
+            .and_then(|v| v.strip_prefix("Bearer ")),
+        _ => None,
+    }
+    .ok_or((401, "unauthorized"))?;
+    host.dispatch_streamable_http(
+        (authority, &input.path),
+        &input.sdk_headers,
+        bearer,
+        body,
+        context,
+    )
+}
+
+fn handle_hub_connection(stream: TcpStream, authority: &str, state: &HubState) {
+    transport::handle_connection(
+        stream,
+        authority,
+        |path| state.routes.get(path).map(|route| route.body_limit),
+        |input, body, peer_closed| dispatch_hub_request(state, authority, input, body, peer_closed),
+    );
+}
+
+pub fn serve_hub(
+    db: PathBuf,
+    generic_policy: Option<PathBuf>,
+    bindings: Vec<Binding>,
+    local_profiles: Vec<crate::codex_mcp::Profile>,
+    manifest_fingerprint: Option<&str>,
+    port: u16,
+    seconds: Option<u64>,
+) -> io::Result<()> {
+    serve_hub_on(
+        db,
+        generic_policy,
+        bindings,
+        local_profiles,
+        manifest_fingerprint,
+        (port, seconds),
+        None,
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+// NOTE: canonical Dot/OpenAI tunnel design; not wired yet, do not remove.
+pub(crate) fn serve_dot_on(
+    listener: TcpListener,
+    db: PathBuf,
+    dot_policy: PathBuf,
+) -> io::Result<()> {
+    let addr = listener.local_addr()?;
+    if !addr.ip().is_loopback() {
+        return Err(io::Error::other("Cloud Dot listener must use loopback"));
+    }
+    let home = db
+        .parent()
+        .ok_or_else(|| io::Error::other("queue parent required"))?;
+    let dot = Binding::bundled(catalog::by_adapter(Adapter::Dot), dot_policy, home);
+    serve_hub_on(
+        db,
+        None,
+        vec![dot],
+        Vec::new(),
+        None,
+        (addr.port(), None),
+        Some(listener),
+    )
+}
+
+fn serve_hub_on(
+    db: PathBuf,
+    generic_policy: Option<PathBuf>,
+    bindings: Vec<Binding>,
+    local_profiles: Vec<crate::codex_mcp::Profile>,
+    manifest_fingerprint: Option<&str>,
+    (port, seconds): (u16, Option<u64>),
+    prebound: Option<TcpListener>,
+) -> io::Result<()> {
+    if port == 0
+        || seconds.is_some_and(|value| !(1..=3600).contains(&value))
+        || (generic_policy.is_none() && bindings.is_empty() && local_profiles.is_empty())
+    {
+        return Err(io::Error::other(
+            "explicit policy, port and lifetime limit required",
+        ));
+    }
+    let local_mailbox_enabled = !local_profiles.is_empty();
+    if local_mailbox_enabled
+        && (seconds.is_none()
+            || manifest_fingerprint.is_some()
+            || generic_policy.is_some()
+            || !bindings.is_empty()
+            || prebound.is_some())
+    {
+        return Err(io::Error::other(
+            "local mailboxes require a separate bounded loopback hub",
+        ));
+    }
+    if manifest_fingerprint.is_some() && generic_policy.is_some() {
+        return Err(io::Error::other(
+            "a profile manifest cannot mount the generic API",
+        ));
+    }
+    auth::require_private_file(&db).map_err(|_| io::Error::other("private database required"))?;
+    let prepared = muse_mailbox::is_prepared(&db)
+        .map_err(|_| io::Error::other("existing queue unavailable"))?;
+    let deadline = seconds.map(|value| Instant::now() + Duration::from_secs(value));
+    let generic_enabled = generic_policy.is_some();
+    let mut routes = HubRoutes::default();
+    if let Some(policy) = generic_policy {
+        auth::validate_private(&policy).map_err(|_| io::Error::other("invalid generic policy"))?;
+        routes.mount_generic(policy)?;
+    }
+    let mut enabled = serde_json::Map::new();
+    for descriptor in catalog::http_profiles() {
+        let mounted = bindings
+            .iter()
+            .any(|binding| binding.descriptor == descriptor);
+        enabled.insert(descriptor.enabled_key.into(), json!(mounted));
+        if !mounted && manifest_fingerprint.is_none() && !local_mailbox_enabled {
+            routes.mount(
+                descriptor.route,
+                descriptor.body_limit(MAX_HEADERS),
+                RouteHandler::Disabled,
+            )?;
+        }
+    }
+    let mut dot_events = None;
+    let mut codex_events = None;
+    let mut grok_wake_binding = None;
+    for binding in bindings {
+        let descriptor = binding.descriptor;
+        let handler = match descriptor.adapter {
+            Adapter::Muse => {
+                auth::validate_muse(&binding.policy).map_err(|(_, reason)| {
+                    auth::local_policy_error(reason, "invalid Muse policy")
+                })?;
+                if !prepared {
+                    return Err(io::Error::other("Muse storage unprepared"));
+                }
+                RouteHandler::Muse(Arc::new(MuseState {
+                    db: db.clone(),
+                    policy: binding.policy,
+                    deadline,
+                    waiting: AtomicBool::new(false),
+                    active: Mutex::new(HashMap::new()),
+                }))
+            }
+            Adapter::Dot => {
+                pigeonmq::dot_profile::check(&db, &binding.policy, false)?;
+                dot_events = pigeonmq::dot_profile::events::Runtime::new(&db, &binding.policy)
+                    .map_err(|error| io::Error::other(error.reason))?
+                    .map(Arc::new);
+                RouteHandler::Dot(pigeonmq::dot_profile::DotBackend::host_with_events(
+                    db.clone(),
+                    binding.policy,
+                    dot_events.clone(),
+                ))
+            }
+            Adapter::Grok => {
+                if !check_grok(&db, &binding.policy)? {
+                    return Err(io::Error::other("Grok storage unprepared"));
+                }
+                grok_wake_binding = Some((binding.policy.clone(), binding.wake_files_dir));
+                RouteHandler::Grok(grok_bot::GrokState::new(
+                    db.clone(),
+                    binding.policy,
+                    deadline,
+                ))
+            }
+            Adapter::SharedMailbox => {
+                let profile = binding
+                    .mailbox(&db)
+                    .ok_or_else(|| io::Error::other("missing mailbox binding"))?;
+                profile
+                    .validate()
+                    .map_err(|(_, reason)| io::Error::other(reason))?;
+                let events = if descriptor
+                    .mailbox
+                    .as_ref()
+                    .is_some_and(|profile| profile.events == catalog::EventsCapability::Codex)
+                {
+                    let events = crate::codex_events::Runtime::new(&profile)
+                        .map_err(|(_, reason)| io::Error::other(reason))?
+                        .map(Arc::new);
+                    if let Some(events) = &events {
+                        events
+                            .check()
+                            .map_err(|error| io::Error::other(error.reason))?;
+                    }
+                    codex_events = events.clone();
+                    events
+                } else {
+                    None
+                };
+                RouteHandler::Mailbox(profile, events)
+            }
+            Adapter::Receiver => {
+                let registration = binding
+                    .registration
+                    .ok_or_else(|| io::Error::other("missing receiver registration"))?;
+                let receiver = ReceiverProfile::new(&db, binding.policy, registration)
+                    .map_err(|(_, reason)| io::Error::other(reason))?;
+                RouteHandler::Receiver(receiver)
+            }
+        };
+        routes.mount(&binding.route, descriptor.body_limit(MAX_HEADERS), handler)?;
+    }
+    for profile in local_profiles {
+        let path = profile
+            .route()
+            .map_err(|(_, reason)| io::Error::other(reason))?
+            .to_owned();
+        routes.mount(
+            &path,
+            MAX_MUSE_ENVELOPE,
+            RouteHandler::Mailbox(profile, None),
+        )?;
+    }
+    let listener = match prebound {
+        Some(listener) => listener,
+        None => TcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
+    };
+    // Best-effort wake on its own thread. It never blocks a commit.
+    let grok_wake = if let Some((policy, files_dir)) = grok_wake_binding {
+        use pigeonmq::grok_wake::WakeConfig;
+        let config = match files_dir {
+            Some(dir) => Some(WakeConfig::from_files_dir(&db, &dir)),
+            None => WakeConfig::discover_with_keychain(
+                &db,
+                crate::cloud_credentials::read_grok_wake_keychain,
+            ),
+        };
+        let queue = db.clone();
+        config
+            .map(|config| {
+                pigeonmq::grok_wake::spawn(config, deadline, move |id| {
+                    let scope = grok_bot::observation_scope(&policy).ok()?;
+                    let message = pigeonmq::grok_mailbox::read(&queue, id, &scope).ok()?;
+                    let latest = grok_bot::observation_scope(&policy).ok()?;
+                    (message.state == "pending" && latest.allowed_senders.contains(&message.sender))
+                        .then_some(message.conversation_id)
+                })
+            })
+            .transpose()?
+            .is_some()
+    } else {
+        false
+    };
+    let state = Arc::new(HubState {
+        db,
+        routes,
+        deadline,
+    });
+    let public_state = state.clone();
+    let listeners: Vec<(TcpListener, Arc<ProfileHandler>)> = vec![(
+        listener,
+        Arc::new(move |stream, authority| {
+            handle_hub_connection(stream, authority, &public_state);
+        }),
+    )];
+    let dot_events_enabled = dot_events.is_some();
+    let _dot_events_worker = dot_events
+        .map(|events| events.start(deadline))
+        .transpose()
+        .map_err(|e| io::Error::other(e.reason))?;
+    let codex_events_enabled = codex_events.is_some();
+    let _events_worker = codex_events
+        .map(|events| events.start(deadline))
+        .transpose()
+        .map_err(|error| io::Error::other(error.reason))?;
+    let mut ready = json!({
+        "transport":"hub-local-http",
+        "url":format!("http://127.0.0.1:{port}"),
+        "generic_enabled":generic_enabled,
+        "local_mailbox_enabled":local_mailbox_enabled,
+        "local_mailbox_port":local_mailbox_enabled.then_some(port),
+        "dot_events_enabled":dot_events_enabled,
+        "codex_events_enabled":codex_events_enabled,
+        "grok_wake_enabled":grok_wake,
+        "runtime_verified":false,"remote_verified":false,
+    });
+    ready
+        .as_object_mut()
+        .expect("readiness object")
+        .extend(enabled);
+    if let Some(fingerprint) = manifest_fingerprint {
+        ready["profiles_fingerprint"] = json!(fingerprint);
+    }
+    println!("{ready}");
+    io::stdout().flush()?;
+    serve_profile_listeners(listeners, deadline, MAX_HTTP_CONNECTION_WORKERS)
+}
+
+#[cfg(test)]
+mod dot_wire {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    fn private_json(path: &Path, value: Value) {
+        fs::write(path, value.to_string()).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    const TOKEN: &str = "synthetic-dot-wire-only";
+
+    fn fixture() -> (tempfile::TempDir, Queue, Arc<HubState>) {
+        let temp = tempfile::tempdir().unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let db = temp.path().join("queue.sqlite3");
+        let queue = Queue::open(&db).unwrap();
+        fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
+        let registration = temp.path().join("pigeonmq-cloud-dot-registration.json");
+        private_json(
+            &registration,
+            json!({
+                "dot":{"mailbox":"dot","revoked":false},
+                "test-peer":{"mailbox":"test-peer","revoked":false}
+            }),
+        );
+        let policy = temp.path().join("pigeonmq-cloud-dot-policy.json");
+        let digest: String = Sha256::digest(TOKEN)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        private_json(
+            &policy,
+            json!({"principal":"pigeonmq-cloud-dot","mailbox":"dot","enabled":true,
+            "registration":registration,"token_sha256":digest}),
+        );
+        pigeonmq::dot_profile::check(&db, &policy, true).unwrap();
+        let mut routes = HubRoutes::default();
+        let descriptor = catalog::by_adapter(catalog::Adapter::Dot);
+        routes
+            .mount(
+                descriptor.route,
+                descriptor.body_limit(MAX_HEADERS),
+                RouteHandler::Dot(pigeonmq::dot_profile::DotBackend::host(db.clone(), policy)),
+            )
+            .unwrap();
+        let state = Arc::new(HubState {
+            db: db.clone(),
+            routes,
+            deadline: None,
+        });
+        (temp, queue, state)
+    }
+
+    fn post(
+        state: &Arc<HubState>,
+        token: &str,
+        id: Value,
+        name: &str,
+        args: Value,
+    ) -> (u16, Value) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = state.clone();
+        let worker = std::thread::spawn(move || {
+            handle_hub_connection(listener.accept().unwrap().0, &addr.to_string(), &state);
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let body = json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+            "params":{"name":name,"arguments":args}})
+        .to_string();
+        write!(client, "POST /dot/mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {token}\r\nMcp-Method: tools/call\r\nMcp-Name: {name}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+        let status = headers.split_whitespace().nth(1).unwrap().parse().unwrap();
+        (status, serde_json::from_str(body).unwrap())
+    }
+
+    fn success((status, response): (u16, Value)) -> Value {
+        assert_eq!(status, 200, "{response}");
+        assert!(response.get("error").is_none(), "{response}");
+        let result = &response["result"];
+        if let Some(value) = result.get("structuredContent") {
+            value.clone()
+        } else {
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        }
+    }
+
+    #[test]
+    fn dot_native_post_queues_reads_and_completes_atomically() {
+        let (_temp, mut queue, state) = fixture();
+        let db = &state.db;
+        let call = |name: &str, args: Value| success(post(&state, TOKEN, json!(1), name, args));
+        let outbound = call(
+            "pigeonmq_send",
+            json!({"recipient":"test-peer","body":"hello","idempotency_key":"wire-send"}),
+        );
+        let outbound_id = outbound["message_id"].as_str().unwrap();
+        assert_eq!(
+            queue
+                .observe_ordinary(outbound_id, "test-peer")
+                .unwrap()
+                .envelope
+                .sender,
+            "dot"
+        );
+        let request = queue
+            .send(Envelope {
+                sender: "test-peer".into(),
+                recipient: "dot".into(),
+                body: "request".into(),
+                correlation_id: None,
+                in_reply_to: None,
+                idempotency_key: None,
+            })
+            .unwrap()
+            .message;
+        let read = call("pigeonmq_read", json!({"message_id":request.id}));
+        assert_eq!(read["body"], "request");
+        assert_eq!(read["state"], "pending");
+        let answer = call(
+            "pigeonmq_reply",
+            json!({"message_id":request.id,"body":"answer"}),
+        );
+        let replay = call(
+            "pigeonmq_reply",
+            json!({"message_id":request.id,"body":"answer"}),
+        );
+        assert_eq!(answer["reply_id"], replay["reply_id"]);
+        assert_eq!(replay["duplicate"], true);
+        let ack: Option<i64> = rusqlite::Connection::open(db)
+            .unwrap()
+            .query_row(
+                "SELECT acknowledged_at_ms FROM messages WHERE id=?1",
+                [&request.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(ack.is_some());
+        let terminal = queue
+            .reply_unclaimed_checked(
+                "test-peer",
+                outbound_id,
+                Envelope {
+                    sender: "test-peer".into(),
+                    recipient: "dot".into(),
+                    body: "terminal".into(),
+                    in_reply_to: Some(outbound_id.into()),
+                    correlation_id: Some(outbound_id.into()),
+                    idempotency_key: Some(format!("gw-reply-{outbound_id}")),
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        let observed = call("pigeonmq_read", json!({"message_id":terminal.id}));
+        assert_eq!(observed["state"], "reply_received");
+        let confirmed = call(
+            "pigeonmq_confirm_terminal",
+            json!({"message_id":terminal.id}),
+        );
+        assert_eq!(confirmed["state"], "acknowledged");
+        let repeated = call(
+            "pigeonmq_confirm_terminal",
+            json!({"message_id":terminal.id}),
+        );
+        assert_eq!(repeated["duplicate"], true);
+        let connection = rusqlite::Connection::open(db).unwrap();
+        let (ack, replies): (Option<i64>, i64) = connection.query_row(
+            "SELECT acknowledged_at_ms,(SELECT COUNT(*) FROM messages r WHERE r.in_reply_to=m.id) FROM messages m WHERE m.id=?1",
+            [&terminal.id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert!(ack.is_some());
+        assert_eq!(replies, 0);
+    }
+    #[test]
+    fn dot_storage_faults_are_retryable_and_correlated() {
+        let (_temp, mut queue, state) = fixture();
+        let call = |id: Value, name: &str, args: Value| post(&state, TOKEN, id, name, args);
+        let filtered = |timeout_ms| json!({"timeout_ms":timeout_ms,"in_reply_to":"fixture-parent"});
+        let expected = |id: Value, reason| {
+            json!({
+                "jsonrpc":"2.0","id":id,
+                "error":{"code":-32603,"message":reason,"data":{"reason":reason,"retryable":true}}
+            })
+        };
+
+        assert_eq!(
+            success(call(json!(2), "pigeonmq_wait", filtered(0))),
+            json!({"state":"timeout","message":null})
+        );
+
+        // A held rollback-journal lock makes reads fail without depending on timing.
+        let lock = rusqlite::Connection::open(&state.db).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        for (id, arguments) in [
+            (json!("zero-budget"), filtered(0)),
+            (json!("bounded-wait"), filtered(10)),
+            (json!(3), json!({"timeout_ms":0})),
+        ] {
+            let result = call(id.clone(), "pigeonmq_wait", arguments);
+            assert_eq!(result, (503, expected(id, "storage_busy")));
+        }
+        assert_eq!(
+            post(
+                &state,
+                "invalid-fixture-token",
+                json!(4),
+                "pigeonmq_wait",
+                filtered(0)
+            ),
+            (401, json!({"error":{"code":"unauthorized"}}))
+        );
+        assert_eq!(
+            call(json!("inbox-read"), "pigeonmq_inbox", json!({})),
+            (503, expected(json!("inbox-read"), "storage_unavailable"))
+        );
+        lock.execute_batch("ROLLBACK").unwrap();
+
+        let message = queue
+            .send(Envelope {
+                sender: "test-peer".into(),
+                recipient: "dot".into(),
+                body: "synthetic message".into(),
+                correlation_id: None,
+                in_reply_to: None,
+                idempotency_key: None,
+            })
+            .unwrap()
+            .message;
+        lock.execute_batch(
+            "CREATE TRIGGER fail_reply_binding BEFORE INSERT ON dot_event_replies
+             BEGIN SELECT RAISE(ABORT, 'private fixture diagnostic'); END;",
+        )
+        .unwrap();
+        assert_eq!(
+            call(
+                json!("reply-write"),
+                "pigeonmq_reply",
+                json!({"message_id":message.id,"body":"answer"})
+            ),
+            (503, expected(json!("reply-write"), "storage_unavailable"))
+        );
+        let observation = success(call(
+            json!(5),
+            "pigeonmq_read",
+            json!({"message_id":message.id}),
+        ));
+        assert_eq!(observation["state"], "pending");
+        let (status, missing) = call(json!(6), "pigeonmq_read", json!({"message_id":"missing"}));
+        assert_eq!(status, 200);
+        assert_eq!(missing["id"], 6);
+        assert_eq!(missing["error"]["data"]["reason"], "message_not_available");
+        assert_eq!(
+            call(
+                json!(7),
+                "pigeonmq_send",
+                json!({
+                    "recipient":"test-peer, unregistered","body":"fixture","idempotency_key":"test-subset"
+                })
+            ),
+            (400, json!({"error":{"code":"request_failed"}}))
+        );
+    }
+}

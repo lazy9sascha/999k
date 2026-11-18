@@ -1,0 +1,54 @@
+[package]
+name = "pigeonmq-cloud"
+default-run = "pigeonmq-cloud"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A lightweight message queue for direct agent-to-agent messaging."
+license = "MIT"
+
+[dependencies]
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+futures-util = { version = "0.3", features = ["sink"] }
+plist = "1"
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+tokio = { version = "1", features = ["rt", "sync", "macros", "net", "time", "process", "io-util", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+hmac = "0.13"
+base64 = "0.22"
+url = "2"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+libc = "0.2"
+sha2 = "0.11"
+subtle = "2.6"
+httparse = "1.10"
+clap = { version = "4", features = ["derive", "env"] }
+rusqlite = { version = "0.41", features = ["bundled", "hooks"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "json"] }
+uuid = { version = "1", features = ["v4"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
+
+[dev-dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tempfile = "3"
+
+[[bin]]
+name = "pigeonmq-cloud"
+path = "src/main.rs"
+
+[[bin]]
+name = "pigeonmq-dot-resolve"
+path = "src/bin/pigeonmq-dot-resolve.rs"
+
+[lib]
+name = "pigeonmq"
+path = "src/lib.rs"

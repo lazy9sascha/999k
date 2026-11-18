@@ -1,0 +1,42 @@
+[
+  {
+    "id": "muse",
+    "adapter": "muse",
+    "route": "/muse/mcp",
+    "policy_file": "pigeonmq-cloud-muse-policy.json",
+    "enabled_key": "muse_enabled",
+    "endpoint_key": "muse_endpoint"
+  },
+  {
+    "id": "dot",
+    "adapter": "dot",
+    "route": "/dot/mcp",
+    "policy_file": "pigeonmq-cloud-dot-policy.json",
+    "enabled_key": "dot_enabled",
+    "endpoint_key": "dot_endpoint"
+  },
+  {
+    "id": "grok-bot",
+    "adapter": "grok",
+    "route": "/grok/mcp",
+    "policy_file": "pigeonmq-cloud-grok-bot-policy.json",
+    "enabled_key": "grok_enabled",
+    "endpoint_key": "grok_endpoint"
+  },
+  {
+    "id": "codex-cloud",
+    "adapter": "shared-mailbox",
+    "server_name": "pigeonmq-codex",
+    "events": "codex",
+    "route": "/codex/mcp",
+    "policy_file": "pigeonmq-cloud-codex-policy.json",
+    "enabled_key": "codex_enabled"
+  },
+  {
+    "id": "codex-local",
+    "adapter": "receiver",
+    "route": "/receiver",
+    "policy_file": "pigeonmq-cloud-codex-local-policy.json",
+    "enabled_key": "receiver_enabled"
+  }
+]

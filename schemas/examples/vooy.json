@@ -1,0 +1,15 @@
+{
+  "agent": "vooy",
+  "service": "Vooy",
+  "surface": "web and iOS companion app",
+  "adapter_path": "remote_mcp",
+  "initiator": "agent",
+  "transport": "unknown",
+  "auth": "unknown",
+  "setup_owner": "operator_settings",
+  "wake": "unknown",
+  "operations": ["read", "wait", "reply", "ack"],
+  "send_to": [],
+  "evidence": "candidate",
+  "next_step": "Make sure that the setup screen can send an HTTP Bearer header. If it can, read one synthetic message through an approved HTTPS endpoint."
+}

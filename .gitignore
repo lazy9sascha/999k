@@ -1,0 +1,16 @@
+/target/
+/.local/
+/.env
+*.db
+*.db-*
+*.sqlite3
+*.sqlite3-*
+pigeonmq-cloud-state.json
+pigeonmq-cloud-delivery-trace*
+pigeonmq-cloud-*-policy.json
+pigeonmq-cloud-registration.json
+pigeonmq-cloud-tunnel-*
+pigeonmq-cloud-*-token*
+
+pigeonmq-cloud-dot-secure-tunnel/
+*.bak-*
