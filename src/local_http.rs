@@ -382,6 +382,64 @@ mod tests {
     }
 
     #[test]
+    fn dormant_managed_listener_serves_no_routes_and_preserves_queue() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let home = tempfile::tempdir().unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let db = home.path().join("queue.sqlite3");
+        drop(Queue::open(&db).unwrap());
+        fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
+        let before = fs::read(&db).unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        assert_eq!(
+            serve_hub_on(
+                db.clone(),
+                None,
+                Vec::new(),
+                Vec::new(),
+                None,
+                (addr.port(), Some(1), HubMode::Explicit),
+                Some(listener.try_clone().unwrap()),
+            )
+            .unwrap_err()
+            .to_string(),
+            "explicit policy, port and lifetime limit required"
+        );
+
+        let queue = db.clone();
+        let serving = std::thread::spawn(move || {
+            serve_hub_on(
+                queue,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Some("managed"),
+                (addr.port(), Some(1), HubMode::Managed),
+                Some(listener),
+            )
+        });
+        for route in ["/dot/mcp", "/mcp", "/receiver", "/rpc/request"] {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(
+                stream,
+                "POST {route} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+            ).unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).unwrap();
+            assert_eq!(reply.split_whitespace().nth(1), Some("404"), "{reply}");
+            assert!(reply.contains("route_not_found"), "{reply}");
+        }
+        serving.join().unwrap().unwrap();
+        assert_eq!(fs::read(&db).unwrap(), before);
+        assert!(!mailbox_generation::lock_path(&db).exists());
+    }
+
+    #[test]
     fn catalog_routes_stay_disabled_without_configured_profiles() {
         let temp = tempfile::tempdir().unwrap();
         let mut routes = HubRoutes::default();
@@ -1825,6 +1883,11 @@ fn handle_hub_connection(stream: TcpStream, authority: &str, state: &HubState) {
     );
 }
 
+enum HubMode {
+    Explicit,
+    Managed,
+}
+
 pub fn serve_hub(
     db: PathBuf,
     generic_policy: Option<PathBuf>,
@@ -1840,7 +1903,20 @@ pub fn serve_hub(
         bindings,
         local_profiles,
         manifest_fingerprint,
-        (port, seconds),
+        (port, seconds, HubMode::Explicit),
+        None,
+    )
+}
+
+/// The managed hub keeps its loopback listener after the last profile is removed.
+pub(crate) fn serve_managed_hub(db: PathBuf, bindings: Vec<Binding>, port: u16) -> io::Result<()> {
+    serve_hub_on(
+        db,
+        None,
+        bindings,
+        Vec::new(),
+        Some("managed"),
+        (port, None, HubMode::Managed),
         None,
     )
 }
@@ -1866,7 +1942,7 @@ pub(crate) fn serve_dot_on(
         vec![dot],
         Vec::new(),
         None,
-        (addr.port(), None),
+        (addr.port(), None, HubMode::Explicit),
         Some(listener),
     )
 }
@@ -1877,12 +1953,16 @@ fn serve_hub_on(
     bindings: Vec<Binding>,
     local_profiles: Vec<crate::codex_mcp::Profile>,
     manifest_fingerprint: Option<&str>,
-    (port, seconds): (u16, Option<u64>),
+    (port, seconds, mode): (u16, Option<u64>, HubMode),
     prebound: Option<TcpListener>,
 ) -> io::Result<()> {
+    let managed = matches!(mode, HubMode::Managed);
     if port == 0
         || seconds.is_some_and(|value| !(1..=3600).contains(&value))
-        || (generic_policy.is_none() && bindings.is_empty() && local_profiles.is_empty())
+        || (!managed
+            && generic_policy.is_none()
+            && bindings.is_empty()
+            && local_profiles.is_empty())
     {
         return Err(io::Error::other(
             "explicit policy, port and lifetime limit required",
@@ -1921,7 +2001,7 @@ fn serve_hub_on(
             .iter()
             .any(|binding| binding.descriptor == descriptor);
         enabled.insert(descriptor.enabled_key.into(), json!(mounted));
-        if !mounted && manifest_fingerprint.is_none() && !local_mailbox_enabled {
+        if !mounted && !managed && manifest_fingerprint.is_none() && !local_mailbox_enabled {
             routes.mount(
                 descriptor.route,
                 descriptor.body_limit(MAX_HEADERS),

@@ -1,7 +1,10 @@
 //! Owner-private queue fixtures and fake launchctl only.
 use super::*;
 use pigeonmq::{Envelope, Queue, dot_profile, grok_mailbox, muse_mailbox};
-use std::{cell::RefCell, os::unix::fs::PermissionsExt};
+use std::{
+    cell::{Cell, RefCell},
+    os::unix::fs::PermissionsExt,
+};
 
 const NAMES: [&str; 6] = ["dot", "codex-cloud", "muse", "grok-bot", "cue", "instinct"];
 
@@ -15,6 +18,8 @@ enum Action {
 struct FakeLaunchctl {
     actions: RefCell<Vec<Action>>,
     loaded: RefCell<BTreeMap<String, PathBuf>>,
+    fail_next_readiness: Cell<bool>,
+    ready_routes: RefCell<Vec<Vec<String>>>,
 }
 
 impl LaunchControl for FakeLaunchctl {
@@ -24,6 +29,17 @@ impl LaunchControl for FakeLaunchctl {
             Some(_) => Err(error("different fake launchd plist")),
             None => Ok(false),
         }
+    }
+
+    fn hub_ready(&self, plist: &Path, _: u16, routes: &[String]) -> io::Result<()> {
+        if !self.loaded(HUB_LABEL, plist)? {
+            return Err(error("fake hub was not loaded"));
+        }
+        self.ready_routes.borrow_mut().push(routes.to_vec());
+        if self.fail_next_readiness.replace(false) {
+            return Err(error("fake loopback did not bind"));
+        }
+        Ok(())
     }
 
     fn bootstrap(&self, path: &Path) -> io::Result<()> {
@@ -345,4 +361,68 @@ fn recognizes_all_six_legacy_profiles_and_refuses_writes_or_launchd_changes() {
     assert_eq!(fixture.protected_bytes(), before);
     assert!(fixture.fake.actions.borrow().is_empty());
     assert!(fixture.fake.loaded.borrow().is_empty());
+}
+
+#[test]
+fn failed_hub_readiness_keeps_the_new_profile_staged_and_restores_ready_routes() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "muse",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(false, Some("cue@example.invalid")),
+        None,
+    )
+    .unwrap();
+    let before = fixture.protected_bytes();
+    let hub_plist = fixture.agents.join(format!("{HUB_LABEL}.plist"));
+    let original_plist = fs::read(&hub_plist).unwrap();
+
+    fixture.fake.fail_next_readiness.set(true);
+    assert!(
+        init_with(
+            &fixture.home,
+            "cue",
+            &fixture.options(true, None),
+            Some(&jobs)
+        )
+        .is_err()
+    );
+    let staged = init_with(&fixture.home, "cue", &fixture.options(false, None), None).unwrap();
+    assert_eq!(staged["state"], "staged");
+    assert_eq!(staged["runtime_verified"], false);
+    assert_eq!(
+        fixture.fake.ready_routes.borrow().last().unwrap(),
+        &["/muse/mcp"]
+    );
+    assert_eq!(fixture.protected_bytes(), before);
+    assert_eq!(fs::read(&hub_plist).unwrap(), original_plist);
+    assert!(!fixture.agents.join(format!("{RELAY_LABEL}.plist")).exists());
+
+    let activated = init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    assert_eq!(activated["state"], "active");
+    assert_eq!(activated["runtime_verified"], true);
+    assert_eq!(
+        fixture.fake.ready_routes.borrow().last().unwrap(),
+        &["/cue/mcp", "/muse/mcp"]
+    );
+    assert!(
+        fixture
+            .agents
+            .join(format!("{RELAY_LABEL}.plist"))
+            .is_file()
+    );
 }

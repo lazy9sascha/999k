@@ -79,6 +79,7 @@ The low-level `serve-hub` command can also take `--profiles-file PATH` with the 
 
 Use `init NAME --home DIR` to stage a profile. Use an absolute owner-private home.
 Use `init NAME --home DIR --apply` to start or reload the managed macOS hub when needed.
+A successful apply checks authenticated route readiness on loopback.
 The hub LaunchAgent is `pigeonmq.hub` and binds only to loopback.
 Set `--port` at first staging to select a port other than 54843.
 
@@ -109,6 +110,7 @@ Email membership is stored in an owner-private configuration file.
 The `pigeonmq.email-relay` service is created for the first selected mailbox.
 Adding or removing an email mailbox while another remains preserves the same plist and running relay.
 Removing the final email mailbox stops and removes the relay job. The hub plist remains.
+At login the hub can run with an empty route set until a profile is applied.
 Email sends start at the recorded activation boundary.
 
 ## Stage local mailboxes

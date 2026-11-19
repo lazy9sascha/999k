@@ -441,13 +441,13 @@ fn high_water(path: &Path) -> io::Result<i64> {
     .map_err(io::Error::other)
 }
 
-fn response(name: &str, profile: &Profile) -> Value {
+fn response(name: &str, profile: &Profile, runtime_verified: bool) -> Value {
     let status = match profile.phase {
         Phase::Staged => "staged",
         Phase::Active => "active",
         Phase::Retired => "retired",
     };
-    let mut data = json!({ "mailbox":name, "route":profile.source.route, "state":status });
+    let mut data = json!({ "mailbox":name, "route":profile.source.route, "state":status, "runtime_verified":runtime_verified });
     if let Some(file) = &profile.token_file {
         data["token_file"] = json!(file);
     }
@@ -566,6 +566,15 @@ fn schedule_jobs(jobs: &Jobs<'_>, home: &Path, state: &Registry) -> io::Result<(
     Ok((hub, relay))
 }
 
+fn active_routes(state: &Registry) -> Vec<String> {
+    state
+        .profiles
+        .values()
+        .filter(|profile| profile.phase == Phase::Active)
+        .map(|profile| profile.source.route.clone())
+        .collect()
+}
+
 fn change(
     jobs: &Jobs<'_>,
     home: &Path,
@@ -598,10 +607,23 @@ fn change(
     } else {
         None
     };
+    let adding = phase_changed && next.profiles[name].phase == Phase::Active;
+    let registration_before = if adding {
+        let mut original = Vec::new();
+        open_private(&next.registration)?
+            .take(private_file::MAX_PRIVATE_CONFIG_BYTES + 1)
+            .read_to_end(&mut original)?;
+        if original.len() as u64 > private_file::MAX_PRIVATE_CONFIG_BYTES {
+            return Err(error("lifecycle registration exceeds its size limit"));
+        }
+        Some(original)
+    } else {
+        None
+    };
     if phase_changed && hub.loaded {
         jobs.service.bootout(HUB_LABEL)?;
     }
-    let publish = (|| {
+    let transition = (|| {
         if phase_changed {
             let profile = next
                 .profiles
@@ -629,40 +651,63 @@ fn change(
             }
             write_json(&dir.join(STATE), &next)?;
         }
-        let current_relay = relay_config(&next)?;
-        if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
-            write_json(&relay_path, &current_relay)?;
-        }
-        Ok::<_, io::Error>(current_relay)
-    })();
-    drop(dispatch_guard);
-    let current_relay = match publish {
-        Ok(config) => config,
-        Err(err) => {
-            // A retired generation is irrevocable. Only recover a hub whose previous
-            // bindings still have the same storage identities.
-            if phase_changed
-                && hub.loaded
-                && current
-                    .profiles
-                    .iter()
-                    .filter(|(_, p)| p.phase == Phase::Active)
-                    .all(|(name, p)| {
-                        generation::active_storage(&queue, name)
-                            .ok()
-                            .flatten()
-                            .as_deref()
-                            == Some(p.storage(name))
-                    })
-            {
-                let _ = hub.start(jobs);
+        let routes = active_routes(&next);
+        if !routes.is_empty() {
+            if !hub.loaded || phase_changed {
+                hub.start(jobs)?;
             }
-            return Err(err);
+            jobs.service.hub_ready(&hub.path, next.port, &routes)?;
         }
-    };
-    if next.profiles.values().any(|p| p.phase == Phase::Active) && (!hub.loaded || phase_changed) {
-        hub.start(jobs)?;
+        Ok::<_, io::Error>(())
+    })();
+    if let Err(err) = transition {
+        if let Some(registration_before) = registration_before {
+            // An unsuccessful start leaves the attempted profile staged. If a fresh
+            // storage identity was allocated, the same staged Bearer can still retry it.
+            // The former generation remains retired and the relay map is still unchanged.
+            if jobs.service.loaded(HUB_LABEL, &hub.path)? {
+                jobs.service.bootout(HUB_LABEL)?;
+            }
+            write_json(&dir.join(STATE), current)?;
+            if fs::read(&current.registration)? != registration_before {
+                private_file::replace_private(&current.registration, &registration_before)?;
+            }
+            if hub.loaded && !active_routes(current).is_empty() {
+                hub.start(jobs)?;
+                jobs.service
+                    .hub_ready(&hub.path, current.port, &active_routes(current))?;
+            } else if !hub.exists && verify_plist(jobs.directory, hub.label, &hub.args)?.is_some() {
+                fs::remove_file(&hub.path)?;
+                File::open(jobs.directory)?.sync_all()?;
+            }
+        } else if phase_changed
+            && hub.loaded
+            && current
+                .profiles
+                .iter()
+                .filter(|(_, p)| p.phase == Phase::Active)
+                .all(|(name, p)| {
+                    generation::active_storage(&queue, name)
+                        .ok()
+                        .flatten()
+                        .as_deref()
+                        == Some(p.storage(name))
+                })
+        {
+            // A retired binding cannot be restored. Recover only if removal
+            // failed before its queue identity changed.
+            if !jobs.service.loaded(HUB_LABEL, &hub.path)? {
+                hub.start(jobs)?;
+            }
+        }
+        return Err(err);
     }
+
+    let current_relay = relay_config(&next)?;
+    if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
+        write_json(&relay_path, &current_relay)?;
+    }
+    drop(dispatch_guard);
     if let Some(relay) = relay {
         if current_relay.is_empty() {
             if relay.loaded {
@@ -727,7 +772,7 @@ fn init_with(
         let binding = configured(&home, name, options.profiles_file)?;
         lifecycle_profile::validate(&queue, &binding)?;
         return Ok(
-            json!({"mailbox":name,"route":binding.route,"state":"existing","lifecycle":"read_only"}),
+            json!({"mailbox":name,"route":binding.route,"state":"existing","lifecycle":"read_only","runtime_verified":false}),
         );
     }
     if let Some(email) = options.email_recipient {
@@ -895,7 +940,7 @@ fn init_with(
         change(jobs, &home, &state, next, name, update)?;
         state = read_json(&state_path)?;
     }
-    Ok(response(name, &state.profiles[name]))
+    Ok(response(name, &state.profiles[name], jobs.is_some()))
 }
 
 pub(crate) fn remove(home: &Path, name: &str, apply: bool) -> io::Result<Value> {
@@ -974,15 +1019,7 @@ pub(crate) fn serve(home: &Path) -> io::Result<()> {
         .filter(|(_, p)| p.phase == Phase::Active)
         .map(|(name, profile)| profile.binding(&name, &state.registration))
         .collect::<io::Result<Vec<_>>>()?;
-    crate::local_http::serve_hub(
-        queue,
-        None,
-        routes,
-        Vec::new(),
-        Some("managed"),
-        ports,
-        None,
-    )
+    crate::local_http::serve_managed_hub(queue, routes, ports)
 }
 
 #[cfg(test)]

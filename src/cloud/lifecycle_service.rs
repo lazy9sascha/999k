@@ -15,6 +15,12 @@ pub(crate) trait LaunchControl {
     fn loaded(&self, label: &str, expected_plist: &Path) -> io::Result<bool>;
     fn bootstrap(&self, path: &Path) -> io::Result<()>;
     fn bootout(&self, label: &str) -> io::Result<()>;
+    #[cfg(not(test))]
+    fn hub_ready(&self, plist: &Path, port: u16, routes: &[String]) -> io::Result<()>;
+    #[cfg(test)]
+    fn hub_ready(&self, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub(crate) struct SystemLaunchctl;
@@ -210,14 +216,22 @@ struct Captured {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn loaded_from_print(output: Captured, expected_plist: &Path) -> io::Result<bool> {
+struct JobInspection {
+    pid: Option<u32>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn inspect_from_print(
+    output: &Captured,
+    expected_plist: &Path,
+) -> io::Result<Option<JobInspection>> {
     if output.exit_code != Some(0) {
         let missing = output.exit_code == Some(113)
             && String::from_utf8_lossy(&output.stderr)
                 .lines()
                 .any(|line| line.starts_with("Could not find service "));
         return if missing {
-            Ok(false)
+            Ok(None)
         } else {
             Err(fail("could not inspect PigeonMQ LaunchAgent"))
         };
@@ -237,63 +251,196 @@ fn loaded_from_print(output: Captured, expected_plist: &Path) -> io::Result<bool
     {
         return Err(fail("loaded PigeonMQ LaunchAgent uses a different plist"));
     }
-    Ok(true)
+
+    let mut pids = printed
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pid = "));
+    let pid = pids
+        .next()
+        .and_then(|pid| pid.parse().ok())
+        .filter(|pid| *pid > 0);
+    if pids.next().is_some() {
+        return Err(fail("ambiguous PigeonMQ LaunchAgent process"));
+    }
+    Ok(Some(JobInspection { pid }))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn loopback_listener(output: &Captured, pid: u32, port: u16) -> bool {
+    if output.exit_code != Some(0) {
+        return false;
+    }
+    let pid = format!("p{pid}");
+    let endpoint = format!("n127.0.0.1:{port}");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let mut lines = printed.lines();
+    lines.next() == Some(pid.as_str())
+        && lines.clone().any(|line| line == endpoint)
+        && lines.all(|line| !line.starts_with('p'))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn unauthorized_status(line: &[u8]) -> bool {
+    let Some(line) = line.strip_suffix(b"\r\n") else {
+        return false;
+    };
+    let mut fields = line.split(|byte| *byte == b' ');
+    matches!(fields.next(), Some(b"HTTP/1.0" | b"HTTP/1.1")) && fields.next() == Some(b"401")
+}
+
+#[cfg(target_os = "macos")]
+async fn capture(
+    program: &str,
+    args: &[&std::ffi::OsStr],
+    timeout: std::time::Duration,
+) -> io::Result<Captured> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    const MAX_OUTPUT: u64 = 128 * 1024;
+    const MAX_ERROR: u64 = 4 * 1024;
+    let mut child = tokio::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| fail("could not start PigeonMQ service inspection"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .take(MAX_OUTPUT + 1);
+    let mut stderr = child
+        .stderr
+        .take()
+        .expect("piped stderr")
+        .take(MAX_ERROR + 1);
+    let captured = tokio::time::timeout(timeout, async {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
+        if out.len() as u64 > MAX_OUTPUT || err.len() as u64 > MAX_ERROR {
+            return Err(fail("PigeonMQ service inspection output limit exceeded"));
+        }
+        Ok(Captured {
+            exit_code: child.wait().await?.code(),
+            stdout: out,
+            stderr: err,
+        })
+    })
+    .await;
+    match captured {
+        Ok(Ok(output)) => Ok(output),
+        other => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            match other {
+                Ok(Err(error)) => Err(error),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "PigeonMQ service inspection timed out",
+                )),
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn launchctl(args: &[&std::ffi::OsStr]) -> io::Result<Captured> {
-    use std::{process::Stdio, time::Duration};
-    use tokio::io::AsyncReadExt;
-    const MAX_OUTPUT: u64 = 128 * 1024;
-    const MAX_ERROR: u64 = 4 * 1024;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(async {
-            let mut child = tokio::process::Command::new("/bin/launchctl")
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-                .map_err(|_| fail("could not start launchctl"))?;
-            let mut stdout = child
-                .stdout
-                .take()
-                .expect("piped stdout")
-                .take(MAX_OUTPUT + 1);
-            let mut stderr = child
-                .stderr
-                .take()
-                .expect("piped stderr")
-                .take(MAX_ERROR + 1);
-            let captured = tokio::time::timeout(Duration::from_secs(20), async {
-                let mut out = Vec::new();
-                let mut err = Vec::new();
-                tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
-                if out.len() as u64 > MAX_OUTPUT || err.len() as u64 > MAX_ERROR {
-                    return Err(fail("launchctl output limit exceeded"));
-                }
-                Ok(Captured {
-                    exit_code: child.wait().await?.code(),
-                    stdout: out,
-                    stderr: err,
-                })
-            })
-            .await;
-            match captured {
-                Ok(Ok(output)) => Ok(output),
-                other => {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    match other {
-                        Ok(Err(error)) => Err(error),
-                        _ => Err(fail("launchctl timed out")),
-                    }
+        .block_on(capture(
+            "/bin/launchctl",
+            args,
+            std::time::Duration::from_secs(20),
+        ))
+}
+
+#[cfg(target_os = "macos")]
+async fn probe_mcp_route(port: u16, route: &str, timeout: std::time::Duration) -> io::Result<bool> {
+    use std::net::Ipv4Addr;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    const BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+    tokio::time::timeout(timeout, async {
+        let mut client = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+        let request = format!(
+            "POST {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{BODY}",
+            BODY.len()
+        );
+        client.write_all(request.as_bytes()).await?;
+        let mut status = Vec::new();
+        BufReader::new(client.take(256)).read_until(b'\n', &mut status).await?;
+        Ok(unauthorized_status(&status))
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "PigeonMQ hub probe timed out"))?
+}
+
+#[cfg(target_os = "macos")]
+async fn owns_loopback(port: u16, pid: u32, timeout: std::time::Duration) -> io::Result<bool> {
+    let selector = format!("-iTCP@127.0.0.1:{port}");
+    let process = pid.to_string();
+    let args = [
+        "-nP",
+        "-a",
+        "-p",
+        &process,
+        &selector,
+        "-sTCP:LISTEN",
+        "-Fpn",
+    ]
+    .map(std::ffi::OsStr::new);
+    let output = capture("/usr/sbin/lsof", &args, timeout).await?;
+    Ok(loopback_listener(&output, pid, port))
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_hub(plist: &Path, port: u16, routes: &[String]) -> io::Result<()> {
+    use std::time::{Duration, Instant};
+    let end = Instant::now() + Duration::from_secs(12);
+    let target = format!("gui/{}/{HUB_LABEL}", euid());
+    let print = ["print".as_ref(), target.as_ref()];
+    let inspection_budget = || {
+        end.saturating_duration_since(Instant::now())
+            .min(Duration::from_secs(2))
+    };
+    let request_budget = || {
+        end.saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(750))
+    };
+    while Instant::now() < end {
+        let status = capture("/bin/launchctl", &print, inspection_budget()).await?;
+        if let Some(pid) = inspect_from_print(&status, plist)?.and_then(|job| job.pid)
+            && owns_loopback(port, pid, inspection_budget()).await?
+        {
+            let mut all_ready = true;
+            for route in routes {
+                if !probe_mcp_route(port, route, request_budget())
+                    .await
+                    .unwrap_or(false)
+                {
+                    all_ready = false;
+                    break;
                 }
             }
-        })
+            if all_ready
+                && Instant::now() < end
+                && owns_loopback(port, pid, inspection_budget()).await?
+            {
+                return Ok(());
+            }
+        }
+        let pause = end
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(100));
+        tokio::time::sleep(pause).await;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "PigeonMQ hub did not prove loopback route readiness",
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -304,10 +451,8 @@ impl LaunchControl for SystemLaunchctl {
             return Err(fail("expected PigeonMQ LaunchAgent path must be absolute"));
         }
         let target = format!("gui/{}/{label}", euid());
-        loaded_from_print(
-            launchctl(&["print".as_ref(), target.as_ref()])?,
-            expected_plist,
-        )
+        let output = launchctl(&["print".as_ref(), target.as_ref()])?;
+        Ok(inspect_from_print(&output, expected_plist)?.is_some())
     }
 
     fn bootstrap(&self, path: &Path) -> io::Result<()> {
@@ -336,6 +481,22 @@ impl LaunchControl for SystemLaunchctl {
         }
         Ok(())
     }
+
+    fn hub_ready(&self, plist: &Path, port: u16, routes: &[String]) -> io::Result<()> {
+        if !plist.is_absolute()
+            || port == 0
+            || routes.is_empty()
+            || routes
+                .iter()
+                .any(|route| !pigeonmq::mailbox_catalog::valid_mcp_route(route))
+        {
+            return Err(fail("invalid PigeonMQ hub readiness plan"));
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(wait_for_hub(plist, port, routes))
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -349,6 +510,10 @@ impl LaunchControl for SystemLaunchctl {
     }
 
     fn bootout(&self, _: &str) -> io::Result<()> {
+        Err(fail("PigeonMQ LaunchAgents require macOS"))
+    }
+
+    fn hub_ready(&self, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
         Err(fail("PigeonMQ LaunchAgents require macOS"))
     }
 }
@@ -428,16 +593,22 @@ mod tests {
     #[test]
     fn fake_launchctl_output_never_treats_conflict_or_access_denial_as_absence() {
         let expected = Path::new("/isolated/Launch Agents/pigeonmq.hub.plist");
-        assert!(loaded_from_print(
-            captured(0, "gui/12/pigeonmq.hub = {\n\tpath = /isolated/Launch Agents/pigeonmq.hub.plist\n}\n", ""),
-            expected,
-        ).unwrap());
+        let running = captured(
+            0,
+            "gui/12/pigeonmq.hub = {\n\tpath = /isolated/Launch Agents/pigeonmq.hub.plist\n\tpid = 32\n}\n",
+            "",
+        );
+        assert_eq!(
+            inspect_from_print(&running, expected).unwrap().unwrap().pid,
+            Some(32)
+        );
         assert!(
-            !loaded_from_print(
-                captured(113, "", "Could not find service \"pigeonmq.hub\""),
-                expected
+            inspect_from_print(
+                &captured(113, "", "Could not find service \"pigeonmq.hub\""),
+                expected,
             )
             .unwrap()
+            .is_none()
         );
         for result in [
             captured(113, "", "Permission denied"),
@@ -448,8 +619,40 @@ mod tests {
                 "path = /isolated/Launch Agents/pigeonmq.hub.plist\npath = /second.plist",
                 "",
             ),
+            captured(
+                0,
+                "path = /isolated/Launch Agents/pigeonmq.hub.plist\npid = 32\npid = 33",
+                "",
+            ),
         ] {
-            assert!(loaded_from_print(result, expected).is_err());
+            assert!(inspect_from_print(&result, expected).is_err());
+        }
+    }
+
+    #[test]
+    fn dispatch_readiness_requires_exact_owned_ipv4_listener_and_http_denial() {
+        assert!(loopback_listener(
+            &captured(0, "p32\nf3\nn127.0.0.1:54843\n", ""),
+            32,
+            54843
+        ));
+        for output in [
+            "p33\nf3\nn127.0.0.1:54843\n",
+            "p32\nf3\nn*:54843\n",
+            "p32\nf3\nn127.0.0.1:54844\n",
+            "p32\nf3\nn127.0.0.1:54843\np33\n",
+        ] {
+            assert!(!loopback_listener(&captured(0, output, ""), 32, 54843));
+        }
+        assert!(unauthorized_status(b"HTTP/1.1 401 Unauthorized\r\n"));
+        for status in [
+            b"HTTP/1.1 401".as_slice(),
+            b"HTTP/1.1 4010 Unauthorized\r\n",
+            b"HTTP/1.1 403 Forbidden\r\n",
+            b"HTTP/1.1 200 OK\r\n",
+            b"HTTP/1.1 302 Found\r\n",
+        ] {
+            assert!(!unauthorized_status(status));
         }
     }
 }
