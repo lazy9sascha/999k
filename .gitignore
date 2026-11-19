@@ -1,5 +1,6 @@
 /target/
 /.local/
+.pigeonmq-lifecycle/
 /.env
 *.db
 *.db-*
