@@ -104,6 +104,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let root = fixture.path().canonicalize().unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let home = root.join("home");
+    mkdir_private(&home).unwrap();
     let location = root.join("LaunchAgents");
     let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
     let launch = FakeLaunchctl::default();

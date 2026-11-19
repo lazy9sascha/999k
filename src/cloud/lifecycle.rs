@@ -143,16 +143,16 @@ pub(crate) struct Options<'a> {
 }
 
 fn private_dir(path: &Path) -> io::Result<PathBuf> {
-    let metadata = path.symlink_metadata()?;
-    // SAFETY: geteuid has no preconditions.
-    if !path.is_absolute()
-        || !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(error("lifecycle requires an absolute owner-private home"));
-    }
-    path.canonicalize()
+    crate::cloud_setup::require_home(path).map_err(|cause| {
+        if cause.kind() == io::ErrorKind::NotFound {
+            io::Error::new(
+                cause.kind(),
+                "lifecycle home is missing; run bare pigeonmq init or create an owner-private directory",
+            )
+        } else {
+            cause
+        }
+    })
 }
 
 fn mkdir_private(path: &Path) -> io::Result<()> {
@@ -309,11 +309,8 @@ fn fresh_profile(name: &str) -> bool {
 }
 
 fn init_home(home: &Path, name: &str, manifest: Option<&Path>) -> io::Result<PathBuf> {
-    let fresh = fresh_profile(name) && manifest.is_none() && home.is_absolute();
-    if fresh && absent(home)? {
-        mkdir_private(home)?;
-    }
     let home = private_dir(home)?;
+    let fresh = fresh_profile(name) && manifest.is_none();
     let queue = home.join(QUEUE);
     if fresh && (absent(&queue)? || queue.symlink_metadata()?.len() == 0) {
         let path = home.join(REGISTRATION);

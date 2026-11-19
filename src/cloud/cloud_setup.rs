@@ -12,8 +12,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn require_home(path: &Path) -> io::Result<PathBuf> {
-    let metadata = fs::symlink_metadata(path)?;
+pub(crate) fn require_home(path: &Path) -> io::Result<PathBuf> {
+    // Strip trailing separators and dot components before the no-follow open.
+    let path: PathBuf = path.components().collect();
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(&path)?;
+    let metadata = directory.metadata()?;
     // SAFETY: geteuid has no arguments or preconditions.
     let uid = unsafe { libc::geteuid() };
     if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
@@ -21,7 +27,12 @@ fn require_home(path: &Path) -> io::Result<PathBuf> {
             "Hub home must be an owner-private directory",
         ));
     }
-    path.canonicalize()
+    let canonical = path.canonicalize()?;
+    let resolved = canonical.symlink_metadata()?;
+    if (metadata.dev(), metadata.ino()) != (resolved.dev(), resolved.ino()) {
+        return Err(io::Error::other("Hub home changed during validation"));
+    }
+    Ok(canonical)
 }
 
 fn create_private(path: &Path) -> io::Result<Option<fs::File>> {
@@ -683,6 +694,28 @@ pub(crate) fn setup(path: &Path, init: bool) -> Result<(), Box<dyn std::error::E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_setup_and_named_lifecycle_share_the_prepared_home() {
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join(".local");
+        let setup = setup_at(&home, true, &[]).unwrap();
+        assert_eq!(setup["queue_created"], true);
+        let options = crate::lifecycle::Options {
+            profiles_file: None,
+            email_recipient: None,
+            relay_command: None,
+            port: None,
+            apply: false,
+        };
+        let staged = crate::lifecycle::init(&home, "cue", &options).unwrap();
+        assert_eq!(staged["state"], "staged");
+        assert_eq!(setup_at(&home, true, &[]).unwrap()["queue_created"], false);
+        assert_eq!(
+            crate::lifecycle::init(&home, "cue", &options).unwrap(),
+            staged
+        );
+    }
 
     #[test]
     fn muse_setup_prepares_normal_permissions_and_preserves_existing_files() {
