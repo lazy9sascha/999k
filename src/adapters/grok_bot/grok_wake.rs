@@ -33,9 +33,11 @@ const RATE_COOLDOWN: Duration = Duration::from_secs(300);
 const HOURLY_CAP: usize = 30;
 const POLL: Duration = Duration::from_secs(5);
 const STATE_CAP: usize = 2000;
+const START_AFTER: &str = "start_after_seq";
 /// Bound the scan to never-claimed rows. The mailbox revalidates candidates before delivery.
 const PENDING: &str =
     "SELECT m.seq,m.id FROM messages m WHERE m.recipient=?1 AND m.seq>?3
+ AND (m.seq>?4 OR m.id IN (SELECT value FROM json_each(?5)))
  AND m.acknowledged_at_ms IS NULL AND m.dead_lettered_at_ms IS NULL AND m.attempts=0 AND m.receipt IS NULL
  AND COALESCE(m.lease_until_ms,0)<=?2
  AND {PLAIN_MESSAGE}
@@ -203,10 +205,9 @@ fn fingerprint(c: &WakeConfig) -> Option<Vec<(u128, u64)>> {
 }
 
 pub fn pending(db: &Path, now_ms: i64) -> Result<Vec<String>> {
-    Ok(pending_page(db, now_ms, 0)?.0)
+    Ok(pending_page(db, now_ms, 0, 0, &[])?.0)
 }
-// Ephemeral scan progress only; not an ACK, client cursor or durable queue state.
-fn pending_page(db: &Path, now_ms: i64, after: i64) -> Result<(Vec<String>, i64)> {
+fn wake_queue(db: &Path) -> Result<Connection> {
     let storage = |_| WakeError("storage_unavailable");
     let c = Connection::open_with_flags(
         db,
@@ -220,13 +221,46 @@ fn pending_page(db: &Path, now_ms: i64, after: i64) -> Result<(Vec<String>, i64)
     })?;
     crate::mailbox_generation::scope_connection(&c).map_err(storage)?;
     c.pragma_update(None, "query_only", true).map_err(storage)?;
+    Ok(c)
+}
+
+fn latest_sequence(db: &Path) -> Result<i64> {
+    let sequence: i64 = wake_queue(db)?
+        .query_row(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='messages'),0)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| WakeError("storage_unavailable"))?;
+    if sequence < 0 {
+        return Err(WakeError("storage_unavailable"));
+    }
+    Ok(sequence)
+}
+
+// Ephemeral scan progress only; not an ACK, client cursor or durable queue state.
+fn pending_page(
+    db: &Path,
+    now_ms: i64,
+    after: i64,
+    baseline: i64,
+    retries: &[&str],
+) -> Result<(Vec<String>, i64)> {
+    let storage = |_| WakeError("storage_unavailable");
+    let c = wake_queue(db)?;
+    let after = if retries.is_empty() {
+        after.max(baseline)
+    } else {
+        after
+    };
     let mut s = c
         .prepare(&PENDING.replace("{PLAIN_MESSAGE}", PLAIN_MESSAGE))
         .map_err(storage)?;
     let rows = s
-        .query_map(rusqlite::params![MAILBOX, now_ms, after], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1).ok()))
-        })
+        .query_map(
+            rusqlite::params![MAILBOX, now_ms, after, baseline, json!(retries).to_string()],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1).ok())),
+        )
         .map_err(storage)?;
     let mut ids = Vec::new();
     let mut count = 0;
@@ -242,26 +276,109 @@ fn pending_page(db: &Path, now_ms: i64, after: i64) -> Result<(Vec<String>, i64)
     Ok((ids, if count == 50 { next } else { 0 }))
 }
 
-/// State: {"notified":{id:ts},"suppressed":{id:ts},"failed":{id:{"rounds":n,"last":code}}}.
-/// Same format as tools/grok_wake_notifier.py so a switch does not re-notify.
+/// Existing ledgers keep their three outcome maps. First activation also records
+/// a queue sequence floor so restarts and poll cycles do not wake old messages.
 pub struct WakeState {
     path: PathBuf,
     doc: Map<String, Value>,
+    load_status: Result<()>,
 }
 impl WakeState {
-    pub fn load(path: PathBuf) -> Self {
-        let mut doc = fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default();
-        for k in ["notified", "suppressed", "failed"] {
-            if !doc.get(k).is_some_and(Value::is_object) {
-                doc.insert(k.into(), json!({}));
-            }
+    fn read(path: &Path) -> Result<Option<Map<String, Value>>> {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(WakeError("state_unavailable")),
+            Ok(_) => {}
         }
-        Self { path, doc }
+        let mut bytes = Vec::new();
+        crate::private_file::open_private_file(path)
+            .map_err(|_| WakeError("state_unavailable"))?
+            .read_to_end(&mut bytes)
+            .map_err(|_| WakeError("state_unavailable"))?;
+        let Value::Object(doc) =
+            crate::mcp_request::strict_json(&bytes).map_err(|_| WakeError("state_invalid"))?
+        else {
+            return Err(WakeError("state_invalid"));
+        };
+        let timestamps_valid = ["notified", "suppressed"].iter().all(|key| {
+            doc.get(*key)
+                .and_then(Value::as_object)
+                .is_some_and(|entries| {
+                    entries.iter().all(|(id, timestamp)| {
+                        valid_id(id) && timestamp.as_f64().is_some_and(|value| value >= 0.0)
+                    })
+                })
+        });
+        let failures_valid = doc
+            .get("failed")
+            .and_then(Value::as_object)
+            .is_some_and(|entries| {
+                entries.iter().all(|(id, entry)| {
+                    valid_id(id)
+                        && entry.get("rounds").and_then(Value::as_u64).is_some()
+                        && entry.get("last").is_none_or(|status| {
+                            status.is_null()
+                                || status.as_u64().is_some_and(|n| u16::try_from(n).is_ok())
+                        })
+                })
+            });
+        let baseline_valid = doc
+            .get(START_AFTER)
+            .is_none_or(|baseline| baseline.as_i64().is_some_and(|sequence| sequence >= 0));
+        if !timestamps_valid || !failures_valid || !baseline_valid {
+            return Err(WakeError("state_invalid"));
+        }
+        Ok(Some(doc))
     }
+
+    pub fn load(path: PathBuf) -> Self {
+        match Self::read(&path) {
+            Ok(Some(doc)) => Self {
+                path,
+                doc,
+                load_status: Ok(()),
+            },
+            result => Self {
+                path,
+                doc: Map::from_iter(
+                    ["notified", "suppressed", "failed"].map(|key| (key.into(), json!({}))),
+                ),
+                load_status: result.map(|_| ()),
+            },
+        }
+    }
+
+    // Called with the singleton lock held, before allowing the first scan.
+    fn start(db: &Path, path: PathBuf) -> Result<Self> {
+        let mut state = Self::load(path);
+        state.load_status?;
+        let high_water = latest_sequence(db)?;
+        if !state.doc.contains_key(START_AFTER) {
+            state.doc.insert(START_AFTER.into(), json!(high_water));
+            state.persist()?;
+        } else if state.start_after() > high_water {
+            return Err(WakeError("state_invalid"));
+        }
+        Ok(state)
+    }
+
+    fn start_after(&self) -> i64 {
+        self.doc
+            .get(START_AFTER)
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    }
+
+    // Preserve attempts from a legacy ledger below the upgrade boundary.
+    // These IDs still pass the current mailbox, generation, and wake checks.
+    fn outstanding_retries(&self) -> Vec<&str> {
+        self.map("failed")
+            .iter()
+            .filter(|(id, entry)| entry["rounds"].as_u64().is_some_and(|n| n > 0) && self.due(id))
+            .map(|(id, _)| id.as_str())
+            .collect()
+    }
+
     fn map(&self, k: &str) -> &Map<String, Value> {
         self.doc[k].as_object().expect("object")
     }
@@ -272,7 +389,8 @@ impl WakeState {
             .expect("object")
     }
     pub fn due(&self, id: &str) -> bool {
-        !self.map("notified").contains_key(id)
+        self.load_status.is_ok()
+            && !self.map("notified").contains_key(id)
             && !self.map("suppressed").contains_key(id)
             && self
                 .map("failed")
@@ -295,6 +413,7 @@ impl WakeState {
         rounds
     }
     pub fn save(&mut self) -> Result<()> {
+        self.load_status?;
         for k in ["notified", "suppressed", "failed"] {
             let m = self.map_mut(k);
             while m.len() > STATE_CAP {
@@ -306,6 +425,10 @@ impl WakeState {
                 m.remove(&oldest);
             }
         }
+        self.persist()
+    }
+
+    fn persist(&self) -> Result<()> {
         crate::private_file::replace_private(
             &self.path,
             Value::Object(self.doc.clone()).to_string().as_bytes(),
@@ -590,18 +713,29 @@ pub fn spawn(
                     json!({"reason": "keychain_unavailable"}),
                 );
             }
+            let state = match WakeState::start(&c.db, c.state_file.clone()) {
+                Ok(state) => state,
+                Err(WakeError(reason)) => {
+                    tracing::warn!(
+                        component = "grok_wake",
+                        event = "wake_start_failed",
+                        error_code = reason
+                    );
+                    return set_status(&c, "failed", json!({"reason": reason}));
+                }
+            };
             set_status(&c, "running", Value::Null);
-            rt.block_on(run(c, deadline, stop, &authorize));
+            rt.block_on(run(c, state, deadline, stop, &authorize));
         })
 }
 
 async fn run(
     c: WakeConfig,
+    mut state: WakeState,
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
     authorize: &(impl Fn(&str) -> Option<String> + Send + Sync),
 ) {
-    let mut state = WakeState::load(c.state_file.clone());
     let mut auth_block: Option<Option<Vec<(u128, u64)>>> = None;
     let mut rate_until = Instant::now();
     let mut sent: Vec<Instant> = Vec::new();
@@ -650,7 +784,13 @@ async fn sweep(
     if Instant::now() < *rate_until {
         return;
     }
-    let ids = match pending_page(&c.db, unix_s() * 1000, *after_seq) {
+    let ids = match pending_page(
+        &c.db,
+        unix_s() * 1000,
+        *after_seq,
+        state.start_after(),
+        &state.outstanding_retries(),
+    ) {
         Ok((ids, next)) => {
             *after_seq = next;
             ids

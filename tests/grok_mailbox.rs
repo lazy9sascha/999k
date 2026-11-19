@@ -1,5 +1,6 @@
 use pigeonmq::{Envelope, Queue, grok_mailbox as m};
 use rusqlite::{Connection, params};
+use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
 #[test]
 fn request_and_reply_accept_16384_utf8_bytes_and_reject_one_more() {
@@ -61,7 +62,10 @@ fn request_and_reply_accept_16384_utf8_bytes_and_reject_one_more() {
 
 #[test]
 fn grok_wake_accepts_pending_ordinary_and_valid_terminal_in_the_same_scope() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
     let db = dir.path().join("queue.db");
     let mut queue = Queue::open(&db).unwrap();
     m::prepare(&db).unwrap();
@@ -123,4 +127,5 @@ fn grok_wake_accepts_pending_ordinary_and_valid_terminal_in_the_same_scope() {
     let restarted = pigeonmq::grok_wake::WakeState::load(state);
     assert!(!restarted.due(&ordinary.id));
     assert!(!restarted.due(&terminal.id));
+    assert!(restarted.due(&denied.id));
 }
