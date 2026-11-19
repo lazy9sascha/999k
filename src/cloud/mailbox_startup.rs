@@ -50,6 +50,7 @@ pub(crate) struct Binding {
     pub(crate) policy: PathBuf,
     pub(crate) registration: Option<PathBuf>,
     pub(crate) wake_files_dir: Option<PathBuf>,
+    pub(crate) generation: Option<String>,
 }
 
 impl Binding {
@@ -67,6 +68,7 @@ impl Binding {
                 .requires_registration()
                 .then(|| home.join(REGISTRATION)),
             wake_files_dir: None,
+            generation: None,
         }
     }
 
@@ -188,6 +190,7 @@ impl Manifest {
                     .requires_registration()
                     .then(|| registration.clone()),
                 wake_files_dir,
+                generation: None,
             });
         }
         if profiles

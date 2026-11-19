@@ -36,12 +36,41 @@ pub struct Runtime {
 }
 impl Runtime {
     pub fn new(db: &Path, policy_path: &Path) -> Result<Option<Self>, Fault> {
+        Self::new_with_generation(db, policy_path, None)
+    }
+
+    pub fn new_with_generation(
+        db: &Path,
+        policy_path: &Path,
+        generation: Option<&str>,
+    ) -> Result<Option<Self>, Fault> {
         let Some((settings, _)) = DotPolicy::load(policy_path)?.events()? else {
             return Ok(None);
         };
         let path = policy_path.to_owned();
         let expected = settings.clone();
+        let queue = db.to_owned();
+        let generation = generation.unwrap_or("dot").to_owned();
         let policy: PolicySource = Arc::new(move || {
+            let current =
+                crate::mailbox_generation::active_storage(&queue, "dot").map_err(|error| {
+                    match error {
+                        crate::Error::Schema(_) | crate::Error::Invalid(_) => PreflightError {
+                            code: -32602,
+                            reason: "requires_current_schema_queue",
+                        },
+                        _ => PreflightError {
+                            code: -32003,
+                            reason: "mailbox_generation_unavailable",
+                        },
+                    }
+                })?;
+            if current.as_deref() != Some(generation.as_str()) {
+                return Err(PreflightError {
+                    code: -32003,
+                    reason: "mailbox_generation_retired",
+                });
+            }
             let (settings, policy) = DotPolicy::load(&path)
                 .and_then(|p| p.events())
                 .map_err(|e| PreflightError {

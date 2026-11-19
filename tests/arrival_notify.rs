@@ -180,3 +180,116 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
     assert_success(run());
     assert_eq!(fs::read_to_string(&records).unwrap(), expected);
 }
+
+#[test]
+fn configured_relay_keeps_other_cursors_and_never_sends_for_a_retired_generation() {
+    use pigeonmq::arrival_notify::{RelayConfig, RelayTarget, run_config};
+
+    let fixture = tempfile::tempdir().unwrap();
+    let dir = fs::canonicalize(fixture.path()).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let database = dir.join("queue.sqlite3");
+    let registration = dir.join("registration.json");
+    let state = dir.join("arrival-state.json");
+    let config = dir.join("recipients.json");
+    let launcher = dir.join("record-arrival");
+    let records = dir.join("record-arrival.log");
+    write_private(
+        &registration,
+        br#"{
+            "cue":{"mailbox":"cue","revoked":false},
+            "instinct":{"mailbox":"instinct","revoked":false},
+            "dot":{"mailbox":"dot","revoked":false}
+        }"#,
+        0o600,
+    );
+    write_private(
+        &launcher,
+        br#"#!/bin/sh
+[ "$#" -eq 2 ] || exit 65
+printf '%s %s\n' "$1" "$2" >> "$0.log"
+"#,
+        0o700,
+    );
+    let floor = || {
+        Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT COALESCE(MAX(seq),0) FROM messages", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    let run = || {
+        run_config(&database, &registration, &state, &launcher, &config).unwrap()["delivered"]
+            .as_u64()
+            .unwrap()
+    };
+    let publish = |targets: &RelayConfig| {
+        write_private(&config, &serde_json::to_vec(targets).unwrap(), 0o600);
+    };
+
+    let cue_target = "cue-test@example.invalid";
+    let instinct_target = "instinct-test@example.invalid";
+    let mut queue = Queue::open(&database).unwrap();
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+    send(&mut queue, "dot", "cue");
+    let mut targets = RelayConfig::from([(
+        "cue".into(),
+        RelayTarget {
+            recipient: cue_target.into(),
+            generation: "cue".into(),
+            after: floor(),
+        },
+    )]);
+    publish(&targets);
+    let cue_first = send(&mut queue, "dot", "cue");
+    send(&mut queue, "dot", "instinct");
+    assert_eq!(run(), 1);
+
+    targets.insert(
+        "instinct".into(),
+        RelayTarget {
+            recipient: instinct_target.into(),
+            generation: "instinct".into(),
+            after: floor(),
+        },
+    );
+    publish(&targets);
+    let cue_second = linked(&mut queue, "cue");
+    let instinct_first = send(&mut queue, "dot", "instinct");
+    assert_eq!(run(), 2);
+    assert_eq!(run(), 0);
+
+    let retired_cue = send(&mut queue, "dot", "cue");
+    drop(queue);
+    pigeonmq::mailbox_generation::retire(&database, "cue").unwrap();
+    pigeonmq::mailbox_generation::reactivate(&database, "cue").unwrap();
+    let new_floor = floor();
+    let mut queue = Queue::open_existing(&database).unwrap();
+    let cue_next_generation = send(&mut queue, "dot", "cue");
+    assert_eq!(run(), 0, "stale configuration must fail closed");
+
+    let cue = targets.get_mut("cue").unwrap();
+    cue.generation = pigeonmq::mailbox_generation::active_storage(&database, "cue")
+        .unwrap()
+        .unwrap();
+    cue.after = new_floor;
+    publish(&targets);
+    assert_eq!(run(), 1);
+
+    targets.remove("cue");
+    publish(&targets);
+    send(&mut queue, "dot", "cue");
+    let instinct_second = send(&mut queue, "dot", "instinct");
+    assert_eq!(run(), 1);
+    assert_eq!(run(), 0);
+    let observed = fs::read_to_string(&records).unwrap();
+    assert_eq!(
+        observed,
+        format!(
+            "{cue_target} {cue_first}\n{cue_target} {cue_second}\n{instinct_target} {instinct_first}\n{cue_target} {cue_next_generation}\n{instinct_target} {instinct_second}\n"
+        )
+    );
+    assert!(!observed.contains(&retired_cue));
+    assert!(!observed.contains(BODY));
+}

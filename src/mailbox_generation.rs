@@ -79,6 +79,17 @@ pub fn current_storage(connection: &Connection, name: &str) -> rusqlite::Result<
     })
 }
 
+/// Report whether the existing queue can safely participate in generation changes.
+pub fn supports(path: &Path) -> Result<bool> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(Duration::from_secs(2))?;
+    validate_schema(&connection)?;
+    Ok(prepared(&connection)?)
+}
+
 /// Inspect the active storage identity using an existing queue only.
 pub fn active_storage(path: &Path, mailbox: &str) -> Result<Option<String>> {
     let connection = Connection::open_with_flags(

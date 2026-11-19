@@ -593,6 +593,29 @@ fn replacement_generation_uses_a_new_grant_and_never_wakes_old_messages() {
             .is_err()
     );
 
+    assert_eq!(
+        runtime
+            .tick_with(&context(), |_, _| panic!(
+                "retired runtime entered callback"
+            ))
+            .unwrap_err()
+            .reason,
+        "mailbox_generation_retired"
+    );
+    assert_eq!(
+        runtime
+            .event_with(NEW_TOKEN, "events/list", &json!({}), &context(), echo)
+            .unwrap_err()
+            .reason,
+        "mailbox_generation_retired"
+    );
+
+    let storage = pigeonmq::mailbox_generation::active_storage(&fixture.db, "dot")
+        .unwrap()
+        .unwrap();
+    let runtime = Runtime::new_with_generation(&fixture.db, &fixture.policy, Some(&storage))
+        .unwrap()
+        .unwrap();
     let replacement = runtime
         .event_with(
             NEW_TOKEN,

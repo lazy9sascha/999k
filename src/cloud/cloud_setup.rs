@@ -657,21 +657,26 @@ pub(crate) fn setup_grok(path: &Path, token_sha256: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn setup(path: &Path, init: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn setup_at(
+    path: &Path,
+    init: bool,
+    app_roots: &[PathBuf],
+) -> Result<Value, Box<dyn std::error::Error>> {
     let (home, queue_created) = if init {
         initialize_home(path)?
     } else {
         (require_home(path)?, false)
     };
+    let apps = discover_at(&home, app_roots)?;
+    Ok(json!({"home": home, "queue_created": queue_created, "apps": apps}))
+}
+
+pub(crate) fn setup(path: &Path, init: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut roots = vec![PathBuf::from("/Applications")];
     if let Some(user_home) = env::var_os("HOME") {
         roots.insert(0, PathBuf::from(user_home).join("Applications"));
     }
-    let apps = discover_at(&home, &roots)?;
-    println!(
-        "{}",
-        json!({"home": home, "queue_created": queue_created, "apps": apps})
-    );
+    println!("{}", setup_at(path, init, &roots)?);
     Ok(())
 }
 
@@ -862,6 +867,90 @@ mod tests {
         pigeonmq::dot_profile::check(&queue, &policy, true).unwrap();
         probe_dot(queue.clone(), policy.clone(), bearer).unwrap();
         assert!(probe_dot(queue, policy, "wrong").is_err());
+    }
+
+    #[test]
+    fn bare_init_and_discover_reuse_one_dot_draft_with_duplicate_app_bundles() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp = temp.path().canonicalize().unwrap();
+        let home = temp.join("runtime");
+        let roots = [
+            temp.join("user/Applications"),
+            temp.join("system/Applications"),
+        ];
+        let write_bundle = |root: &Path| {
+            let contents = root.join("ChatGPT.app/Contents");
+            fs::create_dir_all(&contents).unwrap();
+            let mut bundle = plist::Dictionary::new();
+            bundle.insert("CFBundleName".into(), "ChatGPT".into());
+            bundle.insert(
+                "CFBundleIdentifier".into(),
+                "com.example.synthetic-chatgpt".into(),
+            );
+            plist::Value::Dictionary(bundle)
+                .to_file_xml(contents.join("Info.plist"))
+                .unwrap();
+        };
+        for root in &roots {
+            write_bundle(root);
+        }
+
+        let assert_dot = |result: &Value, root: &Path, status: &str| {
+            let mut dots = result["apps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|app| app["app"] == "dot");
+            let dot = dots.next().unwrap();
+            assert!(dots.next().is_none());
+            assert_eq!(dot["detection"], "candidate_found");
+            assert_eq!(dot["bundle"], json!(root.join("ChatGPT.app")));
+            assert_eq!(dot["status"], status);
+            assert_eq!(
+                dot["settings"],
+                json!(home.join("pigeonmq-cloud-dot-settings.json"))
+            );
+        };
+
+        let initial = setup_at(&home, true, &roots).unwrap();
+        assert_eq!(initial["queue_created"], true);
+        assert_dot(&initial, &roots[0], "created_settings");
+
+        let settings = home.join("pigeonmq-cloud-dot-settings.json");
+        let dot_draft: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(dot_draft["connector"]["endpoint"]["route"], "/dot/mcp");
+        assert_eq!(fs::metadata(&settings).unwrap().mode() & 0o777, 0o600);
+        fs::write(&settings, b"operator's existing Dot connector draft\n").unwrap();
+        let snapshot = || {
+            fs::read_dir(&home)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), fs::read(entry.path()).unwrap())
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let before = snapshot();
+        assert_eq!(before.len(), 6); // Queue, registration, and four drafts.
+
+        for init in [false, true, false] {
+            let repeated = setup_at(&home, init, &roots).unwrap();
+            assert_eq!(repeated["queue_created"], false);
+            assert_dot(&repeated, &roots[0], "existing_settings");
+            assert!(
+                repeated["apps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|app| app["status"] == "existing_settings")
+            );
+            assert_eq!(snapshot(), before);
+        }
+
+        fs::remove_dir_all(roots[0].join("ChatGPT.app")).unwrap();
+        let fallback = setup_at(&home, false, &roots).unwrap();
+        assert_dot(&fallback, &roots[1], "existing_settings");
+        assert_eq!(snapshot(), before);
     }
 
     #[test]

@@ -1,0 +1,993 @@
+//! Staged registration of existing built-in profiles and explicit launchd activation.
+use crate::{
+    lifecycle_profile,
+    lifecycle_service::{
+        HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist, verify_plist,
+    },
+    mailbox_startup::{Binding, Manifest, QUEUE, REGISTRATION, bindings, valid_route},
+};
+use pigeonmq::{
+    arrival_notify::{RelayConfig, RelayTarget, lock_state},
+    mailbox_catalog as catalog, mailbox_generation as generation, private_file,
+};
+use rusqlite::{Connection, OpenFlags};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    fs::{self, DirBuilder, File, OpenOptions},
+    io::{self, Read},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    },
+    path::{Path, PathBuf},
+};
+
+const DIRECTORY: &str = ".pigeonmq-lifecycle";
+const STATE: &str = "profiles.json";
+const RELAY_CONFIG: &str = "relay-profiles.json";
+const RELAY_STATE: &str = "relay-state.json";
+const DEFAULT_PORT: u16 = 54843;
+
+fn error(reason: &'static str) -> io::Error {
+    io::Error::other(reason)
+}
+
+pub(crate) fn supported(name: &str) -> bool {
+    matches!(
+        name,
+        "dot" | "codex-cloud" | "muse" | "grok-bot" | "cue" | "instinct"
+    )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Source {
+    route: String,
+    policy: PathBuf,
+    wake_files_dir: Option<PathBuf>,
+}
+
+impl Source {
+    fn from(binding: &Binding) -> Self {
+        Self {
+            route: binding.route.clone(),
+            policy: binding.policy.clone(),
+            wake_files_dir: binding.wake_files_dir.clone(),
+        }
+    }
+
+    fn binding(
+        &self,
+        name: &str,
+        registration: &Path,
+        generation: Option<String>,
+    ) -> io::Result<Binding> {
+        let descriptor = catalog::http_by_id(name)
+            .filter(|_| supported(name))
+            .ok_or_else(|| error("profile lifecycle is unavailable"))?;
+        if !valid_route(descriptor, &self.route) || !self.policy.is_absolute() {
+            return Err(error("invalid protected lifecycle binding"));
+        }
+        Ok(Binding {
+            descriptor,
+            route: self.route.clone(),
+            policy: self.policy.clone(),
+            registration: Some(registration.into()),
+            wake_files_dir: self.wake_files_dir.clone(),
+            generation,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Phase {
+    Staged,
+    Active,
+    Retired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Profile {
+    source: Source,
+    policy: PathBuf,
+    token_file: Option<PathBuf>,
+    generation: Option<String>,
+    email_recipient: Option<String>,
+    relay_after: Option<i64>,
+    #[serde(default)]
+    provisioned: bool,
+    phase: Phase,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Registry {
+    port: u16,
+    registration: PathBuf,
+    relay_command: Option<PathBuf>,
+    profiles: BTreeMap<String, Profile>,
+}
+
+impl Profile {
+    fn binding(&self, name: &str, registration: &Path) -> io::Result<Binding> {
+        let mut binding = self
+            .source
+            .binding(name, registration, self.generation.clone())?;
+        if !self.policy.is_absolute()
+            || self
+                .generation
+                .as_deref()
+                .is_some_and(|id| !generation::valid_storage(id))
+        {
+            return Err(error("invalid protected lifecycle generation"));
+        }
+        binding.policy = self.policy.clone();
+        Ok(binding)
+    }
+
+    fn storage<'a>(&'a self, name: &'a str) -> &'a str {
+        self.generation.as_deref().unwrap_or(name)
+    }
+}
+
+pub(crate) struct Options<'a> {
+    pub(crate) profiles_file: Option<&'a Path>,
+    pub(crate) email_recipient: Option<&'a str>,
+    pub(crate) relay_command: Option<&'a Path>,
+    pub(crate) port: Option<u16>,
+    pub(crate) apply: bool,
+}
+
+fn private_dir(path: &Path) -> io::Result<PathBuf> {
+    let metadata = path.symlink_metadata()?;
+    // SAFETY: geteuid has no preconditions.
+    if !path.is_absolute()
+        || !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(error("lifecycle requires an absolute owner-private home"));
+    }
+    path.canonicalize()
+}
+
+fn mkdir_private(path: &Path) -> io::Result<()> {
+    match DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+    private_dir(path)?;
+    Ok(())
+}
+
+fn absent(path: &Path) -> io::Result<bool> {
+    match path.symlink_metadata() {
+        Ok(_) => Ok(false),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(err),
+    }
+}
+
+fn open_private(path: &Path) -> io::Result<File> {
+    private_file::open_private_file(path).map_err(|_| error("private lifecycle file unavailable"))
+}
+
+fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<T> {
+    let mut bytes = Vec::new();
+    open_private(path)?
+        .take(private_file::MAX_PRIVATE_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > private_file::MAX_PRIVATE_CONFIG_BYTES {
+        return Err(error("lifecycle configuration exceeds its size limit"));
+    }
+    serde_json::from_slice(&bytes).map_err(|_| error("invalid lifecycle configuration"))
+}
+
+fn write_json(path: &Path, data: &impl Serialize) -> io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(data)?;
+    if bytes.len() as u64 > private_file::MAX_PRIVATE_CONFIG_BYTES {
+        return Err(error("lifecycle configuration exceeds its size limit"));
+    }
+    private_file::replace_private(path, &bytes)
+}
+
+fn lock(dir: &Path) -> io::Result<File> {
+    let path = dir.join("lifecycle.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    open_private(&path)?;
+    // SAFETY: the lock is held by the live returned descriptor.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(error("another lifecycle change is in progress"));
+    }
+    Ok(file)
+}
+
+fn configured(home: &Path, name: &str, manifest: Option<&Path>) -> io::Result<Binding> {
+    let descriptor = catalog::http_by_id(name)
+        .filter(|_| supported(name))
+        .ok_or_else(|| error("profile lifecycle is unavailable"))?;
+    if let Some(path) = manifest {
+        let file = Manifest::load(path, home)?;
+        let entries = bindings(home, Some(&file));
+        let registration = entries
+            .iter()
+            .find_map(|entry| entry.registration.clone())
+            .unwrap_or_else(|| home.join(REGISTRATION));
+        let mut selected = entries
+            .into_iter()
+            .find(|entry| entry.descriptor.id == name)
+            .ok_or_else(|| error("profile is absent from the selected manifest"))?;
+        selected.registration = Some(registration);
+        return Ok(selected);
+    }
+    let policy = home.join(descriptor.policy_file);
+    open_private(&policy)?;
+    let mut selected = Binding::bundled(descriptor, policy, home);
+    selected.registration = Some(home.join(REGISTRATION));
+    Ok(selected)
+}
+
+fn registration(binding: &Binding, home: &Path) -> PathBuf {
+    binding
+        .registration
+        .clone()
+        .unwrap_or_else(|| home.join(REGISTRATION))
+}
+
+fn validate_email(name: &str, value: &str) -> io::Result<()> {
+    let address = value.split_once('@');
+    if !matches!(name, "cue" | "instinct")
+        || value.len() > 254
+        || !address.is_some_and(|(local, domain)| {
+            !local.is_empty()
+                && !domain.is_empty()
+                && domain.contains('.')
+                && local
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._%+-".contains(&c))
+                && domain
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b".-".contains(&c))
+        })
+    {
+        return Err(error(
+            "a valid email recipient is supported for Cue and Instinct",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_command(command: &Path) -> io::Result<()> {
+    if !command.is_absolute() || open_private(command)?.metadata()?.mode() & 0o100 == 0 {
+        return Err(error(
+            "relay command must be an absolute owner-private executable",
+        ));
+    }
+    Ok(())
+}
+
+fn registration_data(path: &Path) -> io::Result<Value> {
+    pigeonmq::registration::load_registrations(path)
+        .map_err(|_| error("invalid mailbox registration"))?;
+    read_json(path)
+}
+
+fn set_revoked(path: &Path, name: &str, revoked: bool, provisioned: bool) -> io::Result<()> {
+    let mut current = registration_data(path)?;
+    let entries = current
+        .as_object_mut()
+        .ok_or_else(|| error("invalid mailbox registration"))?;
+    match entries.get_mut(name) {
+        Some(entry) if entry["mailbox"] == name && entry["revoked"].is_boolean() => {
+            if entry["revoked"] == revoked {
+                return Ok(());
+            }
+            entry["revoked"] = json!(revoked);
+        }
+        None if provisioned => {
+            entries.insert(name.into(), json!({"mailbox":name,"revoked":revoked}));
+        }
+        _ => return Err(error("profile needs an existing exact registration")),
+    }
+    write_json(path, &current)
+}
+
+fn fresh_profile(name: &str) -> bool {
+    matches!(name, "cue" | "instinct")
+}
+
+fn init_home(home: &Path, name: &str, manifest: Option<&Path>) -> io::Result<PathBuf> {
+    let fresh = fresh_profile(name) && manifest.is_none() && home.is_absolute();
+    if fresh && absent(home)? {
+        mkdir_private(home)?;
+    }
+    let home = private_dir(home)?;
+    let queue = home.join(QUEUE);
+    if fresh && (absent(&queue)? || queue.symlink_metadata()?.len() == 0) {
+        let path = home.join(REGISTRATION);
+        for entry in fs::read_dir(&home)? {
+            let entry = entry?;
+            if entry.path() != path && entry.path() != queue {
+                return Err(error(
+                    "fresh installation needs an empty owner-private home",
+                ));
+            }
+        }
+        if absent(&path)? {
+            write_json(&path, &json!({}))?;
+        } else if registration_data(&path)? != json!({}) {
+            return Err(error("fresh installation needs an unused registration"));
+        }
+        if absent(&queue)? {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&queue)?
+                .sync_all()?;
+        }
+        open_private(&queue)?;
+        pigeonmq::Queue::open(&queue).map_err(io::Error::other)?;
+    }
+    Ok(home)
+}
+
+fn unused_mailbox(queue: &Path, name: &str) -> io::Result<bool> {
+    let connection = Connection::open_with_flags(queue, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(io::Error::other)?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(2))
+        .map_err(io::Error::other)?;
+    connection
+        .query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM main.messages WHERE sender=?1 OR recipient=?1)",
+            [name],
+            |row| row.get(0),
+        )
+        .map_err(io::Error::other)
+}
+
+fn stage_fresh(
+    home: &Path,
+    name: &str,
+    state: &Registry,
+    email: Option<&str>,
+) -> io::Result<Profile> {
+    let queue = home.join(QUEUE);
+    let descriptor = catalog::http_by_id(name)
+        .filter(|_| fresh_profile(name))
+        .ok_or_else(|| error("prepare this connector's protected policy before init"))?;
+    if !absent(&home.join(descriptor.policy_file))?
+        || registration_data(&state.registration)?.get(name).is_some()
+        || !unused_mailbox(&queue, name)?
+    {
+        return Err(error(
+            "existing profile files or queue rows need explicit review",
+        ));
+    }
+    let directory = home.join(DIRECTORY).join(format!("initial-{name}"));
+    mkdir_private(&directory)?;
+    let result = crate::reply_mailbox_setup::stage(&directory, name)?;
+    let policy = result["policy"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or_else(|| error("missing staged policy"))?;
+    let token = result["token_file"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or_else(|| error("missing staged Bearer"))?;
+    Ok(Profile {
+        source: Source {
+            route: descriptor.route.into(),
+            policy: policy.clone(),
+            wake_files_dir: None,
+        },
+        policy,
+        token_file: Some(token),
+        generation: None,
+        email_recipient: email.map(str::to_owned),
+        relay_after: None,
+        provisioned: true,
+        phase: Phase::Staged,
+    })
+}
+
+fn verify_staged(profile: &Profile, name: &str, registration: &Path) -> io::Result<()> {
+    let Some(token) = &profile.token_file else {
+        return Ok(());
+    };
+    open_private(token)?;
+    open_private(&profile.policy)?;
+    let stage = token
+        .parent()
+        .ok_or_else(|| error("invalid staged Bearer location"))?;
+    if profile.generation.is_some() {
+        let (policy, repeated_token) = lifecycle_profile::stage_replacement(
+            stage,
+            &profile.source.binding(name, registration, None)?,
+        )?;
+        if policy != profile.policy || &repeated_token != token {
+            return Err(error("staged credential paths changed"));
+        }
+    } else {
+        crate::reply_mailbox_setup::stage(stage, name)?;
+    }
+    Ok(())
+}
+
+fn high_water(path: &Path) -> io::Result<i64> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(io::Error::other)?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))
+        .map_err(io::Error::other)?;
+    conn.query_row(
+        "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='messages'),0)",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(io::Error::other)
+}
+
+fn response(name: &str, profile: &Profile) -> Value {
+    let status = match profile.phase {
+        Phase::Staged => "staged",
+        Phase::Active => "active",
+        Phase::Retired => "retired",
+    };
+    let mut data = json!({ "mailbox":name, "route":profile.source.route, "state":status });
+    if let Some(file) = &profile.token_file {
+        data["token_file"] = json!(file);
+    }
+    data
+}
+
+struct Jobs<'a> {
+    service: &'a dyn LaunchControl,
+    directory: &'a Path,
+    executable: &'a Path,
+}
+
+struct Job {
+    label: &'static str,
+    args: Vec<String>,
+    path: PathBuf,
+    loaded: bool,
+    exists: bool,
+}
+
+impl Job {
+    fn inspect(jobs: &Jobs<'_>, label: &'static str, mut args: Vec<String>) -> io::Result<Self> {
+        let exe = jobs
+            .executable
+            .to_str()
+            .filter(|_| jobs.executable.is_absolute())
+            .ok_or_else(|| error("lifecycle executable must be an absolute path"))?;
+        args.insert(0, exe.into());
+        let path = jobs.directory.join(format!("{label}.plist"));
+        let exists = verify_plist(jobs.directory, label, &args)?.is_some();
+        let loaded = jobs.service.loaded(label, &path)?;
+        if loaded && !exists {
+            return Err(error("launchd label is already occupied"));
+        }
+        Ok(Self {
+            label,
+            args,
+            path,
+            loaded,
+            exists,
+        })
+    }
+
+    fn start(&self, jobs: &Jobs<'_>) -> io::Result<()> {
+        let (path, _) = ensure_plist(jobs.directory, self.label, &self.args)?;
+        jobs.service.bootstrap(&path)
+    }
+}
+
+fn path_arg(path: &Path) -> io::Result<String> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| error("lifecycle path must be UTF-8"))
+}
+
+fn relay_config(state: &Registry) -> io::Result<RelayConfig> {
+    state
+        .profiles
+        .iter()
+        .filter_map(|(name, profile)| {
+            if profile.phase != Phase::Active {
+                return None;
+            }
+            profile.email_recipient.as_ref().map(|recipient| {
+                Ok((
+                    name.clone(),
+                    RelayTarget {
+                        recipient: recipient.clone(),
+                        generation: profile.storage(name).into(),
+                        after: profile
+                            .relay_after
+                            .ok_or_else(|| error("relay activation boundary is missing"))?,
+                    },
+                ))
+            })
+        })
+        .collect()
+}
+
+fn schedule_jobs(jobs: &Jobs<'_>, home: &Path, state: &Registry) -> io::Result<(Job, Option<Job>)> {
+    let dir = home.join(DIRECTORY);
+    let hub = Job::inspect(
+        jobs,
+        HUB_LABEL,
+        vec!["serve-managed".into(), "--home".into(), path_arg(home)?],
+    )?;
+    let relay_path = jobs.directory.join(format!("{RELAY_LABEL}.plist"));
+    let relay = if let Some(command) = &state.relay_command {
+        Some(Job::inspect(
+            jobs,
+            RELAY_LABEL,
+            vec![
+                "notify-arrivals".into(),
+                "--queue".into(),
+                path_arg(&home.join(QUEUE))?,
+                "--registration".into(),
+                path_arg(&state.registration)?,
+                "--state".into(),
+                path_arg(&dir.join(RELAY_STATE))?,
+                "--command".into(),
+                path_arg(command)?,
+                "--config".into(),
+                path_arg(&dir.join(RELAY_CONFIG))?,
+                "--interval-secs".into(),
+                "5".into(),
+            ],
+        )?)
+    } else {
+        if !absent(&relay_path)? || jobs.service.loaded(RELAY_LABEL, &relay_path)? {
+            return Err(error(
+                "unmanaged relay conflicts with the requested lifecycle",
+            ));
+        }
+        None
+    };
+    Ok((hub, relay))
+}
+
+fn change(
+    jobs: &Jobs<'_>,
+    home: &Path,
+    current: &Registry,
+    mut next: Registry,
+    name: &str,
+    phase_changed: bool,
+) -> io::Result<()> {
+    let dir = home.join(DIRECTORY);
+    let queue = home.join(QUEUE);
+    let (hub, relay) = schedule_jobs(jobs, home, &next)?;
+    let relay_state = dir.join(RELAY_STATE);
+    let relay_path = dir.join(RELAY_CONFIG);
+    let previous_relay = if absent(&relay_path)? {
+        RelayConfig::new()
+    } else {
+        read_json(&relay_path)?
+    };
+    let want_relay = next
+        .profiles
+        .values()
+        .any(|p| p.phase == Phase::Active && p.email_recipient.is_some());
+    let relay_configuration_changed = if phase_changed {
+        want_relay || !previous_relay.is_empty()
+    } else {
+        relay_config(&next)? != previous_relay
+    };
+    let dispatch_guard = if relay_configuration_changed {
+        Some(lock_state(&relay_state)?)
+    } else {
+        None
+    };
+    if phase_changed && hub.loaded {
+        jobs.service.bootout(HUB_LABEL)?;
+    }
+    let publish = (|| {
+        if phase_changed {
+            let profile = next
+                .profiles
+                .get_mut(name)
+                .ok_or_else(|| error("missing lifecycle profile"))?;
+            match profile.phase {
+                Phase::Retired => {
+                    generation::retire(&queue, name).map_err(io::Error::other)?;
+                    set_revoked(&next.registration, name, true, profile.provisioned)?;
+                }
+                Phase::Active => {
+                    if let Some(id) = &profile.generation {
+                        generation::activate_staged(&queue, name, id).map_err(io::Error::other)?;
+                    }
+                    if profile.generation.is_some() || profile.provisioned {
+                        set_revoked(&next.registration, name, false, profile.provisioned)?;
+                    }
+                    let binding = profile.binding(name, &next.registration)?;
+                    lifecycle_profile::validate(&queue, &binding)?;
+                    if profile.email_recipient.is_some() && profile.relay_after.is_none() {
+                        profile.relay_after = Some(high_water(&queue)?);
+                    }
+                }
+                Phase::Staged => return Err(error("cannot apply an incomplete profile")),
+            }
+            write_json(&dir.join(STATE), &next)?;
+        }
+        let current_relay = relay_config(&next)?;
+        if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
+            write_json(&relay_path, &current_relay)?;
+        }
+        Ok::<_, io::Error>(current_relay)
+    })();
+    drop(dispatch_guard);
+    let current_relay = match publish {
+        Ok(config) => config,
+        Err(err) => {
+            // A retired generation is irrevocable. Only recover a hub whose previous
+            // bindings still have the same storage identities.
+            if phase_changed
+                && hub.loaded
+                && current
+                    .profiles
+                    .iter()
+                    .filter(|(_, p)| p.phase == Phase::Active)
+                    .all(|(name, p)| {
+                        generation::active_storage(&queue, name)
+                            .ok()
+                            .flatten()
+                            .as_deref()
+                            == Some(p.storage(name))
+                    })
+            {
+                let _ = hub.start(jobs);
+            }
+            return Err(err);
+        }
+    };
+    if next.profiles.values().any(|p| p.phase == Phase::Active) && (!hub.loaded || phase_changed) {
+        hub.start(jobs)?;
+    }
+    if let Some(relay) = relay {
+        if current_relay.is_empty() {
+            if relay.loaded {
+                jobs.service.bootout(RELAY_LABEL)?;
+            }
+            if relay.exists {
+                fs::remove_file(relay.path)?;
+                File::open(jobs.directory)?.sync_all()?;
+            }
+        } else if !relay.loaded {
+            relay.start(jobs)?;
+        }
+    }
+    Ok(())
+}
+
+fn system_jobs() -> io::Result<(PathBuf, PathBuf)> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| error("absolute user home is unavailable"))?;
+    let directory = home.join("Library/LaunchAgents");
+    Ok((directory, std::env::current_exe()?.canonicalize()?))
+}
+
+pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result<Value> {
+    if options.apply {
+        let (directory, executable) = system_jobs()?;
+        let jobs = Jobs {
+            service: &SystemLaunchctl,
+            directory: &directory,
+            executable: &executable,
+        };
+        init_with(home, name, options, Some(&jobs))
+    } else {
+        init_with(home, name, options, None)
+    }
+}
+
+fn init_with(
+    home: &Path,
+    name: &str,
+    options: &Options<'_>,
+    jobs: Option<&Jobs<'_>>,
+) -> io::Result<Value> {
+    let home = init_home(home, name, options.profiles_file)?;
+    let queue = home.join(QUEUE);
+    open_private(&queue)?;
+    let dir = home.join(DIRECTORY);
+    let state_path = dir.join(STATE);
+    let prepared = generation::supports(&queue).map_err(io::Error::other)?;
+    if !prepared {
+        if options.apply
+            || options.email_recipient.is_some()
+            || options.relay_command.is_some()
+            || options.port.is_some()
+        {
+            return Err(error(
+                "legacy queue supports read-only profile recognition; lifecycle requires the generation catalog",
+            ));
+        }
+        let binding = configured(&home, name, options.profiles_file)?;
+        lifecycle_profile::validate(&queue, &binding)?;
+        return Ok(
+            json!({"mailbox":name,"route":binding.route,"state":"existing","lifecycle":"read_only"}),
+        );
+    }
+    if let Some(email) = options.email_recipient {
+        validate_email(name, email)?;
+    }
+    if let Some(command) = options.relay_command {
+        validate_command(command)?;
+    }
+
+    mkdir_private(&dir)?;
+    let _owner = lock(&dir)?;
+    let mut state = if absent(&state_path)? {
+        let registration = if options.profiles_file.is_some() {
+            registration(&configured(&home, name, options.profiles_file)?, &home)
+        } else {
+            home.join(REGISTRATION)
+        };
+        Registry {
+            port: options.port.unwrap_or(DEFAULT_PORT),
+            registration,
+            relay_command: None,
+            profiles: BTreeMap::new(),
+        }
+    } else {
+        read_json::<Registry>(&state_path)?
+    };
+    if options.port.is_some_and(|value| value != state.port)
+        || options.relay_command.is_some_and(|value| {
+            state
+                .relay_command
+                .as_deref()
+                .is_some_and(|old| value != old)
+        })
+    {
+        return Err(error(
+            "different lifecycle settings require an explicit separate home",
+        ));
+    }
+    let before = state.clone();
+    if state.relay_command.is_none()
+        && options.email_recipient.is_none()
+        && options.relay_command.is_some()
+    {
+        return Err(error(
+            "select an email recipient when configuring the relay command",
+        ));
+    }
+    if state.relay_command.is_none() {
+        state.relay_command = options.relay_command.map(Path::to_path_buf);
+    }
+    if options.email_recipient.is_some() && state.relay_command.is_none() {
+        return Err(error(
+            "configure an owner-private relay command with the email recipient",
+        ));
+    }
+    if let Some(previous) = state.profiles.get(name) {
+        if let Some(manifest) = options.profiles_file {
+            let input = configured(&home, name, Some(manifest))?;
+            if Source::from(&input) != previous.source
+                || registration(&input, &home) != state.registration
+            {
+                return Err(error(
+                    "selected settings differ from the protected lifecycle profile",
+                ));
+            }
+        }
+        if previous.phase != Phase::Retired {
+            if options
+                .email_recipient
+                .is_some_and(|value| Some(value) != previous.email_recipient.as_deref())
+            {
+                return Err(error(
+                    "email recipient differs from the staged or active settings",
+                ));
+            }
+            if previous.phase == Phase::Active {
+                lifecycle_profile::validate(&queue, &previous.binding(name, &state.registration)?)?;
+            }
+        }
+    }
+
+    match state.profiles.get(name).cloned() {
+        Some(previous) if previous.phase == Phase::Retired => {
+            if generation::active_storage(&queue, name)
+                .map_err(io::Error::other)?
+                .is_some()
+            {
+                return Err(error(
+                    "retired profile is inconsistent with its queue generation",
+                ));
+            }
+            let newer = generation::new_storage();
+            let credential_dir = dir.join(newer.replace(':', "-"));
+            mkdir_private(&credential_dir)?;
+            let (policy, token_file) = lifecycle_profile::stage_replacement(
+                &credential_dir,
+                &previous.binding(name, &state.registration)?,
+            )?;
+            state.profiles.insert(
+                name.into(),
+                Profile {
+                    source: previous.source,
+                    policy,
+                    token_file: Some(token_file),
+                    generation: Some(newer),
+                    email_recipient: options.email_recipient.map(str::to_owned),
+                    relay_after: None,
+                    provisioned: previous.provisioned,
+                    phase: Phase::Staged,
+                },
+            );
+        }
+        None if fresh_profile(name)
+            && options.profiles_file.is_none()
+            && absent(&home.join(catalog::http_by_id(name).unwrap().policy_file))? =>
+        {
+            let profile = stage_fresh(&home, name, &state, options.email_recipient)?;
+            state.profiles.insert(name.into(), profile);
+        }
+        None => {
+            let binding = configured(&home, name, options.profiles_file)?;
+            if registration(&binding, &home) != state.registration {
+                return Err(error("profile uses a different protected registration"));
+            }
+            if generation::active_storage(&queue, name)
+                .map_err(io::Error::other)?
+                .as_deref()
+                != Some(name)
+            {
+                return Err(error(
+                    "profile generation has no matching lifecycle binding",
+                ));
+            }
+            lifecycle_profile::validate(&queue, &binding)?;
+            state.profiles.insert(
+                name.into(),
+                Profile {
+                    source: Source::from(&binding),
+                    policy: binding.policy,
+                    token_file: None,
+                    generation: None,
+                    email_recipient: options.email_recipient.map(str::to_owned),
+                    relay_after: None,
+                    provisioned: false,
+                    phase: Phase::Staged,
+                },
+            );
+        }
+        _ => {}
+    }
+    if state.profiles[name].phase == Phase::Staged {
+        verify_staged(&state.profiles[name], name, &state.registration)?;
+    }
+    if state != before {
+        write_json(&state_path, &state)?;
+    }
+    if let Some(jobs) = jobs {
+        let mut next = state.clone();
+        let row = next
+            .profiles
+            .get_mut(name)
+            .ok_or_else(|| error("missing lifecycle profile"))?;
+        let update = row.phase == Phase::Staged;
+        row.phase = Phase::Active;
+        change(jobs, &home, &state, next, name, update)?;
+        state = read_json(&state_path)?;
+    }
+    Ok(response(name, &state.profiles[name]))
+}
+
+pub(crate) fn remove(home: &Path, name: &str, apply: bool) -> io::Result<Value> {
+    if apply {
+        let (directory, executable) = system_jobs()?;
+        let jobs = Jobs {
+            service: &SystemLaunchctl,
+            directory: &directory,
+            executable: &executable,
+        };
+        remove_with(home, name, Some(&jobs))
+    } else {
+        remove_with(home, name, None)
+    }
+}
+
+fn remove_with(home: &Path, name: &str, jobs: Option<&Jobs<'_>>) -> io::Result<Value> {
+    let home = private_dir(home)?;
+    let queue = home.join(QUEUE);
+    open_private(&queue)?;
+    if !generation::supports(&queue).map_err(io::Error::other)? {
+        return Err(error(
+            "legacy queue lacks the generation catalog; removal is unavailable",
+        ));
+    }
+    let dir = private_dir(&home.join(DIRECTORY))?;
+    let state_path = dir.join(STATE);
+    let _owner = lock(&dir)?;
+    let state: Registry = read_json(&state_path)?;
+    let profile = state
+        .profiles
+        .get(name)
+        .ok_or_else(|| error("profile is not managed by this home"))?;
+    let Some(jobs) = jobs else {
+        return Ok(
+            json!({"mailbox":name,"state": if profile.phase == Phase::Retired {"retired"} else {"remove_pending"}}),
+        );
+    };
+    registration_data(&state.registration)?;
+    let mut next = state.clone();
+    let row = next
+        .profiles
+        .get_mut(name)
+        .ok_or_else(|| error("missing lifecycle profile"))?;
+    let changed = row.phase != Phase::Retired;
+    row.phase = Phase::Retired;
+    row.relay_after = None;
+    row.email_recipient = None;
+    change(jobs, &home, &state, next, name, changed)?;
+    Ok(json!({"mailbox":name,"state":"retired"}))
+}
+
+pub(crate) fn check_manual_stage(home: &Path, mailbox: &str) -> io::Result<()> {
+    let dir = home.join(DIRECTORY);
+    if !absent(&dir)? {
+        let state_path = dir.join(STATE);
+        if !absent(&state_path)?
+            && read_json::<Registry>(&state_path)?
+                .profiles
+                .contains_key(mailbox)
+        {
+            return Err(error("use managed init for this profile"));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn serve(home: &Path) -> io::Result<()> {
+    let home = private_dir(home)?;
+    let state: Registry = read_json(&home.join(DIRECTORY).join(STATE))?;
+    let queue = home.join(QUEUE);
+    let ports = state.port;
+    let routes = state
+        .profiles
+        .into_iter()
+        .filter(|(_, p)| p.phase == Phase::Active)
+        .map(|(name, profile)| profile.binding(&name, &state.registration))
+        .collect::<io::Result<Vec<_>>>()?;
+    crate::local_http::serve_hub(
+        queue,
+        None,
+        routes,
+        Vec::new(),
+        Some("managed"),
+        ports,
+        None,
+    )
+}
+
+#[cfg(test)]
+#[path = "lifecycle_fresh_tests.rs"]
+mod fresh_tests;
+#[cfg(test)]
+#[path = "lifecycle_tests.rs"]
+mod tests;

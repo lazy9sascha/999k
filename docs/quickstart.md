@@ -26,7 +26,8 @@ export CLOUD_HOME="$HOME/.pigeonmq-cloud"
 ```
 
 Use the same explicit `--home` in later commands. `init` creates the queue if it is missing and writes connector drafts.
-It does not start the hub, open a tunnel, or connect an app.
+It scans the system and user Applications folders for supported bundles.
+A discovered bundle is a candidate. App connection and Bearer verification are separate steps.
 If the home contains a queue from an older release, see [Older queue databases](troubleshooting.md#older-queue-databases).
 
 For **Dot**, use [the private Secure MCP Tunnel procedure](configuration.md#dot-through-a-private-secure-mcp-tunnel).
@@ -37,6 +38,27 @@ Mailbox setup prepares the profile. The official Secure MCP Tunnel connects to i
 The steps below stay on loopback unless you set a public origin.
 Prefer a reverse tunnel on your own domain. See [Use your own HTTPS origin](tunnels.md#use-your-own-https-origin).
 If you have no domain, you can opt in to tunnl.gg for testing.
+
+### Stage and apply Cue or Instinct on macOS
+
+Use an unused owner-private home outside the checkout. Keep the built executable at a stable path.
+
+```sh
+export MAIL_HOME="$HOME/.pigeonmq-mail"
+"$PIGEONMQ_BIN" init cue --home "$MAIL_HOME"
+"$PIGEONMQ_BIN" init cue --home "$MAIL_HOME" --apply
+```
+
+The first command stages the queue, profile, and Bearer file. The output gives the file path and the intended route.
+The second command registers and starts the managed loopback hub in your macOS login session.
+Repeat with `instinct` to add a second mailbox. Repeating the same active setup reuses the original Bearer.
+
+A local MCP client can check `tools/list` on `http://127.0.0.1:54843/cue/mcp`.
+Use the Bearer from the protected file printed by `init`.
+A remote client needs an approved tunnel and must be configured with its own route and Bearer.
+The hub does not install a remote app or start a model.
+
+See [managed profiles](configuration.md#manage-built-in-profiles) for existing profiles, optional email, and removal.
 
 ## 2. Optional local verification
 

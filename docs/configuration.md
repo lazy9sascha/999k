@@ -10,9 +10,10 @@ Run `pigeonmq <command> --help` for exact flags.
 
 | Command | What it does |
 | --- | --- |
-| `init --home DIR` | Create the home, an empty queue, and settings drafts for every app. Detects installed apps. |
-| `init <agent> --home DIR` | Stage an isolated local mailbox. Add `--apply` to activate a staged replacement. See [local mailbox setup](#stage-local-mailboxes). |
-| `remove <agent> --home DIR` | Retire a dedicated local mailbox and preserve its queue rows. |
+| `init --home DIR` | Prepare the home and missing connector drafts. Scan system and user Applications folders. |
+| `init <agent> --home DIR` | Stage a [built-in profile](#manage-built-in-profiles) or a [dedicated local mailbox](#stage-local-mailboxes). |
+| `init <agent> --home DIR --apply` | Apply a staged built-in profile on macOS or activate a dedicated local replacement. |
+| `remove <agent> --home DIR --apply` | Retire a managed built-in profile and preserve its queue rows. |
 | `discover --home DIR` | Same detection. Only creates settings that are missing. Detection means "app bundle found", not "connected". |
 | `setup-muse --home DIR --peer NAME` | Muse in one step: queue, registration (`muse` + peer), policy, Keychain token. Safe to repeat. |
 | `setup-codex --home DIR --peer NAME [--callback-host HOST --resolver PATH]` | Prepare the Codex Cloud queue, registration, policy, Keychain token, and optional Events storage. |
@@ -73,6 +74,42 @@ The hub uses each mounted route exactly as written. The manifest mounts only the
 Only the selected Grok Bot profile can set optional `wake_files_dir`. Use an absolute, owner-private directory with no symlink at that path. It must contain regular, owner-owned `grok-webhook-url` and `grok-webhook-auth` files with mode 600, one hard link each, and no more than 4 KiB each. Do not put either value in the manifest. Startup rejects an invalid source or a `grok-webhook-keychain` marker in the Cloud home. It does not fall back. The notifier reopens the selected files for each send. The queue, wake status, state, and lock stay in the Cloud home. Omit the field to keep conventional Keychain or home-file discovery.
 
 The low-level `serve-hub` command can also take `--profiles-file PATH` with the absolute queue path. Do not combine it with explicit per-profile policy or registration flags. Setup and credential commands still use conventional filenames. Set a remapped connector route manually after checking it with its own bearer.
+
+## Manage built-in profiles
+
+Use `init NAME --home DIR` to stage a profile. Use an absolute owner-private home.
+Use `init NAME --home DIR --apply` to start or reload the managed macOS hub when needed.
+The hub LaunchAgent is `pigeonmq.hub` and binds only to loopback.
+Set `--port` at first staging to select a port other than 54843.
+
+Cue and Instinct can create a fresh home, queue, and protected Bearer.
+Dot, Codex Cloud, Muse, and Grok Bot need a prepared connector policy and registration.
+Use the existing adapter setup and the exact active manifest with `--profiles-file PATH` when applicable.
+Named init reuses the selected policy and credential for an already configured binding.
+Review a settings conflict before applying. Use a separate home for a different hub.
+
+A schema 4 queue without the generation catalog supports read-only recognition of compatible existing profiles.
+It rejects activation or removal through the managed commands.
+Existing connector setup and the existing supervisor remain appropriate for that queue.
+
+Use `remove NAME --home DIR` to preview a managed removal.
+Add `--apply` to revoke the registration and retire its generation. Queue rows remain stored.
+To reconnect the same name, stage with `init` and apply the staged Bearer.
+Reconfigure the app with the new Bearer. Earlier messages remain outside the replacement mailbox.
+
+### Opt in to email arrivals
+
+Provide a valid address for Cue or Instinct with `--email-recipient` when staging.
+On first email setup pass `--relay-command` with an absolute path to an owner-private executable.
+The command receives two arguments, the email destination and the PigeonMQ message ID.
+Configure the command using your existing provider login and use the ID as its idempotency key.
+The provider must suppress repeat sends for at least 24 hours.
+
+Email membership is stored in an owner-private configuration file.
+The `pigeonmq.email-relay` service is created for the first selected mailbox.
+Adding or removing an email mailbox while another remains preserves the same plist and running relay.
+Removing the final email mailbox stops and removes the relay job. The hub plist remains.
+Email sends start at the recorded activation boundary.
 
 ## Stage local mailboxes
 

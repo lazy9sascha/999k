@@ -36,6 +36,13 @@ pub struct Runtime {
 }
 impl Runtime {
     pub fn new(profile: &Profile) -> Result<Option<Self>, (u16, &'static str)> {
+        Self::new_with_generation(profile, None)
+    }
+
+    pub fn new_with_generation(
+        profile: &Profile,
+        generation: Option<&str>,
+    ) -> Result<Option<Self>, (u16, &'static str)> {
         if profile.definition()?.events != catalog::EventsCapability::Codex {
             return Ok(None);
         }
@@ -46,24 +53,47 @@ impl Runtime {
         let policy_path = profile.policy.clone();
         let registration = profile.registration.clone();
         let expected = settings.clone();
-        let policy: PolicySource = Arc::new(move || {
-            let (settings, policy) = auth::codex_events(&policy_path, &registration)
-                .map_err(|(_, reason)| PreflightError {
-                    code: -32003,
-                    reason,
-                })?
-                .ok_or(PreflightError {
-                    code: -32003,
-                    reason: "events_disabled",
-                })?;
-            if settings != expected {
-                return Err(PreflightError {
-                    code: -32003,
-                    reason: "events_configuration_changed",
-                });
-            }
-            Ok(policy)
-        });
+        let queue = profile.db.clone();
+        let mailbox = catalog::codex().mailbox;
+        let generation = generation.unwrap_or(mailbox).to_owned();
+        let policy: PolicySource =
+            Arc::new(move || {
+                let current = pigeonmq::mailbox_generation::active_storage(&queue, mailbox)
+                    .map_err(|error| match error {
+                        pigeonmq::Error::Schema(_) | pigeonmq::Error::Invalid(_) => {
+                            PreflightError {
+                                code: -32602,
+                                reason: "requires_current_schema_queue",
+                            }
+                        }
+                        _ => PreflightError {
+                            code: -32003,
+                            reason: "mailbox_generation_unavailable",
+                        },
+                    })?;
+                if current.as_deref() != Some(generation.as_str()) {
+                    return Err(PreflightError {
+                        code: -32003,
+                        reason: "mailbox_generation_retired",
+                    });
+                }
+                let (settings, policy) = auth::codex_events(&policy_path, &registration)
+                    .map_err(|(_, reason)| PreflightError {
+                        code: -32003,
+                        reason,
+                    })?
+                    .ok_or(PreflightError {
+                        code: -32003,
+                        reason: "events_disabled",
+                    })?;
+                if settings != expected {
+                    return Err(PreflightError {
+                        code: -32003,
+                        reason: "events_configuration_changed",
+                    });
+                }
+                Ok(policy)
+            });
         events_runtime::validate_startup(&events_runtime::Config {
             db: profile.db.clone(),
             policy: profile.policy.clone(),
