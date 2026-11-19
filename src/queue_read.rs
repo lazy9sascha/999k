@@ -340,6 +340,7 @@ impl Queue {
         connection.busy_timeout(Duration::from_secs(5))?;
         validate_schema(&connection)?;
         validate_queue_journal(&connection)?;
+        crate::mailbox_generation::scope_connection(&connection)?;
         Ok(connection)
     }
 }

@@ -139,6 +139,11 @@ where
         if context.cancelled() {
             break;
         }
+        let _dispatch = match crate::mailbox_generation::lock_dispatch(db) {
+            Ok(guard) => guard,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(_) => return Err(error("mailbox_generation_lock_unavailable")),
+        };
         if let Some(attempt) = ledger.reserve(&sid, wall_time).map_err(preflight)? {
             let policy = policy_source().map_err(preflight)?;
             if policy.principal() != attempt.owner()
@@ -160,6 +165,9 @@ where
                     continue;
                 }
             };
+            if !ledger.still_current(&attempt).map_err(preflight)? {
+                continue;
+            }
             let signed_at = wall_time();
             let result = sender(
                 &policy,

@@ -95,12 +95,13 @@ fn connect(p: impl AsRef<Path>, ro: bool) -> Result<Connection> {
     // Host checks cancellation between pages and before commit.
     // This timeout limits lock waits only; SQL execution is not interrupted.
     c.busy_timeout(Duration::from_secs(2))?;
+    schema(&c)?;
+    crate::mailbox_generation::scope_connection(&c)?;
     if ro {
         c.pragma_update(None, "query_only", true)?;
     } else {
         c.pragma_update(None, "synchronous", "FULL")?;
     }
-    schema(&c)?;
     Ok(c)
 }
 
@@ -295,6 +296,26 @@ impl Mailbox {
         self.require_prepared(&tx)?;
         self.observed(&tx, self.original(&tx, id, s)?)
     }
+    /// Recheck eligibility immediately before delivering a wake. Return only its metadata.
+    pub(crate) fn wake_candidate(
+        &self,
+        path: &Path,
+        id: &str,
+        senders: &[String],
+    ) -> Result<Option<(String, String)>> {
+        identifier(id)?;
+        self.scope_valid(senders)?;
+        let mut conn = connect(path, true)?;
+        let tx = conn.transaction()?;
+        self.require_prepared(&tx)?;
+        let message = self.original(&tx, id, senders)?;
+        if message.claimed(now_ms()?) || self.binding(&tx, id)?.is_some() {
+            return Ok(None);
+        }
+        identifier(&message.conversation_id)?;
+        Ok(Some((message.sender, message.conversation_id)))
+    }
+
     /// Bounded convenience: one raw request page, then one terminal page only if
     /// that request page exhausted the raw queue. None may mean more pages remain.
     /// Hosts needing complete observation must use cancellable scan_page sweeps.

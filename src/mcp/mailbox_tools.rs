@@ -6,9 +6,19 @@ use crate::{
 use serde_json::{Value, json};
 
 pub fn inbox_tool() -> Value {
-    json!({"name":"pigeonmq_inbox","description":"List bounded metadata from your authorized inbox. Use exact read for bodies. Continuation is traversal only, not claim, ACK, admission or delivery confirmation.",
-        "inputSchema":{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50,"default":20},"continuation":{"type":"string","maxLength":39}},"additionalProperties":false},
-        "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}})
+    json!({
+        "name":"pigeonmq_inbox",
+        "description":"List received mail or all sent and received mail, with optional body text search. Returns metadata only. Use exact read or read_thread for bodies.",
+        "inputSchema":{"type":"object","properties":{
+            "scope":{"type":"string","enum":["inbox","all"],"default":"inbox"},
+            "query":{"type":"string","minLength":1,"maxLength":crate::inbox_page::MAX_QUERY_LENGTH,
+                "description":"Literal body substring. ASCII letters match without regard to case."},
+            "order":{"type":"string","enum":["newest","oldest"],"default":"newest"},
+            "limit":{"type":"integer","minimum":1,"maximum":50,"default":20},
+            "continuation":{"type":"string","maxLength":crate::inbox_page::MAX_CONTINUATION_LENGTH}
+        },"additionalProperties":false},
+        "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}
+    })
 }
 
 /// Tool descriptions and schemas for the registered Muse and Grok mailboxes.

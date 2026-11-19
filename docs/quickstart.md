@@ -11,12 +11,14 @@ Use a checked executable on macOS, or build this checkout with stable Rust and 2
 
 ```sh
 cargo build --locked --release
-export PATH="$PWD/target/release:$PATH"
-export PIGEONMQ_BIN="$PWD/target/release/pigeonmq"
-"$PIGEONMQ_BIN" --help
+install -d -m 700 "$HOME/.local/libexec/pigeonmq"
+export PIGEONMQ_BIN="$HOME/.local/libexec/pigeonmq/pigeonmq"
+install -m 700 target/release/pigeonmq "$PIGEONMQ_BIN"
+"$PIGEONMQ_BIN" --version
 ```
 
-Version 0.1.0 built `target/release/pigeonmq-cloud`. Update scripts and service definitions to use the full path to the new binary. The archived project also used the command `pigeonmq`. Run `"$PIGEONMQ_BIN" --version` to check which build you selected.
+Keep the installed binary at this absolute path for managed service restarts.
+Version 0.1.0 built `pigeonmq-cloud`. Update scripts and service definitions to use the installed `pigeonmq` path.
 
 Pick a private runtime folder **outside the repository**. It holds the queue, policies, and tunnel keys.
 
@@ -26,7 +28,8 @@ export CLOUD_HOME="$HOME/.pigeonmq-cloud"
 ```
 
 Use the same explicit `--home` in later commands. `init` creates the queue if it is missing and writes connector drafts.
-It does not start the hub, open a tunnel, or connect an app.
+It scans the system and user Applications folders for supported bundles.
+A discovered bundle is a candidate. App connection and Bearer verification are separate steps.
 If the home contains a queue from an older release, see [Older queue databases](troubleshooting.md#older-queue-databases).
 
 For **Dot**, use [the private Secure MCP Tunnel procedure](configuration.md#dot-through-a-private-secure-mcp-tunnel).
@@ -37,6 +40,27 @@ Mailbox setup prepares the profile. The official Secure MCP Tunnel connects to i
 The steps below stay on loopback unless you set a public origin.
 Prefer a reverse tunnel on your own domain. See [Use your own HTTPS origin](tunnels.md#use-your-own-https-origin).
 If you have no domain, you can opt in to tunnl.gg for testing.
+
+### Stage and apply Cue or Instinct on macOS
+
+Use the private `CLOUD_HOME` initialized above and the installed binary.
+Use one managed home for all profiles in the same macOS login.
+
+```sh
+"$PIGEONMQ_BIN" init cue --home "$CLOUD_HOME"
+"$PIGEONMQ_BIN" init cue --home "$CLOUD_HOME" --apply
+```
+
+The first command stages the profile and Bearer file. The output gives the file path and the intended route.
+The second command registers and starts the managed loopback hub in your macOS login session.
+Repeat with `instinct` to add a second mailbox. Repeating the same active setup reuses the original Bearer.
+
+A local MCP client can check `tools/list` on `http://127.0.0.1:54843/cue/mcp`.
+Use the Bearer from the protected file printed by `init`.
+A remote client needs an approved tunnel and must be configured with its own route and Bearer.
+The hub does not install a remote app or start a model.
+
+See [managed profiles](configuration.md#manage-built-in-profiles) for existing profiles, optional email, and removal.
 
 ## 2. Optional local verification
 
@@ -196,9 +220,18 @@ Copy something else afterwards to clear the clipboard. If the app has no secure 
 
 **Check it works:** ask the app to `pigeonmq_read` a known test message ID. A tool list alone only proves the connector loaded.
 
+### Upgrade an existing app to 0.1.2
+
+On November 19, 2026, the hub listed `pigeonmq_inbox` and `pigeonmq_read_thread` while the saved Dot and Codex apps still had older catalogs. Refreshing each saved app restored the tools. Check the serving hub and each saved app separately during an upgrade.
+
+1. Check the replacement binary with `"$PIGEONMQ_BIN" --version`. Restart the existing hub with that binary using the same `--home`, routes, policies, and transport. The release uses the existing queue, including its sent and received history.
+2. Use an authenticated MCP client to call `tools/list` on the serving `/dot/mcp`, `/codex/mcp`, `/muse/mcp`, `/grok/mcp`, and any enabled registered mailbox route with read access. For `pigeonmq_inbox`, check that `inputSchema.properties` includes `scope`, `query`, and `order` alongside `limit` and `continuation`. Use each route's existing credential. If a route still advertises the old schema, verify which hub serves it before refreshing the app. For a manual request, [negotiate MCP first](tunnels.md#verify-and-update-the-clients).
+3. Refresh discovery for the existing saved Dot and Codex connections in the intended ChatGPT account or workspace. Open each connection in ChatGPT Plugins and use **Refresh** if available. The server's `tools/list` checks the running hub. The app refresh pulls that schema into ChatGPT. Reuse each app ID, connection, and existing Events subscription. [OpenAI's metadata refresh guide](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata).
+4. Select the same saved app in each intended conversation and call `pigeonmq_inbox` with `{"scope":"all","query":"<known test phrase>"}`. Inspect the tool arguments and confirm known sent and received test messages from before the upgrade appear with the same IDs, newest first, with metadata only. Check `{"scope":"inbox","query":"<known test phrase>"}` for the received test messages. Where a conversation still shows the old schema after refresh, try the same saved app in a new conversation and verify the call again. [More mailbox examples](architecture.md#mcp-tools).
+
 ## 5. Optional: Grok Bot wake
 
-Grok Bot can't keep a connection open, so the hub can wake it with a webhook (mode A in [architecture](architecture.md#a-wake-pull)).
+Grok Bot can't keep a connection open, so the hub can wake it with a webhook (mode A in [architecture](architecture.md#a-wake--pull)).
 
 1. In Grok Bot, create a webhook routine for this hub only. The wake body has no hub ID, so another hub must not share it.
 2. On the Mac that runs the hub, run the command below from a local terminal. Enter the HTTPS URL and Authorization value at the hidden prompts. The command saves both values in one Keychain item.

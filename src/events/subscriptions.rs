@@ -264,6 +264,7 @@ impl SubscriptionStore {
             crate::Error::Database(error) => error.into(),
             _ => error("requires_current_schema_queue"),
         })?;
+        crate::mailbox_generation::scope_connection(&conn)?;
         Ok(conn)
     }
     fn authorize(&self, owner: &str, token: &str) -> Result<EventsPolicy> {
@@ -293,7 +294,7 @@ impl SubscriptionStore {
         self.authorize(owner, token)?;
         tx.execute_batch(BRIDGE_SCHEMA)?;
         validate_bridge_schema(&tx)?;
-        if self.authorize(owner, token)?.terminal_only() {
+        if self.authorize(owner, token)?.dot_subscription_cutoff() {
             tx.execute_batch(DOT_CUTOFF_SCHEMA)?;
             validate_dot_cutoff_schema(&tx)?;
         }
@@ -308,7 +309,7 @@ impl SubscriptionStore {
         (self.policy)()?;
         tx.execute_batch(BRIDGE_SCHEMA)?;
         validate_bridge_schema(&tx)?;
-        if (self.policy)()?.terminal_only() {
+        if (self.policy)()?.dot_subscription_cutoff() {
             tx.execute_batch(DOT_CUTOFF_SCHEMA)?;
             validate_dot_cutoff_schema(&tx)?;
         }
@@ -316,13 +317,17 @@ impl SubscriptionStore {
         tx.commit()?;
         Ok(())
     }
+    fn stored_owner(connection: &Connection, policy: &EventsPolicy) -> Result<String> {
+        generation_owner(connection, policy)?.ok_or_else(|| error("mailbox_retired"))
+    }
+
     fn identity(
         &self,
         owner: &str,
         token: &str,
         params: &Value,
         secret: bool,
-    ) -> Result<(String, EventsPolicy)> {
+    ) -> Result<(String, String, EventsPolicy)> {
         let policy = self.authorize(owner, token)?;
         fields(
             params,
@@ -359,7 +364,7 @@ impl SubscriptionStore {
         callback_transport::validate_callback_url(&policy, url).map_err(|_| {
             // identity() has already authenticated the caller and fixed the event/recipient.
             if secret
-                && policy.terminal_only()
+                && policy.dot_subscription_cutoff()
                 && let Some(hostname) = rejected_callback_hostname(url)
             {
                 eprintln!(
@@ -372,9 +377,10 @@ impl SubscriptionStore {
                 code: -32015,
             }
         })?;
-        let identity = serde_json::to_vec(&json!([owner, url, EVENT, params["arguments"]]))
+        let stored_owner = Self::stored_owner(&self.connect()?, &policy)?;
+        let identity = serde_json::to_vec(&json!([stored_owner, url, EVENT, params["arguments"]]))
             .map_err(|_| error("invalid_input"))?;
-        Ok((format!("sub_{}", sha(&identity)), policy))
+        Ok((format!("sub_{}", sha(&identity)), stored_owner, policy))
     }
     fn diagnostic(
         &self,
@@ -392,7 +398,11 @@ impl SubscriptionStore {
             _ => "invalid",
         };
         // Best effort only: diagnostics cannot reverse or hide a committed grant.
-        if let Ok(conn) = self.connect() {
+        if let Ok(conn) = self.connect()
+            && let Ok(policy) = (self.policy)()
+            && policy.principal() == owner
+            && let Ok(Some(owner)) = generation_owner(&conn, &policy)
+        {
             let _=conn.execute("INSERT INTO dot_subscription_diagnostic VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(owner) DO UPDATE SET observed_at=excluded.observed_at,outcome=excluded.outcome,reason=excluded.reason,ttl_mode=excluded.ttl_mode,granted_expires=excluded.granted_expires",params![owner,at,outcome,reason,ttl,expires]);
         }
     }
@@ -478,7 +488,7 @@ impl SubscriptionStore {
         ) -> std::result::Result<CallbackResponse, CallbackError>,
     {
         live(cancelled)?;
-        let (sid, policy) = self.identity(owner, token, params, true)?;
+        let (sid, stored_owner, policy) = self.identity(owner, token, params, true)?;
         if params.get("cursor").is_some_and(|v| !v.is_null()) {
             return Err(error("replay_not_supported"));
         }
@@ -491,7 +501,7 @@ impl SubscriptionStore {
         callback_transport::validate_signing_secret(secret)
             .map_err(|_| error("invalid_signing_secret"))?;
         let duration = subscription_duration(params, self.allow_nonexpiring)?;
-        let cache_key = (owner.to_owned(), url.to_owned(), sha(secret.as_bytes()));
+        let cache_key = (stored_owner.clone(), url.to_owned(), sha(secret.as_bytes()));
         let current = now(clock)?;
         let verified = {
             let mut cache = self
@@ -550,6 +560,9 @@ impl SubscriptionStore {
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let policy = self.authorize(owner, token)?;
+        if Self::stored_owner(&tx, &policy)? != stored_owner {
+            return Err(error("mailbox_generation_changed"));
+        }
         callback_transport::validate_callback_url(&policy, url).map_err(|_| PreflightError {
             reason: "invalid_callback",
             code: -32015,
@@ -578,8 +591,8 @@ impl SubscriptionStore {
         });
         let previous = old.map(|(secret, _, _)| secret).filter(|old| old != secret);
         let rotation = previous.as_ref().map(|_| granted + 60.0);
-        tx.execute("INSERT INTO dot_event_subscriptions VALUES (?1,?2,?3,?4,?5,?6,?7,1) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,previous_secret=COALESCE(excluded.previous_secret,dot_event_subscriptions.previous_secret),rotation_until=CASE WHEN excluded.previous_secret IS NULL THEN dot_event_subscriptions.rotation_until ELSE excluded.rotation_until END,expires=excluded.expires,active=1",params![sid,owner,url,secret,previous,rotation,expiry])?;
-        if policy.terminal_only() {
+        tx.execute("INSERT INTO dot_event_subscriptions VALUES (?1,?2,?3,?4,?5,?6,?7,1) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,previous_secret=COALESCE(excluded.previous_secret,dot_event_subscriptions.previous_secret),rotation_until=CASE WHEN excluded.previous_secret IS NULL THEN dot_event_subscriptions.rotation_until ELSE excluded.rotation_until END,expires=excluded.expires,active=1",params![sid,stored_owner,url,secret,previous,rotation,expiry])?;
+        if policy.dot_subscription_cutoff() {
             // The write transaction serializes this boundary with message insertion.
             // AUTOINCREMENT high water survives deletion and does not depend on clocks.
             // Active refresh retains the boundary. A new or expired grant starts fresh.
@@ -614,20 +627,39 @@ impl SubscriptionStore {
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<Value> {
         live(&mut cancelled)?;
-        let (sid, _) = self.identity(owner, token, params, false)?;
+        let (sid, stored_owner, _) = self.identity(owner, token, params, false)?;
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        self.authorize(owner, token)?;
+        let current = self.authorize(owner, token)?;
+        if Self::stored_owner(&tx, &current)? != stored_owner {
+            return Err(error("mailbox_generation_changed"));
+        }
         live(&mut cancelled)?;
         tx.execute(
             "UPDATE dot_event_subscriptions SET active=0 WHERE id=?1 AND owner=?2",
-            params![sid, owner],
+            params![sid, stored_owner],
         )?;
         self.authorize(owner, token)?;
         live(&mut cancelled)?;
         tx.commit()?;
         Ok(json!({}))
     }
+}
+
+/// Keep the existing owner and subscription IDs in the initial generation.
+pub(super) fn generation_owner(
+    connection: &Connection,
+    policy: &EventsPolicy,
+) -> rusqlite::Result<Option<String>> {
+    Ok(
+        crate::mailbox_generation::current_storage(connection, policy.mailbox())?.map(|storage| {
+            if storage == policy.mailbox() {
+                policy.principal().to_owned()
+            } else {
+                format!("{storage}/{}", policy.principal())
+            }
+        }),
+    )
 }
 
 // For protected operator diagnostics only. Never return a URL or client data.

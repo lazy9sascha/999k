@@ -68,7 +68,7 @@ fn ids_are_validated() {
 }
 
 #[test]
-fn pending_lists_only_unclaimed_ordinary_grok_messages() {
+fn pending_rejects_invalid_links_and_excludes_claimed_and_rpc() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("q.sqlite3");
     let mut q = Queue::open(&db).unwrap();
@@ -99,11 +99,14 @@ fn pending_lists_only_unclaimed_ordinary_grok_messages() {
 
 #[test]
 fn state_dedups_and_survives_restart() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
     let p = dir.path().join(STATE_FILE);
-    fs::write(
+    crate::private_file::replace_private(
         &p,
-        r#"{"notified":{"a":1},"suppressed":{"b":2},"failed":{}}"#,
+        br#"{"notified":{"a":1},"suppressed":{"b":2},"failed":{}}"#,
     )
     .unwrap();
     let mut s = WakeState::load(p.clone());
@@ -120,6 +123,157 @@ fn state_dedups_and_survives_restart() {
     );
     let s = WakeState::load(p);
     assert!(!s.due("c") && !s.due("d") && !s.due("a"));
+}
+
+fn linked(queue: &mut Queue) -> String {
+    let parent = queue.send(env(MAILBOX, "dot", None)).unwrap().message;
+    let mut answer = env("dot", MAILBOX, Some(parent.id.clone()));
+    answer.correlation_id = Some(parent.id.clone());
+    queue
+        .reply_unclaimed_checked("dot", &parent.id, answer, || Ok(()))
+        .unwrap()
+        .id
+}
+
+fn due_ids(db: &Path, state: &WakeState) -> Vec<String> {
+    pending_page(
+        db,
+        i64::MAX,
+        0,
+        state.start_after(),
+        &state.outstanding_retries(),
+    )
+    .unwrap()
+    .0
+    .into_iter()
+    .filter(|id| state.due(id))
+    .collect()
+}
+
+#[test]
+fn first_start_skips_old_ordinary_and_linked_messages_and_keeps_its_floor_on_restart() {
+    let dir = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("queue.sqlite3");
+    let path = dir.path().join(STATE_FILE);
+    let mut queue = Queue::open(&db).unwrap();
+    crate::grok_mailbox::prepare(&db).unwrap();
+    let old = queue.send(env("dot", MAILBOX, None)).unwrap().message.id;
+    let old_reply = linked(&mut queue);
+    assert_eq!(pending(&db, i64::MAX).unwrap(), vec![old, old_reply]);
+    let before = fs::read(&db).unwrap();
+    let mut state = WakeState::start(&db, path.clone()).unwrap();
+    assert!(due_ids(&db, &state).is_empty());
+    assert_eq!(fs::read(&db).unwrap(), before);
+    assert!(state.start_after() > 0);
+
+    let fresh = queue.send(env("dot", MAILBOX, None)).unwrap().message.id;
+    let fresh_reply = linked(&mut queue);
+    assert_eq!(
+        due_ids(&db, &state),
+        vec![fresh.clone(), fresh_reply.clone()]
+    );
+    state.delivered(&fresh);
+    state.failed(&fresh_reply, Some(503));
+    state.save().unwrap();
+    let restarted = WakeState::start(&db, path).unwrap();
+    assert_eq!(restarted.start_after(), state.start_after());
+    assert_eq!(due_ids(&db, &restarted), vec![fresh_reply]);
+}
+
+#[test]
+fn upgrade_preserves_only_explicit_old_retries_and_checks_current_generation() {
+    let dir = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("queue.sqlite3");
+    let path = dir.path().join(STATE_FILE);
+    let mut queue = Queue::open(&db).unwrap();
+    crate::grok_mailbox::prepare(&db).unwrap();
+    let unseen = queue.send(env("dot", MAILBOX, None)).unwrap().message.id;
+    let unseen_reply = linked(&mut queue);
+    let retry = queue.send(env("dot", MAILBOX, None)).unwrap().message.id;
+    let retry_reply = linked(&mut queue);
+    let mut legacy = WakeState::load(path.clone());
+    legacy.delivered("already-done");
+    legacy
+        .map_mut("suppressed")
+        .insert("operator-suppressed".into(), json!(1));
+    legacy.failed(&retry, Some(503));
+    legacy.failed(&retry_reply, None);
+    legacy
+        .map_mut("failed")
+        .insert(unseen.clone(), json!({"rounds":0}));
+    legacy.save().unwrap();
+    assert!(!legacy.doc.contains_key(START_AFTER));
+
+    let upgraded = WakeState::start(&db, path.clone()).unwrap();
+    assert_eq!(due_ids(&db, &upgraded), vec![retry, retry_reply]);
+    assert!(!due_ids(&db, &upgraded).contains(&unseen));
+    assert!(!due_ids(&db, &upgraded).contains(&unseen_reply));
+    for key in ["notified", "suppressed", "failed"] {
+        assert_eq!(legacy.map(key), upgraded.map(key));
+    }
+
+    crate::mailbox_generation::retire(&db, MAILBOX).unwrap();
+    crate::mailbox_generation::reactivate(&db, MAILBOX).unwrap();
+    let replacement = queue.send(env("dot", MAILBOX, None)).unwrap().message.id;
+    let replacement_reply = linked(&mut queue);
+    let restarted = WakeState::start(&db, path).unwrap();
+    assert_eq!(restarted.start_after(), upgraded.start_after());
+    assert_eq!(
+        due_ids(&db, &restarted),
+        vec![replacement, replacement_reply]
+    );
+}
+
+#[test]
+fn malformed_persisted_state_stops_notifier_without_replay_or_repair() {
+    let dir = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let db = dir.path().join("queue.sqlite3");
+    let mut queue = Queue::open(&db).unwrap();
+    crate::grok_mailbox::prepare(&db).unwrap();
+    queue.send(env("dot", MAILBOX, None)).unwrap();
+    let config = WakeConfig {
+        db: db.clone(),
+        url_file: dir.path().join(URL_FILE),
+        auth_file: dir.path().join(AUTH_FILE),
+        state_file: dir.path().join(STATE_FILE),
+        stop: None,
+        keychain: None,
+        explicit_files: false,
+    };
+    for invalid in [
+        br#"{broken"#.as_slice(),
+        br#"{"notified":[],"suppressed":{},"failed":{}}"#,
+        br#"{"notified":{},"suppressed":{},"failed":{"x":{"rounds":"1"}}}"#,
+        br#"{"notified":{},"suppressed":{},"failed":{},"start_after_seq":-1}"#,
+        br#"{"notified":{},"suppressed":{},"failed":{},"start_after_seq":100}"#,
+        br#"{"notified":{},"notified":{},"suppressed":{},"failed":{}}"#,
+    ] {
+        crate::private_file::replace_private(&config.state_file, invalid).unwrap();
+        spawn(
+            config.clone(),
+            Some(Instant::now() + Duration::from_secs(1)),
+            |_| {
+                panic!("invalid state must stop before candidate authorization");
+            },
+        )
+        .unwrap()
+        .join()
+        .unwrap();
+        let status: Value =
+            serde_json::from_slice(&fs::read(dir.path().join(STATUS_FILE)).unwrap()).unwrap();
+        assert_eq!(status["state"], "failed");
+        assert_eq!(status["detail"]["reason"], "state_invalid");
+        assert_eq!(fs::read(&config.state_file).unwrap(), invalid);
+    }
 }
 
 #[test]
@@ -184,11 +338,11 @@ fn ineligible_first_page_does_not_starve_later_authorized_message() {
         q.send(env("revoked", MAILBOX, None)).unwrap();
     }
     let good = q.send(env("hermes", MAILBOX, None)).unwrap().message.id;
-    let (first, next) = pending_page(&db, i64::MAX, 0).unwrap();
+    let (first, next) = pending_page(&db, i64::MAX, 0, 0, &[]).unwrap();
     assert_eq!(first.len(), 50);
     assert!(!first.contains(&good));
     assert!(next > 0);
-    let (second, next) = pending_page(&db, i64::MAX, next).unwrap();
+    let (second, next) = pending_page(&db, i64::MAX, next, 0, &[]).unwrap();
     assert_eq!(second, vec![good]);
     assert_eq!(next, 0);
 }
@@ -209,10 +363,10 @@ fn malformed_id_page_advances_without_modifying_rows() {
         .unwrap();
     }
     let good = q.send(env("hermes", MAILBOX, None)).unwrap().message.id;
-    let (first, next) = pending_page(&db, i64::MAX, 0).unwrap();
+    let (first, next) = pending_page(&db, i64::MAX, 0, 0, &[]).unwrap();
     assert!(first.is_empty());
     assert!(next > 0);
-    let (second, next) = pending_page(&db, i64::MAX, next).unwrap();
+    let (second, next) = pending_page(&db, i64::MAX, next, 0, &[]).unwrap();
     assert_eq!(second, vec![good]);
     assert_eq!(next, 0);
     let remaining: i64 = c

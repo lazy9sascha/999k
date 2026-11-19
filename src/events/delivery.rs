@@ -5,6 +5,7 @@
 //! DNS-pinned HTTPS transport with its existing ten-second callback bound.
 //! Callback success is not native consumption.
 use super::policy::{EventsPolicy, PolicySource, PreflightError};
+use crate::mailbox_engine::PLAIN_MESSAGE as PLAIN;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, TransactionBehavior, params, params_from_iter,
 };
@@ -15,12 +16,6 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, PreflightError>;
-const PLAIN: &str = "(m.in_reply_to IS NULL OR EXISTS (
- SELECT 1 FROM messages parent WHERE parent.id=m.in_reply_to
- AND parent.sender=m.recipient AND parent.recipient=m.sender AND parent.in_reply_to IS NULL
- AND m.correlation_id=COALESCE(parent.correlation_id,parent.id)
- AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=parent.id)))
- AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=m.id)";
 fn error(reason: &'static str) -> PreflightError {
     PreflightError {
         reason,
@@ -115,6 +110,7 @@ fn message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
 
 struct Subscription {
     owner: String,
+    stored_owner: String,
     id: String,
     url: String,
     secret: String,
@@ -233,6 +229,7 @@ impl EventDelivery {
             crate::Error::Database(error) => error.into(),
             _ => error("requires_current_schema_queue"),
         })?;
+        crate::mailbox_generation::scope_connection(&conn)?;
         Ok(conn)
     }
     fn policy(&self) -> Result<EventsPolicy> {
@@ -261,10 +258,13 @@ impl EventDelivery {
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let policy = self.policy()?; // Revalidate after acquiring the storage lock.
+        let Some(stored_owner) = super::subscriptions::generation_owner(&tx, &policy)? else {
+            return Ok(Vec::new());
+        };
         let now = clock();
         Self::time(now)?;
         let subscriptions:Vec<(String,String)>=tx.prepare("SELECT id,url FROM dot_event_subscriptions WHERE active=1 AND owner=?1 AND (expires>?2 OR (expires=0 AND ?3))")?
-            .query_map(params![policy.principal(),now,self.allow_nonexpiring],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
+            .query_map(params![stored_owner,now,self.allow_nonexpiring],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
         let mut candidates = Vec::new();
         for (sid, url) in subscriptions {
             if !policy.callback_allowed(&url) {
@@ -272,18 +272,14 @@ impl EventDelivery {
             }
             candidates.push(sid.clone());
             let marks = vec!["?"; policy.allowed_senders().len()].join(",");
-            let cutoff = if policy.terminal_only() {
+            let cutoff = if policy.dot_subscription_cutoff() {
                 Some(super::subscriptions::dot_start_seq(&tx, &sid)?)
             } else {
                 None
             };
-            let terminal = if cutoff.is_some() {
-                "AND m.in_reply_to IS NOT NULL AND m.seq>?"
-            } else {
-                ""
-            };
+            let fresh = if cutoff.is_some() { "AND m.seq>?" } else { "" };
             let sql = format!(
-                "SELECT m.id,m.sender,m.body,m.correlation_id,m.in_reply_to,m.created_at_ms,m.seq,m.conversation_id FROM messages m WHERE m.recipient=? AND m.dead_lettered_at_ms IS NULL AND m.acknowledged_at_ms IS NULL AND m.attempts=0 AND m.sender IN ({marks}) AND {PLAIN} {terminal} AND NOT EXISTS(SELECT 1 FROM dot_event_outbox o WHERE o.message_id=m.id AND o.subscription_id=?) ORDER BY m.seq LIMIT 100"
+                "SELECT m.id,m.sender,m.body,m.correlation_id,m.in_reply_to,m.created_at_ms,m.seq,m.conversation_id FROM messages m WHERE m.recipient=? AND m.dead_lettered_at_ms IS NULL AND m.acknowledged_at_ms IS NULL AND m.attempts=0 AND m.sender IN ({marks}) AND {PLAIN} {fresh} AND NOT EXISTS(SELECT 1 FROM dot_event_outbox o WHERE o.message_id=m.id AND o.subscription_id=?) ORDER BY m.seq LIMIT 100"
             );
             let mut args: Vec<rusqlite::types::Value> = std::iter::once(policy.mailbox())
                 .chain(policy.allowed_senders().iter().map(String::as_str))
@@ -324,14 +320,17 @@ impl EventDelivery {
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let policy = self.policy()?;
+        let Some(stored_owner) = super::subscriptions::generation_owner(&tx, &policy)? else {
+            return Ok(None);
+        };
         let now = clock();
         Self::time(now)?;
-        let sub=tx.query_row("SELECT s.id,s.url,s.secret,s.previous_secret,s.rotation_until,COALESCE(g.generation,0) FROM dot_event_subscriptions s LEFT JOIN dot_subscription_generations g ON g.subscription_id=s.id WHERE s.id=?1 AND active=1 AND owner=?2 AND (expires>?3 OR (expires=0 AND ?4))",params![sid,policy.principal(),now,self.allow_nonexpiring],|r|Ok(Subscription { owner:policy.principal().to_owned(), id:r.get(0)?,url:r.get(1)?,secret:r.get(2)?,previous:r.get(3)?,rotation_until:r.get(4)?,generation:r.get(5)? })).optional()?;
+        let sub=tx.query_row("SELECT s.id,s.url,s.secret,s.previous_secret,s.rotation_until,COALESCE(g.generation,0) FROM dot_event_subscriptions s LEFT JOIN dot_subscription_generations g ON g.subscription_id=s.id WHERE s.id=?1 AND active=1 AND owner=?2 AND (expires>?3 OR (expires=0 AND ?4))",params![sid,stored_owner,now,self.allow_nonexpiring],|r|Ok(Subscription { owner:policy.principal().to_owned(), stored_owner:stored_owner.clone(), id:r.get(0)?,url:r.get(1)?,secret:r.get(2)?,previous:r.get(3)?,rotation_until:r.get(4)?,generation:r.get(5)? })).optional()?;
         let Some(sub) = sub else { return Ok(None) };
         if !policy.callback_allowed(&sub.url) {
             return Ok(None);
         };
-        let cutoff = if policy.terminal_only() {
+        let cutoff = if policy.dot_subscription_cutoff() {
             Some(super::subscriptions::dot_start_seq(&tx, sid)?)
         } else {
             None
@@ -389,7 +388,6 @@ impl EventDelivery {
             r.id.len() <= 128
                 && r.valid()
                 && policy.allowed_senders().contains(&r.sender)
-                && (!policy.terminal_only() || r.parent.is_some())
                 && cutoff.is_none_or(|seq| r.stored_seq > seq)
         });
         let Some(row) = row else {
@@ -411,12 +409,27 @@ impl EventDelivery {
             sender: row.sender,
             correlation: row.correlation.unwrap_or(row.id),
             created_ms: row.created_ms,
-            terminal_reply_to: if policy.terminal_only() {
+            terminal_reply_to: if policy.dot_subscription_cutoff() {
                 row.parent
             } else {
                 None
             },
         }))
+    }
+
+    /// A reserved callback can be superseded before its transport starts.
+    pub fn still_current(&self, attempt: &DeliveryAttempt) -> Result<bool> {
+        let conn = self.connect()?;
+        let policy = self.policy()?;
+        Ok(
+            super::subscriptions::generation_owner(&conn, &policy)?.as_deref()
+                == Some(attempt.subscription.stored_owner.as_str())
+                && conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1)",
+                    [&attempt.message_id],
+                    |row| row.get::<_, bool>(0),
+                )?,
+        )
     }
 
     /// Apply a response only to the exact persisted generation and attempt.
@@ -427,6 +440,12 @@ impl EventDelivery {
         }
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let policy = self.policy()?;
+        if super::subscriptions::generation_owner(&tx, &policy)?.as_deref()
+            != Some(attempt.subscription.stored_owner.as_str())
+        {
+            return Ok(DeliveryOutcome::Superseded);
+        }
         let generation:Option<i64>=tx.query_row("SELECT COALESCE(g.generation,0) FROM dot_event_subscriptions s LEFT JOIN dot_subscription_generations g ON g.subscription_id=s.id WHERE s.id=?1",[&attempt.subscription.id],|r|r.get(0)).optional()?;
         if generation != Some(attempt.subscription.generation) {
             return Ok(DeliveryOutcome::Superseded);

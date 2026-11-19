@@ -183,12 +183,18 @@ fn dot_inbox_pages_exact_read_metadata_without_claiming_or_acknowledging() {
             .unwrap()
     };
     assert_eq!(list("wrong", json!({})).0, 401);
-    let page = data(list(TOKEN, json!({"limit":1})).1);
+    let page = data(list(TOKEN, json!({"limit":1,"order":"oldest"})).1);
     assert_eq!(page["metadata_only"], true);
     assert_eq!(page["messages"][0]["id"], first);
     assert_eq!(page["messages"][0]["state"], "pending");
     assert!(page["messages"][0].get("body").is_none());
-    let next = data(list(TOKEN, json!({"continuation":page["next_continuation"]})).1);
+    let next = data(
+        list(
+            TOKEN,
+            json!({"continuation":page["next_continuation"],"order":"oldest"}),
+        )
+        .1,
+    );
     assert_eq!(next["messages"].as_array().unwrap().len(), 1);
     assert_eq!(next["messages"][0]["id"], terminal);
     assert_eq!(next["messages"][0]["state"], "reply_received");
@@ -299,22 +305,28 @@ fn dot_event_auth_discovery_and_exact_recipient_are_fail_closed() {
     );
 }
 #[test]
-fn only_terminal_replies_wake_with_signed_metadata_and_survive_restart_without_ack() {
+fn ordinary_and_terminal_wakes_keep_signed_metadata_and_the_existing_subscription() {
     let f = Fixture::new();
     let r = f.prepared();
-    let ordinary = f.send("muse", "dot");
+    let old_ordinary = f.send("muse", "dot");
     f.send("muse", "grok-bot");
     let (_, old_reply) = f.terminal();
-    r.event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
+    let subscription = r
+        .event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
         .unwrap();
-    r.tick_with(&context(), |_, _| panic!("old terminal reply delivered"))
-        .unwrap();
+    r.tick_with(&context(), |_, _| {
+        panic!("pre-subscription message delivered")
+    })
+    .unwrap();
     let cutoff: i64 = f
         .conn()
         .query_row("SELECT after_seq FROM dot_subscription_cutoffs", [], |r| {
             r.get(0)
         })
         .unwrap();
+    let ordinary = f.send("muse", "dot");
+    f.send("muse", "grok-bot");
+    f.send("unregistered", "dot");
     let (parent, reply) = f.terminal();
     let (_, acked) = f.terminal();
     f.conn()
@@ -331,8 +343,10 @@ fn only_terminal_replies_wake_with_signed_metadata_and_survive_restart_without_a
         )
         .unwrap();
     // Refresh retains the initial boundary and does not drop the new pending reply.
-    r.event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
+    let refreshed = r
+        .event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
         .unwrap();
+    assert_eq!(subscription["id"], refreshed["id"]);
     assert_eq!(
         f.conn()
             .query_row("SELECT after_seq FROM dot_subscription_cutoffs", [], |r| {
@@ -341,9 +355,32 @@ fn only_terminal_replies_wake_with_signed_metadata_and_survive_restart_without_a
             .unwrap(),
         cutoff
     );
-    let mut count = 0;
-    r.tick_with(&context(),|_,req| {count+=1;assert!(signed_headers(&req).unwrap().contains_key("webhook-signature"));let b:Value=serde_json::from_slice(req.body).unwrap();assert_eq!(b["data"],json!({"recipient":"dot","message_id":reply,"conversation_id":parent,"sender":"muse","correlation_id":parent,"in_reply_to":parent,"terminal":true}));assert!(!String::from_utf8_lossy(req.body).contains("synthetic fixture body"));Ok(CallbackResponse{status:200,body:vec![]})}).unwrap();
-    assert_eq!(count, 1);
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        r.tick_with(&context(), |_, req| {
+            assert!(
+                signed_headers(&req)
+                    .unwrap()
+                    .contains_key("webhook-signature")
+            );
+            let body: Value = serde_json::from_slice(req.body).unwrap();
+            assert_eq!(body["name"], "pigeonmq.message.created");
+            delivered.push(body["data"].clone());
+            Ok(CallbackResponse {
+                status: 200,
+                body: vec![],
+            })
+        })
+        .unwrap();
+    }
+    assert_eq!(
+        delivered,
+        vec![
+            json!({"recipient":"dot","message_id":ordinary,"conversation_id":ordinary,"sender":"muse","correlation_id":ordinary}),
+            json!({"recipient":"dot","message_id":reply,"conversation_id":parent,"sender":"muse","correlation_id":parent,"in_reply_to":parent,"terminal":true}),
+        ]
+    );
+    assert_eq!(f.state(&old_ordinary), (0, None));
     assert_eq!(f.state(&reply), (0, None));
     assert_eq!(f.state(&ordinary), (0, None));
     assert_eq!(f.state(&old_reply), (0, None));
@@ -508,4 +545,107 @@ fn fresh_cutoff_is_fail_closed_and_reactivation_starts_fresh() {
             .is_err()
     );
     assert_eq!(f.state(&pending), (0, None));
+}
+
+#[test]
+fn replacement_generation_uses_a_new_grant_and_never_wakes_old_messages() {
+    const NEW_TOKEN: &str = "PUBLIC_REPLACEMENT_DOT_FIXTURE_NOT_A_CREDENTIAL";
+    let fixture = Fixture::new();
+    let runtime = fixture.prepared();
+    let original = runtime
+        .event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
+        .unwrap();
+    fixture.send("muse", "dot");
+    fixture.terminal();
+    runtime
+        .tick_with(&context(), |_, _| {
+            Ok(CallbackResponse {
+                status: 503,
+                body: vec![],
+            })
+        })
+        .unwrap();
+
+    let dispatch_lock = pigeonmq::mailbox_generation::lock_dispatch(&fixture.db).unwrap();
+    assert!(pigeonmq::mailbox_generation::retire(&fixture.db, "dot").is_err());
+    drop(dispatch_lock);
+    pigeonmq::mailbox_generation::retire(&fixture.db, "dot").unwrap();
+    pigeonmq::mailbox_generation::reactivate(&fixture.db, "dot").unwrap();
+
+    let mut policy: Value =
+        serde_json::from_slice(&std::fs::read(&fixture.policy).unwrap()).unwrap();
+    policy["token_sha256"] = json!(
+        Sha256::digest(NEW_TOKEN)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    put(&fixture.policy, &policy);
+    assert!(
+        runtime
+            .event_with(
+                TOKEN,
+                "events/subscribe",
+                &grant("dot"),
+                &context(),
+                |_, _| panic!("retired bearer reached callback verification")
+            )
+            .is_err()
+    );
+
+    assert_eq!(
+        runtime
+            .tick_with(&context(), |_, _| panic!(
+                "retired runtime entered callback"
+            ))
+            .unwrap_err()
+            .reason,
+        "mailbox_generation_retired"
+    );
+    assert_eq!(
+        runtime
+            .event_with(NEW_TOKEN, "events/list", &json!({}), &context(), echo)
+            .unwrap_err()
+            .reason,
+        "mailbox_generation_retired"
+    );
+
+    let storage = pigeonmq::mailbox_generation::active_storage(&fixture.db, "dot")
+        .unwrap()
+        .unwrap();
+    let runtime = Runtime::new_with_generation(&fixture.db, &fixture.policy, Some(&storage))
+        .unwrap()
+        .unwrap();
+    let replacement = runtime
+        .event_with(
+            NEW_TOKEN,
+            "events/subscribe",
+            &grant("dot"),
+            &context(),
+            echo,
+        )
+        .unwrap();
+    assert_ne!(original["id"], replacement["id"]);
+    runtime
+        .tick_with(&context(), |_, _| {
+            panic!("prior generation callback repeated")
+        })
+        .unwrap();
+    let ordinary = fixture.send("muse", "dot");
+    let (_, terminal) = fixture.terminal();
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        runtime
+            .tick_with(&context(), |_, request| {
+                assert_eq!(Some(request.subscription_id), replacement["id"].as_str());
+                let event: Value = serde_json::from_slice(request.body).unwrap();
+                delivered.push(event["data"]["message_id"].as_str().unwrap().to_owned());
+                Ok(CallbackResponse {
+                    status: 200,
+                    body: vec![],
+                })
+            })
+            .unwrap();
+    }
+    assert_eq!(delivered, [ordinary, terminal]);
 }

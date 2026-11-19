@@ -10,8 +10,10 @@ Run `pigeonmq <command> --help` for exact flags.
 
 | Command | What it does |
 | --- | --- |
-| `init --home DIR` | Create the home, an empty queue, and settings drafts for every app. Detects installed apps. |
-| `init <agent> --home DIR` | Stage an isolated local mailbox. See [local mailbox setup](#stage-local-mailboxes). |
+| `init --home DIR` | Prepare the home and missing connector drafts. Scan system and user Applications folders. |
+| `init <agent> --home DIR` | Stage a [built-in profile](#manage-built-in-profiles) or a [dedicated local mailbox](#stage-local-mailboxes). |
+| `init <agent> --home DIR --apply` | Apply a staged built-in profile on macOS or activate a dedicated local replacement. |
+| `remove <agent> --home DIR --apply` | Retire a managed built-in profile and preserve its queue rows. |
 | `discover --home DIR` | Same detection. Only creates settings that are missing. Detection means "app bundle found", not "connected". |
 | `setup-muse --home DIR --peer NAME` | Muse in one step: queue, registration (`muse` + peer), policy, Keychain token. Safe to repeat. |
 | `setup-codex --home DIR --peer NAME [--callback-host HOST --resolver PATH]` | Prepare the Codex Cloud queue, registration, policy, Keychain token, and optional Events storage. |
@@ -65,13 +67,58 @@ By default, `run --home DIR` uses the conventional policy files in the Cloud hom
 }
 ```
 
-Valid adapter IDs are `muse`, `dot`, `grok-bot`, `codex-cloud`, and `codex-local`. Use one entry per adapter, one route per entry, and a distinct private policy file. In `policy`, use a filename at the top of the Cloud home or the absolute path to an existing file, including one outside the Cloud home. Relative subpaths and `.` or `..` path segments are not allowed. The policy file and its containing directory must be owner-private and must not be symlinks. An MCP route can use a lowercase slug in `/<slug>/mcp`. The native receiver keeps `/receiver`. A route reserved for another adapter cannot be reused.
+Valid adapter IDs are `muse`, `dot`, `grok-bot`, `codex-cloud`, `codex-local`, `cue`, and `instinct`. Use one entry per adapter, one route per entry, and a distinct private policy file. In `policy`, use a filename at the top of the Cloud home or the absolute path to an existing file, including one outside the Cloud home. Relative subpaths and `.` or `..` path segments are not allowed. The policy file and its containing directory must be owner-private and must not be symlinks. An MCP route can use a lowercase slug in `/<slug>/mcp`. The native receiver keeps `/receiver`. A route reserved for another adapter cannot be reused.
 
 The hub uses each mounted route exactly as written. The manifest mounts only the listed profiles. A renamed route does not leave an alias at the default route. A missing or invalid policy stops startup instead of falling back to a conventional file. The running supervisor pins the manifest contents when it starts. Restart the supervisor to apply a deliberate change. Use the existing Bearer policy and registration rules. The file cannot set credentials, grant access, add a new adapter, or start the hub by itself.
 
 Only the selected Grok Bot profile can set optional `wake_files_dir`. Use an absolute, owner-private directory with no symlink at that path. It must contain regular, owner-owned `grok-webhook-url` and `grok-webhook-auth` files with mode 600, one hard link each, and no more than 4 KiB each. Do not put either value in the manifest. Startup rejects an invalid source or a `grok-webhook-keychain` marker in the Cloud home. It does not fall back. The notifier reopens the selected files for each send. The queue, wake status, state, and lock stay in the Cloud home. Omit the field to keep conventional Keychain or home-file discovery.
 
 The low-level `serve-hub` command can also take `--profiles-file PATH` with the absolute queue path. Do not combine it with explicit per-profile policy or registration flags. Setup and credential commands still use conventional filenames. Set a remapped connector route manually after checking it with its own bearer.
+
+## Manage built-in profiles
+
+Install the release executable at a stable absolute path outside the checkout and temporary directories.
+See [Build](quickstart.md#1-build) for an owner-private install path.
+Use `init --home DIR` to prepare an absolute owner-private home for a new installation.
+Use `init NAME --home DIR` to stage a profile in that home.
+Run the installed executable with `init NAME --home DIR --apply` to start or reload the managed hub.
+A successful apply checks authenticated route readiness on loopback.
+Set `--port` at first staging to select a port other than 54843.
+
+Each macOS login uses one managed home and one fixed pair of labels, `pigeonmq.hub` and `pigeonmq.email-relay`.
+The hub binds only to loopback. Apply and remove all profiles for that login against the same home.
+
+Cue and Instinct can stage a protected Bearer on a new installation.
+Dot, Codex Cloud, Muse, and Grok Bot need a prepared connector policy and registration.
+Use the existing adapter setup and the exact active manifest with `--profiles-file PATH` when applicable.
+Named init reuses the selected policy and credential for an already configured binding.
+Review a settings conflict before applying.
+
+A schema 4 queue without the generation catalog supports read-only recognition of compatible existing profiles.
+It rejects activation or removal through the managed commands.
+Existing connector setup and the existing supervisor remain appropriate for that queue.
+
+Use `remove NAME --home DIR` to preview a managed removal.
+Add `--apply` to revoke the registration and retire its generation. Queue rows remain stored.
+To reconnect the same name, stage with `init` and apply the staged Bearer.
+Reconfigure the app with the new Bearer. Earlier messages remain outside the replacement mailbox.
+
+### Opt in to email arrivals
+
+Provide a valid address for Cue or Instinct with `--email-recipient` when staging.
+On first email setup pass `--relay-command` with an absolute path to an owner-private executable.
+The command receives two arguments, the email destination and the PigeonMQ message ID.
+Use an absolute interpreter path in scripts and absolute paths to their dependencies.
+The managed relay supplies a restricted system `PATH`.
+Configure the command using your existing provider login and use the ID as its idempotency key.
+The provider must suppress repeat sends for at least 24 hours.
+
+Email membership is stored in an owner-private configuration file.
+The `pigeonmq.email-relay` service is created for the first selected mailbox.
+Adding or removing an email mailbox while another remains preserves the same plist and running relay.
+Removing the final email mailbox stops and removes the relay job. The hub plist remains.
+At login the hub can run with an empty route set until a profile is applied.
+Email sends start at the recorded activation boundary.
 
 ## Stage local mailboxes
 
@@ -88,6 +135,28 @@ Each init prints JSON with `mailbox`, `route`, `token_file`, `created`, `runtime
 The same binary serves any valid staged name through the official Rust MCP SDK (rmcp). For a local test, use POST with `Content-Type: application/json` and `Accept: application/json, text/event-stream` on the exact route printed by init. Each mailbox has its own policy and registration and registers no peers. A token for one route cannot access the other. To stage from triage, save a [valid local record](architecture.md#triage-file-to-init) as `$TEST_HOME/triage/<agent>.json` before init. The record selects read, wait, or both. Without a record, a new mailbox offers both. Do not use the checked-in Vooy candidate as a local record: it describes an unverified remote app.
 
 This command does not connect the real Vooy app, configure a connector, or start a tunnel. Do not forward this test listener through a tunnel. The normal runner does not load these routes. Start a new bounded listener to apply new registrations.
+
+### Replace a dedicated local mailbox
+
+Run these commands against the same dedicated home:
+
+```sh
+pigeonmq remove my-agent --home "$MAILBOX_HOME"
+pigeonmq init my-agent --home "$MAILBOX_HOME"
+pigeonmq init my-agent --home "$MAILBOX_HOME" --apply
+```
+
+Removal revokes the existing binding and preserves its queue records.
+The next `init` stages a new Bearer and storage identity for the same route.
+The staged replacement stays inactive until `--apply`. Repeat `init` to reuse the staged credential.
+Restart a dedicated listener to mount the active replacement.
+Use the new protected Bearer. The retired listener binding rejects requests.
+These commands apply to dedicated local mailboxes. Built-in cloud profiles use their own setup and deployment procedures.
+
+Queues created by this release include the generation catalog and retain schema 4.
+A legacy queue without that catalog can continue serving existing bindings.
+Removal and same-name replacement fail closed on that queue.
+Use a generation-aware build for every process serving a queue with replaced mailboxes.
 
 ## Dot through a private Secure MCP Tunnel
 
@@ -144,9 +213,25 @@ Codex Cloud Events and a shared tunnel need separate configuration and acceptanc
 See the official [tunnel configuration](https://github.com/openai/tunnel-client/blob/master/docs/configuration.md)
 and [ChatGPT connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt).
 
-### Optional Dot reply Events
+### Optional local arrival notifier
 
-The standalone Dot profile can send signed callbacks for linked terminal replies.
+Run `pigeonmq notify-arrivals` as a separate service to notify selected registered mailboxes.
+It uses the existing queue in read-only mode. First start records the current sequence.
+Later sweeps observe new eligible ordinary messages and linked terminal replies.
+
+Set `--queue`, `--registration`, `--state`, and `--command` to absolute paths.
+Set `--mailbox` once per selected mailbox. Use an owner-private directory for the notifier state.
+The command receives two arguments in order: the mailbox and message ID.
+Keep the command owner-private and executable. Use the message ID as the recipient provider's idempotency key.
+The provider must suppress repeat sends for at least 24 hours.
+The notifier retries an uncertain delivery for up to 20 hours and reports expired reservations.
+Set `--interval-secs` for a long-running local service.
+
+### Optional Dot mailbox Events
+
+The Dot profile can send signed callbacks for ordinary messages and linked terminal replies.
+It delivers eligible messages that arrived after the subscription became active.
+Callbacks carry identifiers only. Read the message through the authenticated mailbox.
 The Dot profile disables this feature when its protected policy has no `events` field.
 It uses the existing `/dot/mcp` route, queue, subscriptions, and durable outbox.
 It does not use a scheduled mailbox check in ChatGPT.
@@ -179,8 +264,8 @@ The subscription owner is the authenticated Dot principal. A caller cannot selec
 The worker checks current registration and policy before subscription changes and callback delivery.
 It uses the Dot instance lock. Codex keeps its separate policy and lock.
 
-Callbacks contain message identifiers, `in_reply_to`, and `terminal: true`. They contain no message body or mailbox credential.
-The first successful subscription excludes replies that already exist in the queue.
+Callbacks contain message identifiers. Linked terminal callbacks also include `in_reply_to` and `terminal: true`.
+The first successful subscription excludes messages that already exist in the queue.
 The server stores the queue sequence boundary in the same transaction as the grant.
 Active refresh and restart preserve that boundary. The caller cannot request replay or select a cutoff.
 A subscription after expiry or unsubscribe starts with a new boundary.

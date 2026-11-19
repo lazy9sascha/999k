@@ -38,11 +38,21 @@ impl DotBackend {
 }
 
 pub fn check(db: &Path, policy: &Path, prepare: bool) -> std::io::Result<()> {
+    check_with_generation(db, policy, prepare, None).map(|_| ())
+}
+
+pub fn check_with_generation(
+    db: &Path,
+    policy: &Path,
+    prepare: bool,
+    generation: Option<&str>,
+) -> std::io::Result<Option<events::Runtime>> {
     DotPolicy::load(policy).map_err(|error| std::io::Error::other(error.reason))?;
     open_private_file(db).map_err(|_| std::io::Error::other("private database required"))?;
     let queue = Queue::open_existing(db).map_err(std::io::Error::other)?;
     // Validate optional settings before any schema write.
-    let events = events::Runtime::new(db, policy).map_err(|e| std::io::Error::other(e.reason))?;
+    let events = events::Runtime::new_with_generation(db, policy, generation)
+        .map_err(|e| std::io::Error::other(e.reason))?;
     if prepare {
         if let Some(events) = &events {
             events
@@ -58,12 +68,12 @@ pub fn check(db: &Path, policy: &Path, prepare: bool) -> std::io::Result<()> {
         .connection
         .prepare("SELECT message_id,reply_id FROM dot_event_replies LIMIT 0")
         .map_err(|_| std::io::Error::other("Dot storage unprepared"))?;
-    if let Some(events) = events {
+    if let Some(events) = &events {
         events
             .check()
             .map_err(|e| std::io::Error::other(e.reason))?;
     }
-    Ok(())
+    Ok(events)
 }
 
 impl Backend for DotBackend {

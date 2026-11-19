@@ -88,6 +88,29 @@ impl Fixture {
         assert_eq!(response["result"]["isError"], false, "{response}");
         tool_text(&response)
     }
+
+    fn store(&self, sender: &str, recipient: &str, body: &str) -> String {
+        Queue::open_existing(&self.db)
+            .unwrap()
+            .send(Envelope {
+                sender: sender.into(),
+                recipient: recipient.into(),
+                body: body.into(),
+                correlation_id: None,
+                in_reply_to: None,
+                idempotency_key: None,
+            })
+            .unwrap()
+            .message
+            .id
+    }
+
+    fn tie_timestamps(&self) {
+        rusqlite::Connection::open(&self.db)
+            .unwrap()
+            .execute("UPDATE messages SET created_at_ms=1000", [])
+            .unwrap();
+    }
 }
 
 const STANDARD_HEADERS: &str =
@@ -301,6 +324,169 @@ fn mcp_rejects_invalid_page_fields_and_limits() {
         );
         assert_eq!(std::fs::read(&f.db).unwrap(), before);
     }
+}
+
+fn page_ids(page: &Value) -> Vec<&str> {
+    assert_eq!(page["metadata_only"], true);
+    page["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| {
+            assert!(message.get("body").is_none());
+            message["id"].as_str().unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn mailbox_pages_keep_tie_order_and_exclude_new_arrivals_until_refreshed() {
+    for order in ["newest", "oldest"] {
+        let f = Fixture::new("muse");
+        let first = f.store("dot", "muse", "mailbox-page sent to Muse");
+        let second = f.store("muse", "dot", "mailbox-page sent by Muse");
+        let third = f.store("dot", "muse", "mailbox-page sent to Muse again");
+        f.tie_timestamps();
+        let expected = if order == "newest" {
+            [&third, &second, &first]
+        } else {
+            [&first, &second, &third]
+        };
+        let first_page = f.call(
+            "pigeonmq_inbox",
+            json!({"scope":"all","query":"mailbox-page","order":order,"limit":1}),
+        );
+        assert_eq!(page_ids(&first_page), [expected[0].as_str()]);
+
+        let arrived = f.store("dot", "muse", "mailbox-page arrived between requests");
+        f.tie_timestamps();
+        let before = std::fs::read(&f.db).unwrap();
+        let next = f.call(
+            "pigeonmq_inbox",
+            json!({"scope":"all","query":"mailbox-page","order":order,"limit":2,
+                   "continuation":first_page["next_continuation"]}),
+        );
+        assert_eq!(
+            page_ids(&next),
+            [expected[1].as_str(), expected[2].as_str()]
+        );
+        if !next["next_continuation"].is_null() {
+            let last = f.call(
+                "pigeonmq_inbox",
+                json!({"scope":"all","query":"mailbox-page","order":order,
+                       "continuation":next["next_continuation"]}),
+            );
+            assert!(page_ids(&last).is_empty());
+            assert!(last["next_continuation"].is_null());
+        }
+
+        let fresh = f.call(
+            "pigeonmq_inbox",
+            json!({"scope":"all","query":"mailbox-page","order":order}),
+        );
+        let fresh = page_ids(&fresh);
+        if order == "newest" {
+            assert_eq!(fresh, [&arrived, &third, &second, &first]);
+        } else {
+            assert_eq!(fresh, [&first, &second, &third, &arrived]);
+        }
+        assert_eq!(std::fs::read(&f.db).unwrap(), before);
+    }
+}
+
+#[test]
+fn mailbox_search_matches_literal_body_only_within_current_read_scope() {
+    let f = Fixture::new("muse");
+    let received = f.store("dot", "muse", "before fIXTURE_%' 뒤에");
+    let sent = f.store("muse", "dot", "before fixture_%' 뒤에");
+    for (sender, recipient) in [("blocked", "muse"), ("muse", "blocked"), ("dot", "blocked")] {
+        f.store(sender, recipient, "before fixture_%' 뒤에");
+    }
+    f.store("dot", "muse", "before fixtureXwild' 뒤에");
+
+    let query = "FiXtUrE_%' 뒤에";
+    let inbox = f.call("pigeonmq_inbox", json!({"query":query}));
+    assert_eq!(page_ids(&inbox), [received.as_str()]);
+    let all = f.call("pigeonmq_inbox", json!({"scope":"all","query":query}));
+    assert_eq!(page_ids(&all), [sent.as_str(), received.as_str()]);
+    assert!(inbox["next_continuation"].is_null());
+    assert!(all["next_continuation"].is_null());
+    let exact = f.call("pigeonmq_read", json!({"message_id":received}));
+    assert_eq!(exact["body"], "before fIXTURE_%' 뒤에");
+}
+
+#[test]
+fn mailbox_all_search_includes_a_linked_sent_reply() {
+    let f = Fixture::new("muse");
+    let original = f.store("dot", "muse", "synthetic original request");
+    let reply = f.call(
+        "pigeonmq_reply",
+        json!({"message_id":original,"body":"outbound-search-fixture linked-marker"}),
+    );
+    let unacknowledged = f.store("dot", "muse", "another original still pending");
+    Queue::open_existing(&f.db)
+        .unwrap()
+        .send(Envelope {
+            sender: "muse".into(),
+            recipient: "dot".into(),
+            body: "outbound-search-fixture".into(),
+            correlation_id: Some(unacknowledged.clone()),
+            in_reply_to: Some(unacknowledged),
+            idempotency_key: None,
+        })
+        .unwrap();
+
+    let inbox = f.call("pigeonmq_inbox", json!({"query":"outbound-search-fixture"}));
+    assert!(page_ids(&inbox).is_empty());
+    let all = f.call(
+        "pigeonmq_inbox",
+        json!({"scope":"all","query":"outbound-search-fixture"}),
+    );
+    assert_eq!(page_ids(&all), [reply["reply_id"].as_str().unwrap()]);
+    assert_eq!(all["messages"][0]["in_reply_to"], original);
+
+    // Matching an unreadable body must not be visible through pagination.
+    let first_page = |query| {
+        f.call(
+            "pigeonmq_inbox",
+            json!({"scope":"all","query":query,"order":"oldest","limit":1}),
+        )
+    };
+    let shared_term = first_page("outbound-search-fixture");
+    let linked_only = first_page("linked-marker");
+    assert_eq!(page_ids(&shared_term), page_ids(&linked_only));
+    assert_eq!(
+        shared_term["next_continuation"].is_null(),
+        linked_only["next_continuation"].is_null()
+    );
+}
+
+#[test]
+fn mailbox_continuation_binds_scope_query_and_order() {
+    let f = Fixture::new("muse");
+    let page = f.call(
+        "pigeonmq_inbox",
+        json!({"query":"EXACT_READ_FIXTURE_BODY","limit":1}),
+    );
+    let cursor = &page["next_continuation"];
+    assert!(cursor.is_string());
+    for args in [
+        json!({"scope":"all","query":"EXACT_READ_FIXTURE_BODY","continuation":cursor}),
+        json!({"query":"FIXTURE","continuation":cursor}),
+        json!({"query":"EXACT_READ_FIXTURE_BODY","order":"oldest","continuation":cursor}),
+        json!({"continuation":cursor}),
+    ] {
+        assert_tool_error(f.call_wire("pigeonmq_inbox", args), "invalid_continuation");
+    }
+
+    let next = f.call(
+        "pigeonmq_inbox",
+        json!({"scope":"inbox","query":"EXACT_READ_FIXTURE_BODY","order":"newest",
+               "continuation":cursor}),
+    );
+    assert_eq!(page_ids(&next).len(), 1);
+    assert_ne!(page_ids(&page), page_ids(&next));
+    assert!(next["next_continuation"].is_null());
 }
 
 #[test]

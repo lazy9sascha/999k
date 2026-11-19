@@ -1,6 +1,8 @@
 //! Read-only metadata traversal. Continuation is not handoff, admission, claim or ACK.
-use rusqlite::{Connection, OpenFlags};
+use crate::{Error, Queue, conversation::VISIBLE, mailbox_tools::ordinary_request_limit};
+use rusqlite::{Connection, OpenFlags, params};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -8,34 +10,118 @@ use std::{
 
 type Fault = (u16, &'static str);
 const MAX_CANDIDATES: usize = 100;
-// Ordinals within the authorized ordinary-message scope, never global queue sequence.
-// This prefilter limits traversal metadata; exact read remains the authority check.
-const SCOPE: &str = "m.recipient=?1 AND m.sender IN (SELECT value FROM json_each(?2))
-AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=m.id)
-AND (m.in_reply_to IS NULL OR EXISTS(SELECT 1 FROM messages p WHERE p.id=m.in_reply_to
-AND p.sender=?1 AND p.recipient=m.sender AND p.in_reply_to IS NULL
-AND m.correlation_id=COALESCE(p.correlation_id,p.id)
-AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=p.id)))";
+pub const MAX_QUERY_LENGTH: usize = 256;
+pub const MAX_CONTINUATION_LENGTH: usize = 107;
+pub const ARGUMENTS: &[&str] = &["scope", "query", "order", "limit", "continuation"];
+
+// Candidates are ordered by durable enqueue sequence (including timestamp ties).
+// Keep mutable delivery state out of this filter so claims, ACKs and dead letters
+// cannot shift page boundaries. Exact observation validates each returned row.
+const CANDIDATES: &str = "(
+    (m.recipient=?1 AND m.sender IN (SELECT value FROM json_each(?2)))
+    OR (?3 AND m.sender=?1 AND m.recipient IN (SELECT value FROM json_each(?2))))
+    AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=m.id)
+    AND (m.in_reply_to IS NULL OR EXISTS(SELECT 1 FROM messages p WHERE p.id=m.in_reply_to
+        AND p.sender=m.recipient AND p.recipient=m.sender AND p.in_reply_to IS NULL
+        AND m.correlation_id=COALESCE(p.correlation_id,p.id)
+        AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=p.id)))";
+
 struct Position {
     after: i64,
     upper: i64,
 }
-fn decode(token: &str, high: i64) -> Result<Position, Fault> {
+
+fn decode(token: &str, fingerprint: &str, high: i64) -> Result<Position, Fault> {
     let invalid = (400, "invalid_continuation");
-    // FIXME(yagni): 39-char continuation pre-check - i64 parse below already rejects overflow
-    if token.len() > 39 || !token.bytes().all(|b| b.is_ascii_digit() || b == b':') {
+    let rest = token.strip_prefix("v1:").ok_or(invalid)?;
+    let (scope, rest) = rest.split_once(':').ok_or(invalid)?;
+    if scope != fingerprint {
         return Err(invalid);
     }
-    let (after, upper) = token.split_once(':').ok_or(invalid)?;
-    let p = Position {
+    let (after, upper) = rest.split_once(':').ok_or(invalid)?;
+    let position = Position {
         after: after.parse().map_err(|_| invalid)?,
         upper: upper.parse().map_err(|_| invalid)?,
     };
-    if p.after < 0 || p.after >= p.upper || p.upper > high {
+    if position.after < 0 || position.after >= position.upper || position.upper > high {
         return Err(invalid);
     }
-    Ok(p)
+    Ok(position)
 }
+
+struct PageRequest {
+    all: bool,
+    newest: bool,
+    query: Option<String>,
+    limit: usize,
+}
+
+impl PageRequest {
+    fn fingerprint(
+        &self,
+        conn: &Connection,
+        mailbox: &str,
+        peers: &[String],
+    ) -> Result<String, Fault> {
+        let storage_mailbox = crate::mailbox_generation::current_storage(conn, mailbox)
+            .map_err(storage)?
+            .ok_or((403, "mailbox_generation_retired"))?;
+        let storage_peers = peers
+            .iter()
+            .map(|peer| crate::mailbox_generation::current_storage(conn, peer))
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage)?;
+        let legacy = storage_mailbox == mailbox
+            && peers
+                .iter()
+                .zip(&storage_peers)
+                .all(|(peer, stored)| stored.as_ref() == Some(peer));
+        let scope = if legacy {
+            serde_json::to_vec(&(mailbox, peers, self.all, self.newest, &self.query))
+        } else {
+            serde_json::to_vec(&(
+                mailbox,
+                storage_mailbox,
+                peers,
+                storage_peers,
+                self.all,
+                self.newest,
+                &self.query,
+            ))
+        }
+        .map_err(|_| (503, "serialization_failed"))?;
+        Ok(Sha256::digest(scope)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect())
+    }
+}
+
+fn read_sent(
+    queue: &Queue,
+    id: &str,
+    mailbox: &str,
+    recipient: &str,
+    permitted: &str,
+) -> Result<Option<Value>, Fault> {
+    // A sender already has body visibility through read_thread. Reuse that
+    // predicate for sent rows and project the same bounded metadata as inbox.
+    let visible: bool = queue.connection.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM messages m WHERE m.id=?1 AND m.sender=?2 AND {VISIBLE})"),
+        params![id, mailbox, permitted, ordinary_request_limit(recipient) as i64],
+        |r| r.get(0),
+    ).map_err(storage)?;
+    if !visible {
+        return Ok(None);
+    }
+    match queue.ordinary_metadata(id, recipient) {
+        Ok(value) => Ok((value["state"] != "dead_lettered").then(|| metadata_fields(&value))),
+        Err(Error::NotFound | Error::Invalid(_)) => Ok(None),
+        Err(Error::Database(error)) => Err(storage(error)),
+        Err(_) => Err((503, "storage_unavailable")),
+    }
+}
+
 fn senders(mut values: Vec<String>) -> Vec<String> {
     values.sort();
     values.dedup();
@@ -66,6 +152,7 @@ fn sql_deadline(c: &mut Connection, deadline: Instant) -> Result<(), Fault> {
 pub fn metadata_fields(value: &Value) -> Value {
     json!({
         "id": value["id"], "sender": value["sender"], "recipient": value["recipient"],
+        "conversation_id": value["conversation_id"],
         "correlation_id": value["correlation_id"], "in_reply_to": value["in_reply_to"],
         "state": value["state"], "reply_id": value["reply_id"],
     })
@@ -141,12 +228,29 @@ pub fn list_with(
     mut read: impl FnMut(&str, &[String]) -> Result<Option<Value>, Fault>,
 ) -> Result<Value, Fault> {
     let args = arguments.as_object().ok_or((400, "invalid_fields"))?;
-    if args
-        .keys()
-        .any(|key| key != "limit" && key != "continuation")
-    {
+    if args.keys().any(|key| !ARGUMENTS.contains(&key.as_str())) {
         return Err((400, "invalid_fields"));
     }
+    let all = match args.get("scope").map(Value::as_str) {
+        None | Some(Some("inbox")) => false,
+        Some(Some("all")) => true,
+        _ => return Err((400, "invalid_scope")),
+    };
+    let newest = match args.get("order").map(Value::as_str) {
+        None | Some(Some("newest")) => true,
+        Some(Some("oldest")) => false,
+        _ => return Err((400, "invalid_order")),
+    };
+    let query = args
+        .get("query")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|text| !text.is_empty() && text.chars().count() <= MAX_QUERY_LENGTH)
+                .map(str::to_ascii_lowercase)
+                .ok_or((400, "invalid_query"))
+        })
+        .transpose()?;
     let limit = match args.get("limit") {
         None => 20,
         Some(v) => v
@@ -154,13 +258,20 @@ pub fn list_with(
             .filter(|n| (1..=50).contains(n))
             .ok_or((400, "invalid_limit"))? as usize,
     };
-    let token = match args.get("continuation") {
-        None => None,
-        Some(v) => Some(
-            v.as_str()
-                .filter(|s| !s.is_empty() && s.len() <= 39)
-                .ok_or((400, "invalid_continuation"))?,
-        ),
+    let token = args
+        .get("continuation")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= MAX_CONTINUATION_LENGTH)
+                .ok_or((400, "invalid_continuation"))
+        })
+        .transpose()?;
+    let request = PageRequest {
+        all,
+        newest,
+        query,
+        limit,
     };
     let allowed = senders(authorize()?);
     check_deadline(deadline)?;
@@ -171,60 +282,86 @@ pub fn list_with(
     )
     .map_err(storage)?;
     sql_deadline(&mut c, deadline)?;
+    crate::mailbox_generation::scope_connection(&c).map_err(storage)?;
     c.pragma_update(None, "query_only", true).map_err(storage)?;
     let tx = c.transaction().map_err(storage)?;
     let permitted = serde_json::to_string(&allowed).map_err(|_| (503, "serialization_failed"))?;
+    let fingerprint = request.fingerprint(&tx, mailbox, &allowed)?;
     let high: i64 = tx
         .query_row(
-            &format!("SELECT COUNT(*) FROM messages m WHERE {SCOPE}"),
-            rusqlite::params![mailbox, permitted],
+            &format!("SELECT COUNT(*) FROM messages m WHERE {CANDIDATES}"),
+            params![mailbox, permitted, request.all],
             |r| r.get(0),
         )
         .map_err(storage)?;
     check_deadline(deadline)?;
     let mut position = match token {
-        Some(t) => decode(t, high)?,
+        Some(t) => decode(t, &fingerprint, high)?,
         None => Position {
             after: 0,
             upper: high,
         },
     };
+    // New arrivals append to the scoped sequence. Skip those newer rows when
+    // continuing in reverse order, without revealing the global queue sequence.
+    let (direction, offset) = if request.newest {
+        ("DESC", high - position.upper + position.after)
+    } else {
+        ("ASC", position.after)
+    };
     let mut stmt = tx
         .prepare(&format!(
-            "SELECT CASE WHEN length(CAST(m.id AS BLOB))<=128 THEN m.id ELSE NULL END FROM messages m WHERE {SCOPE} ORDER BY m.seq LIMIT ?3 OFFSET ?4"
+            "SELECT CASE WHEN length(CAST(m.id AS BLOB))<=128 THEN m.id ELSE NULL END, m.recipient,
+                    CASE WHEN ?4 IS NULL THEN 1 ELSE COALESCE(instr(lower(m.body),?4)>0,0) END
+             FROM messages m WHERE {CANDIDATES} ORDER BY m.seq {direction} LIMIT ?5 OFFSET ?6"
         ))
         .map_err(storage)?;
     let candidates = stmt
         .query_map(
-            rusqlite::params![
+            params![
                 mailbox,
                 permitted,
+                request.all,
+                request.query,
                 (position.upper - position.after).min(MAX_CANDIDATES as i64),
-                position.after
+                offset
             ],
-            |r| r.get::<_, Option<String>>(0),
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            },
         )
         .map_err(storage)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(storage)?;
     drop(stmt);
     tx.commit().map_err(storage)?;
-    check_deadline(deadline)?;
+    let queue = Queue { connection: c };
     let mut messages = Vec::new();
-    let mut consumed = 0;
-    for id in &candidates {
+    // Search must not let unreadable rows affect pagination based on their
+    // bodies. Apply the match only after the row passes current observation.
+    for (id, recipient, matches_query) in candidates {
         check_deadline(deadline)?;
         if senders(authorize()?) != allowed {
             return Err((403, "scope_changed"));
         }
         position.after += 1;
-        consumed += 1;
-        if let Some(id) = id
-            && let Some(message) = read(id, &allowed)?
-        {
-            messages.push(message);
+        if let Some(id) = id {
+            let message = if recipient == mailbox {
+                read(&id, &allowed)?
+            } else {
+                read_sent(&queue, &id, mailbox, &recipient, &permitted)?
+            };
+            if let Some(message) = message
+                && matches_query
+            {
+                messages.push(message);
+            }
         }
-        if messages.len() == limit {
+        if messages.len() == request.limit {
             break;
         }
     }
@@ -232,12 +369,7 @@ pub fn list_with(
         return Err((403, "scope_changed"));
     }
     check_deadline(deadline)?;
-    let exhausted = position.after >= position.upper
-        || (consumed == candidates.len() && candidates.len() < MAX_CANDIDATES);
-    let next = if exhausted {
-        None
-    } else {
-        Some(format!("{}:{}", position.after, position.upper))
-    };
+    let next = (position.after < position.upper)
+        .then(|| format!("v1:{fingerprint}:{}:{}", position.after, position.upper));
     Ok(json!({"messages": messages, "next_continuation": next, "metadata_only": true}))
 }

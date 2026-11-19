@@ -4,7 +4,10 @@ use crate::mcp_sdk;
 use catalog::Adapter;
 
 use crate::auth::{self, Operation, Principal};
-use pigeonmq::{DeadLetterInspection, Envelope, Error, Outcome, Queue, mailbox_catalog as catalog};
+use pigeonmq::{
+    DeadLetterInspection, Envelope, Error, Outcome, Queue, mailbox_catalog as catalog,
+    mailbox_generation,
+};
 use pigeonmq::{
     mailbox_tools::registered_mailbox_tools,
     mcp_request::{
@@ -17,7 +20,7 @@ use serde_json::{Value, json};
 use std::{
     io::{self, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 mod transport;
@@ -297,6 +300,144 @@ fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn built_in_dispatch_cannot_cross_a_mailbox_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("queue.sqlite3");
+        drop(Queue::open(&db).unwrap());
+        for descriptor in catalog::http_profiles()
+            .iter()
+            .filter(|descriptor| descriptor.adapter != Adapter::Receiver)
+        {
+            let mailbox = descriptor.id;
+            let mut binding = Binding::bundled(
+                descriptor,
+                temp.path().join(descriptor.policy_file),
+                temp.path(),
+            );
+            let generation = BoundGeneration::load(&db, &binding).unwrap().unwrap();
+            let request = format!(
+                "POST {} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n",
+                binding.route
+            );
+            let input = parse_head(request.as_bytes(), "127.0.0.1:1234").unwrap();
+            let mut routes = HubRoutes::default();
+            routes
+                .mount_bound(
+                    &binding.route,
+                    descriptor.body_limit(MAX_HEADERS),
+                    RouteHandler::Disabled,
+                    Some(generation.clone()),
+                )
+                .unwrap();
+            let state = HubState {
+                db: db.clone(),
+                routes,
+                deadline: None,
+            };
+            let dispatch =
+                || dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false);
+            assert!(matches!(
+                dispatch(),
+                WireResponse::Json((Err((404, "profile_disabled")), 200))
+            ));
+            let guard = generation.enter(&db).unwrap().unwrap();
+            assert!(mailbox_generation::retire(&db, mailbox).is_err());
+            drop(guard);
+            mailbox_generation::retire(&db, mailbox).unwrap();
+            assert!(matches!(
+                dispatch(),
+                WireResponse::Json((Err((403, "mailbox_generation_retired")), 200))
+            ));
+            mailbox_generation::reactivate(&db, mailbox).unwrap();
+            assert!(matches!(
+                dispatch(),
+                WireResponse::Json((Err((403, "mailbox_generation_retired")), 200))
+            ));
+            assert!(BoundGeneration::load(&db, &binding).is_err());
+            binding.generation = mailbox_generation::active_storage(&db, mailbox).unwrap();
+            let replacement = BoundGeneration::load(&db, &binding).unwrap().unwrap();
+            assert!(replacement.enter(&db).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn legacy_queue_binding_stays_valid_without_a_generation_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("queue.sqlite3");
+        drop(Queue::open(&db).unwrap());
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute("DROP TABLE pigeonmq_mailbox_generations", [])
+            .unwrap();
+        let binding = Binding::bundled(
+            catalog::by_adapter(Adapter::Dot),
+            temp.path().join("dot-policy.json"),
+            temp.path(),
+        );
+        let generation = BoundGeneration::load(&db, &binding).unwrap().unwrap();
+        assert!(generation.enter(&db).unwrap().is_none());
+        assert!(!mailbox_generation::lock_path(&db).exists());
+    }
+
+    #[test]
+    fn dormant_managed_listener_serves_no_routes_and_preserves_queue() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let home = tempfile::tempdir().unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let db = home.path().join("queue.sqlite3");
+        drop(Queue::open(&db).unwrap());
+        fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
+        let before = fs::read(&db).unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        assert_eq!(
+            serve_hub_on(
+                db.clone(),
+                None,
+                Vec::new(),
+                Vec::new(),
+                None,
+                (addr.port(), Some(1), HubMode::Explicit),
+                Some(listener.try_clone().unwrap()),
+            )
+            .unwrap_err()
+            .to_string(),
+            "explicit policy, port and lifetime limit required"
+        );
+
+        let queue = db.clone();
+        let serving = std::thread::spawn(move || {
+            serve_hub_on(
+                queue,
+                None,
+                Vec::new(),
+                Vec::new(),
+                Some("managed"),
+                (addr.port(), Some(1), HubMode::Managed),
+                Some(listener),
+            )
+        });
+        for route in ["/dot/mcp", "/mcp", "/receiver", "/rpc/request"] {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write!(
+                stream,
+                "POST {route} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+            ).unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).unwrap();
+            assert_eq!(reply.split_whitespace().nth(1), Some("404"), "{reply}");
+            assert!(reply.contains("route_not_found"), "{reply}");
+        }
+        serving.join().unwrap().unwrap();
+        assert_eq!(fs::read(&db).unwrap(), before);
+        assert!(!mailbox_generation::lock_path(&db).exists());
+    }
 
     #[test]
     fn catalog_routes_stay_disabled_without_configured_profiles() {
@@ -1404,9 +1545,61 @@ enum RouteHandler {
     Receiver(ReceiverProfile),
 }
 
+#[derive(Clone)]
+struct BoundGeneration {
+    mailbox: &'static str,
+    storage: String,
+}
+
+impl BoundGeneration {
+    fn load(db: &Path, binding: &Binding) -> io::Result<Option<Self>> {
+        if binding.descriptor.adapter == Adapter::Receiver {
+            if binding.generation.is_some() {
+                return Err(io::Error::other(
+                    "receiver does not support managed mailbox generations",
+                ));
+            }
+            return Ok(None);
+        }
+        if binding
+            .generation
+            .as_deref()
+            .is_some_and(|storage| !mailbox_generation::valid_storage(storage))
+        {
+            return Err(io::Error::other("invalid mailbox generation"));
+        }
+        let mailbox = binding.descriptor.id;
+        let generation = Self {
+            mailbox,
+            storage: binding.generation.clone().unwrap_or_else(|| mailbox.into()),
+        };
+        match generation.check(db) {
+            Ok(()) => Ok(Some(generation)),
+            Err((_, reason)) => Err(io::Error::other(reason)),
+        }
+    }
+
+    fn check(&self, db: &Path) -> Result<(), Fault> {
+        let active = mailbox_generation::active_storage(db, self.mailbox)
+            .map_err(|_| (503, "mailbox_generation_unavailable"))?;
+        if active.as_deref() != Some(self.storage.as_str()) {
+            return Err((403, "mailbox_generation_retired"));
+        }
+        Ok(())
+    }
+
+    fn enter(&self, db: &Path) -> Result<Option<std::fs::File>, Fault> {
+        let lock = mailbox_generation::lock_dispatch(db)
+            .map_err(|_| (503, "mailbox_generation_unavailable"))?;
+        self.check(db)?;
+        Ok(lock)
+    }
+}
+
 struct HubRoute {
     body_limit: usize,
     handler: RouteHandler,
+    generation: Option<BoundGeneration>,
 }
 
 #[derive(Default)]
@@ -1414,6 +1607,16 @@ struct HubRoutes(HashMap<String, HubRoute>);
 
 impl HubRoutes {
     fn mount(&mut self, path: &str, body_limit: usize, handler: RouteHandler) -> io::Result<()> {
+        self.mount_bound(path, body_limit, handler, None)
+    }
+
+    fn mount_bound(
+        &mut self,
+        path: &str,
+        body_limit: usize,
+        handler: RouteHandler,
+        generation: Option<BoundGeneration>,
+    ) -> io::Result<()> {
         use std::collections::hash_map::Entry;
         let Entry::Vacant(route) = self.0.entry(path.into()) else {
             return Err(io::Error::other("duplicate hub route"));
@@ -1421,6 +1624,7 @@ impl HubRoutes {
         route.insert(HubRoute {
             body_limit,
             handler,
+            generation,
         });
         Ok(())
     }
@@ -1587,6 +1791,15 @@ fn dispatch_hub_request(
         .unwrap_or(now + Duration::from_secs(15))
         .min(now + Duration::from_secs(15));
     let context = pigeonmq::mcp_request::Context::new(deadline, peer_closed);
+    // Retire and activate take the exclusive side of this lock. The current
+    // binding remains stable for the request, including deferred waits.
+    let _generation = match &route.generation {
+        Some(generation) => match generation.enter(&state.db) {
+            Ok(lock) => lock,
+            Err(fault) => return (Err(fault), 200).into(),
+        },
+        None => None,
+    };
     let result = match &route.handler {
         RouteHandler::Disabled => Err((404, "profile_disabled")),
         RouteHandler::Generic(policy) => {
@@ -1670,6 +1883,11 @@ fn handle_hub_connection(stream: TcpStream, authority: &str, state: &HubState) {
     );
 }
 
+enum HubMode {
+    Explicit,
+    Managed,
+}
+
 pub fn serve_hub(
     db: PathBuf,
     generic_policy: Option<PathBuf>,
@@ -1685,7 +1903,20 @@ pub fn serve_hub(
         bindings,
         local_profiles,
         manifest_fingerprint,
-        (port, seconds),
+        (port, seconds, HubMode::Explicit),
+        None,
+    )
+}
+
+/// The managed hub keeps its loopback listener after the last profile is removed.
+pub(crate) fn serve_managed_hub(db: PathBuf, bindings: Vec<Binding>, port: u16) -> io::Result<()> {
+    serve_hub_on(
+        db,
+        None,
+        bindings,
+        Vec::new(),
+        Some("managed"),
+        (port, None, HubMode::Managed),
         None,
     )
 }
@@ -1711,7 +1942,7 @@ pub(crate) fn serve_dot_on(
         vec![dot],
         Vec::new(),
         None,
-        (addr.port(), None),
+        (addr.port(), None, HubMode::Explicit),
         Some(listener),
     )
 }
@@ -1722,12 +1953,16 @@ fn serve_hub_on(
     bindings: Vec<Binding>,
     local_profiles: Vec<crate::codex_mcp::Profile>,
     manifest_fingerprint: Option<&str>,
-    (port, seconds): (u16, Option<u64>),
+    (port, seconds, mode): (u16, Option<u64>, HubMode),
     prebound: Option<TcpListener>,
 ) -> io::Result<()> {
+    let managed = matches!(mode, HubMode::Managed);
     if port == 0
         || seconds.is_some_and(|value| !(1..=3600).contains(&value))
-        || (generic_policy.is_none() && bindings.is_empty() && local_profiles.is_empty())
+        || (!managed
+            && generic_policy.is_none()
+            && bindings.is_empty()
+            && local_profiles.is_empty())
     {
         return Err(io::Error::other(
             "explicit policy, port and lifetime limit required",
@@ -1766,7 +2001,7 @@ fn serve_hub_on(
             .iter()
             .any(|binding| binding.descriptor == descriptor);
         enabled.insert(descriptor.enabled_key.into(), json!(mounted));
-        if !mounted && manifest_fingerprint.is_none() && !local_mailbox_enabled {
+        if !mounted && !managed && manifest_fingerprint.is_none() && !local_mailbox_enabled {
             routes.mount(
                 descriptor.route,
                 descriptor.body_limit(MAX_HEADERS),
@@ -1779,6 +2014,7 @@ fn serve_hub_on(
     let mut grok_wake_binding = None;
     for binding in bindings {
         let descriptor = binding.descriptor;
+        let generation = BoundGeneration::load(&db, &binding)?;
         let handler = match descriptor.adapter {
             Adapter::Muse => {
                 auth::validate_muse(&binding.policy).map_err(|(_, reason)| {
@@ -1796,10 +2032,13 @@ fn serve_hub_on(
                 }))
             }
             Adapter::Dot => {
-                pigeonmq::dot_profile::check(&db, &binding.policy, false)?;
-                dot_events = pigeonmq::dot_profile::events::Runtime::new(&db, &binding.policy)
-                    .map_err(|error| io::Error::other(error.reason))?
-                    .map(Arc::new);
+                dot_events = pigeonmq::dot_profile::check_with_generation(
+                    &db,
+                    &binding.policy,
+                    false,
+                    binding.generation.as_deref(),
+                )?
+                .map(Arc::new);
                 RouteHandler::Dot(pigeonmq::dot_profile::DotBackend::host_with_events(
                     db.clone(),
                     binding.policy,
@@ -1810,7 +2049,11 @@ fn serve_hub_on(
                 if !check_grok(&db, &binding.policy)? {
                     return Err(io::Error::other("Grok storage unprepared"));
                 }
-                grok_wake_binding = Some((binding.policy.clone(), binding.wake_files_dir));
+                grok_wake_binding = Some((
+                    binding.policy.clone(),
+                    binding.wake_files_dir,
+                    generation.clone(),
+                ));
                 RouteHandler::Grok(grok_bot::GrokState::new(
                     db.clone(),
                     binding.policy,
@@ -1829,9 +2072,12 @@ fn serve_hub_on(
                     .as_ref()
                     .is_some_and(|profile| profile.events == catalog::EventsCapability::Codex)
                 {
-                    let events = crate::codex_events::Runtime::new(&profile)
-                        .map_err(|(_, reason)| io::Error::other(reason))?
-                        .map(Arc::new);
+                    let events = crate::codex_events::Runtime::new_with_generation(
+                        &profile,
+                        binding.generation.as_deref(),
+                    )
+                    .map_err(|(_, reason)| io::Error::other(reason))?
+                    .map(Arc::new);
                     if let Some(events) = &events {
                         events
                             .check()
@@ -1853,7 +2099,12 @@ fn serve_hub_on(
                 RouteHandler::Receiver(receiver)
             }
         };
-        routes.mount(&binding.route, descriptor.body_limit(MAX_HEADERS), handler)?;
+        routes.mount_bound(
+            &binding.route,
+            descriptor.body_limit(MAX_HEADERS),
+            handler,
+            generation,
+        )?;
     }
     for profile in local_profiles {
         let path = profile
@@ -1871,7 +2122,7 @@ fn serve_hub_on(
         None => TcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
     };
     // Best-effort wake on its own thread. It never blocks a commit.
-    let grok_wake = if let Some((policy, files_dir)) = grok_wake_binding {
+    let grok_wake = if let Some((policy, files_dir, generation)) = grok_wake_binding {
         use pigeonmq::grok_wake::WakeConfig;
         let config = match files_dir {
             Some(dir) => Some(WakeConfig::from_files_dir(&db, &dir)),
@@ -1884,11 +2135,15 @@ fn serve_hub_on(
         config
             .map(|config| {
                 pigeonmq::grok_wake::spawn(config, deadline, move |id| {
+                    generation.as_ref()?.check(&queue).ok()?;
                     let scope = grok_bot::observation_scope(&policy).ok()?;
-                    let message = pigeonmq::grok_mailbox::read(&queue, id, &scope).ok()?;
+                    let (sender, conversation_id) =
+                        pigeonmq::grok_mailbox::wake_candidate(&queue, id, &scope).ok()??;
                     let latest = grok_bot::observation_scope(&policy).ok()?;
-                    (message.state == "pending" && latest.allowed_senders.contains(&message.sender))
-                        .then_some(message.conversation_id)
+                    latest
+                        .allowed_senders
+                        .contains(&sender)
+                        .then_some(conversation_id)
                 })
             })
             .transpose()?

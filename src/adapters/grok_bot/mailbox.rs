@@ -104,6 +104,15 @@ pub fn read(p: impl AsRef<Path>, id: &str, s: &GrokScope) -> Result<ObservedMess
         .map(Into::into)
         .map_err(Into::into)
 }
+pub fn wake_candidate(
+    path: &Path,
+    id: &str,
+    scope: &GrokScope,
+) -> Result<Option<(String, String)>> {
+    Mailbox::Grok
+        .wake_candidate(path, id, &scope.allowed_senders)
+        .map_err(Into::into)
+}
 pub fn scan(p: impl AsRef<Path>, s: &GrokScope) -> Result<Option<ObservedMessage>> {
     Mailbox::Grok
         .scan(p, &s.allowed_senders)

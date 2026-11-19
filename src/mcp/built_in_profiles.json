@@ -38,5 +38,22 @@
     "route": "/receiver",
     "policy_file": "pigeonmq-cloud-codex-local-policy.json",
     "enabled_key": "receiver_enabled"
+  },
+  {
+    "id": "instinct",
+    "adapter": "shared-mailbox",
+    "server_name": "pigeonmq-instinct",
+    "route": "/instinct/mcp",
+    "policy_file": "pigeonmq-cloud-instinct-policy.json",
+    "enabled_key": "instinct_enabled"
+  },
+  {
+    "id": "cue",
+    "adapter": "shared-mailbox",
+    "server_name": "pigeonmq-cue",
+    "route": "/cue/mcp",
+    "policy_file": "pigeonmq-cloud-cue-policy.json",
+    "enabled_key": "cue_enabled",
+    "manifest_only": true
   }
 ]

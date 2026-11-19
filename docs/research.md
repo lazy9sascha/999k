@@ -2,7 +2,7 @@
 
 Every cloud agent connects in its own way, so each claim in these docs was tested on a real agent before it was written down. This page records those probes: what was asked, how it was set up, what happened, and what it changed. Setup docs say what to do. This page says how we know.
 
-> **Period:** 2026-11-06 to 2026-11-17 (KST)
+> **Period:** 2026-11-06 to 2026-11-20 (KST)
 >
 > **Hubs:** "Local" is PigeonMQ Local, the private sibling project this hub was extracted from. "This hub" is PigeonMQ. Earlier entries use its former name, PigeonMQ Cloud.
 >
@@ -40,6 +40,19 @@ Every cloud agent connects in its own way, so each claim in these docs was teste
 | [CODEX-08](#codex-08-work-cloud-events-on-this-hub) | Web Work and app-created desktop Work Cloud both ran automatically on Events and returned linked replies. Native desktop UI clicks were not tested. | ✅ works on tested surfaces |
 | [DOT-03](#dot-03-standalone-terminal-reply-events) | Terminal-reply Events woke Dot without polling. Authenticated reads confirmed the linked replies. | ✅ works |
 | [CODEX-02](#codex-02-watch-turned-itself-off-during-a-rename) | A Codex Cloud watch turned itself off during a recipient rename because of a stale tool schema. | ❌ fails |
+| [MAIL-01](#mail-01-cue-and-instinct-on-013) | Both mailboxes returned linked replies. The email provider accepted one notification per mailbox; automatic wake was not verified. | ⚠️ partial |
+
+## Shared mailbox and relay
+
+### MAIL-01: Cue and Instinct on 0.1.3
+
+- **Date:** 2026-11-19–20 (KST)
+- **Question:** Which parts of an exchange worked: mailbox reply, email notification, and automatic wake?
+- **Setup:** Sent an ordinary PigeonMQ message to Cue and another to Instinct. Checked each linked reply separately from the email provider's send records.
+- **Result:** [run] Both mailboxes returned a reply linked to the original. After a retry, the provider recorded one notification send for each at 15:14 UTC on November 19 (00:14 KST on November 20). This confirms provider acceptance, not inbox delivery or an email-triggered reply. Three consecutive exchanges were not tested.
+- **Release checks:** [code] On macOS, formatting, Clippy, all 382 Rust tests, and the locked release build passed. The tests used a simulated launch controller and real loopback connections. They did not verify an isolated installation under real launchd.
+- **What it changed:** [run] The relay's login service could not find an interpreter available in the interactive shell. [code] The managed relay uses a restricted system `PATH`; use absolute paths for the interpreter and its dependencies. See [email arrivals](configuration.md#opt-in-to-email-arrivals).
+
 
 ## Grok Bot
 
@@ -417,7 +430,7 @@ All known agents have now been triaged.
 - Codex: genuine desktop UI clicks, other Cloud surfaces, and unattended restart recovery remain unverified. Reboot recovery for the local receiver remains open. (CODEX-05, CODEX-08)
 - Vooy: whether it accepts a tunnel host such as `*.tunnl.gg`, whether its header field can send `Authorization: Bearer`, which MCP transport it uses, and whether scheduled runs can call custom MCP tools. (VOOY-01, VOOY-02, VOOY-03)
 - Pickle: whether a live tunnl.gg route is reachable. Token handoff is decided (pairing code, then a workspace token file) but not built. (PICKLE-01, PICKLE-02)
-- Instinct: whether an email or Slack relay is worth building, and its rate limits. (INSTINCT-01)
+- Cue and Instinct: whether an arrival email reaches the agent and wakes it to reply without a prompt, and what rate limits apply. (MAIL-01)
 
 ## Adding a probe
 

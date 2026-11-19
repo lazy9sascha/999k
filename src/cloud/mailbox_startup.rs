@@ -34,6 +34,9 @@ pub(crate) fn selected_policy(
     if let Some(manifest) = manifest {
         return manifest.policy(profile).map(Path::to_path_buf);
     }
+    if profile.manifest_only {
+        return None;
+    }
     // Only absence disables a conventional profile. Other errors reach validation.
     let path = home.join(profile.policy_file);
     (!matches!(fs::symlink_metadata(&path), Err(e) if e.kind() == std::io::ErrorKind::NotFound))
@@ -47,6 +50,7 @@ pub(crate) struct Binding {
     pub(crate) policy: PathBuf,
     pub(crate) registration: Option<PathBuf>,
     pub(crate) wake_files_dir: Option<PathBuf>,
+    pub(crate) generation: Option<String>,
 }
 
 impl Binding {
@@ -64,6 +68,7 @@ impl Binding {
                 .requires_registration()
                 .then(|| home.join(REGISTRATION)),
             wake_files_dir: None,
+            generation: None,
         }
     }
 
@@ -185,6 +190,7 @@ impl Manifest {
                     .requires_registration()
                     .then(|| registration.clone()),
                 wake_files_dir,
+                generation: None,
             });
         }
         if profiles

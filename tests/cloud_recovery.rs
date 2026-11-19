@@ -295,6 +295,8 @@ fn assert_isolated_runner_restart(explicit: bool) {
     let wake_state = home.join(grok_wake::STATE_FILE);
     let mut ledger = grok_wake::WakeState::load(wake_state.clone());
     ledger.delivered("previous-wake");
+    // Recovery retries this recorded failure without waking unseen history.
+    ledger.failed(&id, Some(503));
     ledger.save().unwrap();
 
     let state_path = home.join("pigeonmq-cloud-state.json");

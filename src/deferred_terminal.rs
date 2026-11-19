@@ -19,7 +19,7 @@ pub(crate) fn confirm(tx: &Transaction<'_>, recipient: &str, id: &str, now: i64)
     }
     let duplicate = ack.is_some();
     if !duplicate {
-        tx.execute("UPDATE messages SET acknowledged_at_ms=?1 WHERE id=?2 AND recipient=?3 AND acknowledged_at_ms IS NULL AND attempts=0",params![now,id,recipient])?;
+        tx.execute("UPDATE main.messages SET acknowledged_at_ms=?1 WHERE id=?2 AND id IN (SELECT id FROM messages WHERE id=?2 AND recipient=?3) AND acknowledged_at_ms IS NULL AND attempts=0",params![now,id,recipient])?;
     }
     Ok(duplicate)
 }

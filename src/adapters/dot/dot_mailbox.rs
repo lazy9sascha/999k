@@ -173,6 +173,7 @@ impl Mailbox {
             }) | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         c.busy_timeout(budget)?;
+        crate::mailbox_generation::scope_connection(&c)?;
         Ok(c)
     }
     fn schema(c: &Connection) -> Result<()> {

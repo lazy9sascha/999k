@@ -102,6 +102,7 @@ pub(crate) fn execute_guarded(
     crate::validate_queue_journal(&connection)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     crate::validate_schema(&connection)?;
+    crate::mailbox_generation::scope_connection(&connection)?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     match request {
         Request::Load {

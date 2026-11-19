@@ -185,3 +185,70 @@ fn hidden_dot_setup_still_denies_without_writing_and_has_no_home_argument() {
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("unexpected argument '--home'"));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn built_in_init_uses_the_default_local_home_and_refuses_unsafe_homes() {
+    use std::{
+        fs::{self, DirBuilder},
+        os::unix::fs::{DirBuilderExt, symlink},
+    };
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().join(".local");
+    let directory = fixture.path();
+    let init = |home: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
+        command
+            .env_clear()
+            .env("HOME", directory)
+            .current_dir(directory)
+            .args(["init", "cue"]);
+        if let Some(home) = home {
+            command.args(["--home", home]);
+        }
+        command.output().unwrap()
+    };
+    let missing = init(None);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("lifecycle home is missing"));
+    assert!(!home.exists());
+
+    DirBuilder::new().mode(0o700).create(&home).unwrap();
+    let staged = init(None);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    let staged: serde_json::Value = serde_json::from_slice(&staged.stdout).unwrap();
+    assert_eq!(staged["state"], "staged");
+    let token_file = std::path::Path::new(staged["token_file"].as_str().unwrap());
+    assert!(token_file.starts_with(home.canonicalize().unwrap()));
+    assert!(home.join("pigeonmq-cloud-queue.sqlite3").is_file());
+    let before = fs::read(token_file).unwrap();
+    let repeated = init(Some("./.local/."));
+    assert!(repeated.status.success(), "{:?}", repeated.stderr);
+    let repeated: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    assert_eq!(repeated, staged);
+
+    symlink(&home, directory.join("alias")).unwrap();
+    DirBuilder::new()
+        .mode(0o755)
+        .create(directory.join("shared"))
+        .unwrap();
+    for spelling in ["alias", "alias/", "alias/.", "shared"] {
+        assert!(!init(Some(spelling)).status.success(), "{spelling}");
+    }
+    assert_eq!(fs::read(token_file).unwrap(), before);
+    assert!(!directory.join("Library").exists());
+}
+
+#[test]
+fn managed_apply_refuses_the_disposable_binary_before_launchd() {
+    let fixture = tempfile::tempdir().unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        .env_clear()
+        .env("HOME", fixture.path())
+        .current_dir(fixture.path())
+        .args(["init", "cue", "--apply"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("durable installed executable"));
+    assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 0);
+}

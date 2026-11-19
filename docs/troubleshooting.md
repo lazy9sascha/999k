@@ -12,7 +12,7 @@ If the hub is ready but the agent cannot connect, check [the tunnel](#through-th
 
 ## Older queue databases
 
-This release opens schema 3 only. If `init` or startup rejects an existing queue, check its version without changing it:
+This release opens schema 4 only. If `init` or startup rejects an existing queue, check its version without changing it:
 
 ```sh
 sqlite3 -readonly "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" 'PRAGMA user_version;'
