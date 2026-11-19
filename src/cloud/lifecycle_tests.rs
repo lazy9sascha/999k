@@ -161,6 +161,7 @@ impl Fixture {
             service: &self.fake,
             directory: &self.agents,
             executable: &self.executable,
+            installation: None,
         }
     }
 
@@ -424,5 +425,120 @@ fn failed_hub_readiness_keeps_the_new_profile_staged_and_restores_ready_routes()
             .agents
             .join(format!("{RELAY_LABEL}.plist"))
             .is_file()
+    );
+}
+
+#[test]
+fn managed_executable_checks_allow_installed_paths_and_refuse_disposable_binaries() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().canonicalize().unwrap();
+    let home = root.join("home");
+    let volatile = root.join("volatile");
+    let installation = InstallPaths {
+        home: home.clone(),
+        temporary: vec![volatile.clone()],
+    };
+    let executable = |path: &Path| {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    };
+
+    let installed = home.join(".local/libexec/pigeonmq/pigeonmq");
+    executable(&installed);
+    fs::write(home.join(".git"), "dotfiles worktree fixture").unwrap();
+    assert_eq!(
+        installation.require_executable(&installed).unwrap(),
+        installed
+    );
+
+    let prefix = root.join("package-prefix");
+    let package = prefix.join("installed/pigeonmq/0.1.3/bin/pigeonmq");
+    executable(&package);
+    fs::create_dir(prefix.join(".git")).unwrap();
+    fs::write(
+        package
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("INSTALL_RECEIPT.json"),
+        b"{}",
+    )
+    .unwrap();
+    assert_eq!(installation.require_executable(&package).unwrap(), package);
+
+    let worktree = root.join("checkout");
+    let cargo_dir = root.join("alternate-cargo-profile");
+    let outside = volatile.join("bin/pigeonmq");
+    for rejected in [
+        worktree.join("tools/pigeonmq"),
+        cargo_dir.join("pigeonmq"),
+        home.join("scratch-build/relay"),
+        home.join("tmp/relay"),
+        home.join("target/release/pigeonmq"),
+        outside.clone(),
+    ] {
+        executable(&rejected);
+    }
+    fs::write(worktree.join(".git"), "gitdir: synthetic").unwrap();
+    fs::create_dir(cargo_dir.join(".fingerprint")).unwrap();
+    let alias = home.join(".local/alias");
+    std::os::unix::fs::symlink(&outside, &alias).unwrap();
+    let temporary_alias = volatile.join("installed-alias");
+    std::os::unix::fs::symlink(&installed, &temporary_alias).unwrap();
+    for rejected in [
+        worktree.join("tools/pigeonmq"),
+        cargo_dir.join("pigeonmq"),
+        home.join("scratch-build/relay"),
+        home.join("tmp/relay"),
+        home.join("target/release/pigeonmq"),
+        outside,
+        alias,
+        temporary_alias,
+    ] {
+        assert!(
+            installation.require_executable(&rejected).is_err(),
+            "{rejected:?}"
+        );
+    }
+}
+
+#[test]
+fn managed_apply_refuses_a_persisted_disposable_relay_before_launchd_changes() {
+    let fixture = Fixture::new(false);
+    let staged = init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(false, Some("cue@example.invalid")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(staged["state"], "staged");
+    let installation = InstallPaths {
+        home: fixture.home.clone(),
+        temporary: vec![fixture.home.clone()],
+    };
+    let jobs = Jobs {
+        installation: Some(&installation),
+        ..fixture.jobs()
+    };
+    let result = init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("durable installed executable")
+    );
+    assert!(!fixture.agents.exists());
+    assert!(fixture.fake.actions.borrow().is_empty());
+    assert_eq!(
+        init_with(&fixture.home, "cue", &fixture.options(false, None), None).unwrap(),
+        staged
     );
 }

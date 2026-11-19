@@ -112,6 +112,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         service: &launch,
         directory: &location,
         executable: &executable,
+        installation: None,
     };
     let command = root.join("relay-command");
     fs::write(&command, b"#!/bin/sh\nexit 0\n").unwrap();

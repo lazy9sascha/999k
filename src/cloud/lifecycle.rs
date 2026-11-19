@@ -455,6 +455,7 @@ struct Jobs<'a> {
     service: &'a dyn LaunchControl,
     directory: &'a Path,
     executable: &'a Path,
+    installation: Option<&'a InstallPaths>,
 }
 
 struct Job {
@@ -582,6 +583,18 @@ fn change(
 ) -> io::Result<()> {
     let dir = home.join(DIRECTORY);
     let queue = home.join(QUEUE);
+    let want_relay = next
+        .profiles
+        .values()
+        .any(|p| p.phase == Phase::Active && p.email_recipient.is_some());
+    if want_relay && let Some(installation) = jobs.installation {
+        let command = next
+            .relay_command
+            .as_deref()
+            .ok_or_else(|| error("managed relay requires a durable installed command"))?;
+        validate_command(command)?;
+        installation.require_executable(command)?;
+    }
     let (hub, relay) = schedule_jobs(jobs, home, &next)?;
     let relay_state = dir.join(RELAY_STATE);
     let relay_path = dir.join(RELAY_CONFIG);
@@ -590,10 +603,6 @@ fn change(
     } else {
         read_json(&relay_path)?
     };
-    let want_relay = next
-        .profiles
-        .values()
-        .any(|p| p.phase == Phase::Active && p.email_recipient.is_some());
     let relay_configuration_changed = if phase_changed {
         want_relay || !previous_relay.is_empty()
     } else {
@@ -721,22 +730,120 @@ fn change(
     Ok(())
 }
 
-fn system_jobs() -> io::Result<(PathBuf, PathBuf)> {
+struct InstallPaths {
+    home: PathBuf,
+    temporary: Vec<PathBuf>,
+}
+
+impl InstallPaths {
+    fn require_executable(&self, path: &Path) -> io::Result<PathBuf> {
+        let invalid = || {
+            error(
+                "managed launchd requires a durable installed executable outside temporary, build, and Git checkout directories",
+            )
+        };
+        let executable = path.canonicalize()?;
+        let locations =
+            std::iter::once(executable.as_path()).chain((path != executable).then_some(path));
+        let metadata = executable.symlink_metadata()?;
+        // SAFETY: geteuid has no arguments or preconditions.
+        let uid = unsafe { libc::geteuid() };
+        if !metadata.is_file()
+            || metadata.mode() & 0o111 == 0
+            || metadata.mode() & 0o022 != 0
+            || !matches!(metadata.uid(), 0) && metadata.uid() != uid
+            || locations
+                .clone()
+                .any(|location| self.temporary.iter().any(|root| location.starts_with(root)))
+        {
+            return Err(invalid());
+        }
+
+        // A packaged install can sit underneath a package manager's own Git tree.
+        // Recognize the install receipt in the physical package prefix only.
+        let package = executable
+            .parent()
+            .filter(|bin| bin.file_name().is_some_and(|name| name == "bin"))
+            .and_then(Path::parent)
+            .filter(|dir| {
+                dir.join("INSTALL_RECEIPT.json")
+                    .symlink_metadata()
+                    .is_ok_and(|receipt| {
+                        receipt.is_file()
+                            && receipt.uid() == metadata.uid()
+                            && receipt.mode() & 0o022 == 0
+                    })
+            });
+        // Check the configured spelling too. launchd could otherwise retain a
+        // temporary alias to an executable that is physically installed.
+        for directory in locations.flat_map(|location| location.ancestors().skip(1)) {
+            if directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    let name = name.to_ascii_lowercase();
+                    matches!(name.as_str(), "temp" | "scratch" | "temporaryitems")
+                        || (name == "tmp" && directory.starts_with(&self.home))
+                        || name.starts_with("scratch-")
+                })
+                || directory.join(".fingerprint").is_dir()
+                || (directory
+                    .file_name()
+                    .is_some_and(|name| name == "debug" || name == "release")
+                    && directory
+                        .parent()
+                        .and_then(Path::file_name)
+                        .is_some_and(|name| name == "target"))
+            {
+                return Err(invalid());
+            }
+            if absent(&directory.join(".git"))?
+                || package
+                    .is_some_and(|prefix| prefix != directory && prefix.starts_with(directory))
+            {
+                continue;
+            }
+            if !directory.join("Cargo.toml").is_file()
+                && (directory == self.home
+                    || directory.canonicalize().ok().as_deref() == Some(self.home.as_path()))
+            {
+                continue;
+            }
+            return Err(invalid());
+        }
+        Ok(executable)
+    }
+}
+
+fn system_jobs() -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .ok_or_else(|| error("absolute user home is unavailable"))?;
+        .ok_or_else(|| error("absolute user home is unavailable"))?
+        .canonicalize()?;
     let directory = home.join("Library/LaunchAgents");
-    Ok((directory, std::env::current_exe()?.canonicalize()?))
+    let installation = InstallPaths {
+        home,
+        temporary: ["/tmp", "/var/tmp", "/var/folders", "/dev/shm"]
+            .into_iter()
+            .map(PathBuf::from)
+            .chain([std::env::temp_dir()])
+            .flat_map(|root| [root.canonicalize().ok(), Some(root)].into_iter().flatten())
+            .filter(|root| root.is_absolute())
+            .collect(),
+    };
+    let executable = installation.require_executable(&std::env::current_exe()?)?;
+    Ok((directory, executable, installation))
 }
 
 pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result<Value> {
     if options.apply {
-        let (directory, executable) = system_jobs()?;
+        let (directory, executable, installation) = system_jobs()?;
         let jobs = Jobs {
             service: &SystemLaunchctl,
             directory: &directory,
             executable: &executable,
+            installation: Some(&installation),
         };
         init_with(home, name, options, Some(&jobs))
     } else {
@@ -942,11 +1049,12 @@ fn init_with(
 
 pub(crate) fn remove(home: &Path, name: &str, apply: bool) -> io::Result<Value> {
     if apply {
-        let (directory, executable) = system_jobs()?;
+        let (directory, executable, installation) = system_jobs()?;
         let jobs = Jobs {
             service: &SystemLaunchctl,
             directory: &directory,
             executable: &executable,
+            installation: Some(&installation),
         };
         remove_with(home, name, Some(&jobs))
     } else {

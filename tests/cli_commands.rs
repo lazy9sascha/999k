@@ -237,3 +237,18 @@ fn built_in_init_uses_the_default_local_home_and_refuses_unsafe_homes() {
     assert_eq!(fs::read(token_file).unwrap(), before);
     assert!(!directory.join("Library").exists());
 }
+
+#[test]
+fn managed_apply_refuses_the_disposable_binary_before_launchd() {
+    let fixture = tempfile::tempdir().unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        .env_clear()
+        .env("HOME", fixture.path())
+        .current_dir(fixture.path())
+        .args(["init", "cue", "--apply"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("durable installed executable"));
+    assert_eq!(std::fs::read_dir(fixture.path()).unwrap().count(), 0);
+}
