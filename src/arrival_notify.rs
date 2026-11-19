@@ -16,6 +16,8 @@ use std::{
 };
 
 const LIMIT: u32 = 50;
+const MANAGED_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 // The production provider's idempotency window is 24 hours. Stop retrying before it can expire.
 const RETRY_WINDOW: i64 = 20 * 60 * 60;
 
@@ -169,19 +171,68 @@ fn allowed(path: &Path, mailbox: &str, sender: &str) -> io::Result<bool> {
     }
 }
 
-fn send(runtime: &tokio::runtime::Runtime, command: &Path, mailbox: &str, id: &str) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProviderFailure {
+    Start,
+    Timeout,
+    Exit,
+    Wait,
+}
+
+impl ProviderFailure {
+    fn diagnostic(&self) -> &'static str {
+        match self {
+            Self::Start => "provider_start_failed. Check the command and interpreter paths.",
+            Self::Timeout => "provider_timed_out. Check provider connectivity and response time.",
+            Self::Exit => {
+                "provider_exited_unsuccessfully. Check the provider command and its authentication."
+            }
+            Self::Wait => "provider_wait_failed. Check that the command can run from launchd.",
+        }
+    }
+}
+
+impl std::fmt::Display for ProviderFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.diagnostic())
+    }
+}
+
+impl std::error::Error for ProviderFailure {}
+
+/// Report a fixed diagnostic in the managed service loop without exposing underlying errors.
+pub fn safe_failure(error: &(dyn std::error::Error + 'static)) -> &'static str {
+    error.downcast_ref::<ProviderFailure>().map_or(
+        "relay_sweep_incomplete. Check the queue, registration and relay configuration.",
+        ProviderFailure::diagnostic,
+    )
+}
+
+fn send(
+    runtime: &tokio::runtime::Runtime,
+    command: &Path,
+    recipient: &str,
+    id: &str,
+    managed: bool,
+    timeout: Duration,
+) -> Result<(), ProviderFailure> {
     runtime.block_on(async {
         let mut command = tokio::process::Command::new(command);
         command
-            .args([mailbox, id])
+            .args([recipient, id])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        matches!(
-            tokio::time::timeout(Duration::from_secs(20), command.status()).await,
-            Ok(Ok(status)) if status.success()
-        )
+        if managed {
+            command.env("PATH", MANAGED_PATH);
+        }
+        let mut child = command.spawn().map_err(|_| ProviderFailure::Start)?;
+        let status = tokio::time::timeout(timeout, child.wait())
+            .await
+            .map_err(|_| ProviderFailure::Timeout)?
+            .map_err(|_| ProviderFailure::Wait)?;
+        status.success().then_some(()).ok_or(ProviderFailure::Exit)
     })
 }
 
@@ -197,7 +248,7 @@ fn sweep(
     state_path: &Path,
     state: &mut State,
     destination: Destination<'_>,
-    mut send: impl FnMut(&str, &str) -> bool,
+    mut send: impl FnMut(&str, &str) -> Result<(), ProviderFailure>,
 ) -> Result<(u32, u32), Box<dyn std::error::Error>> {
     let Destination { mailbox, target } = destination;
     let recipient = target.map_or(mailbox, |item| item.recipient.as_str());
@@ -238,9 +289,7 @@ fn sweep(
                     started_at: started,
                 });
                 save(state_path, state)?;
-                if !send(recipient, &id) {
-                    return Err(io::Error::other("arrival notification command failed").into());
-                }
+                send(recipient, &id)?;
                 delivered += 1;
             } else {
                 expired += 1;
@@ -312,7 +361,9 @@ fn dispatch<'a>(
     let mut delivered = 0;
     let mut expired = 0;
     let mut failed = false;
+    let mut provider_failure = None;
     for destination in destinations {
+        let managed = destination.target.is_some();
         match sweep(
             conn,
             queue,
@@ -320,14 +371,22 @@ fn dispatch<'a>(
             state_path,
             state,
             destination,
-            |recipient, id| send(&runtime, command, recipient, id),
+            |recipient, id| send(&runtime, command, recipient, id, managed, COMMAND_TIMEOUT),
         ) {
             Ok((sent, dropped)) => {
                 delivered += sent;
                 expired += dropped;
             }
-            Err(_) => failed = true,
+            Err(error) => {
+                failed = true;
+                if managed && provider_failure.is_none() {
+                    provider_failure = error.downcast_ref::<ProviderFailure>().copied();
+                }
+            }
         }
+    }
+    if let Some(error) = provider_failure {
+        return Err(error.into());
     }
     if failed {
         return Err(io::Error::other("arrival notification sweep incomplete").into());
@@ -506,4 +565,39 @@ pub fn run_config(
             target: Some(target),
         }),
     )
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn provider_diagnostics_distinguish_start_and_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let path = dir.path().join("fixture-provider");
+        let invoke = || {
+            send(
+                &runtime,
+                &path,
+                "fixture@example.invalid",
+                "fixture-id",
+                true,
+                Duration::from_millis(25),
+            )
+        };
+        assert_eq!(invoke(), Err(ProviderFailure::Start));
+        fs::write(&path, b"#!/bin/sh\nexec /bin/sleep 30\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(invoke(), Err(ProviderFailure::Timeout));
+        assert!(safe_failure(&ProviderFailure::Wait).starts_with("provider_wait_failed"));
+        assert_eq!(
+            safe_failure(&io::Error::other("synthetic private provider diagnostic")),
+            "relay_sweep_incomplete. Check the queue, registration and relay configuration."
+        );
+    }
 }

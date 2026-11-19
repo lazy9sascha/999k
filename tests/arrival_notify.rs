@@ -342,3 +342,89 @@ fn legacy_relay_still_reads_a_catalogless_queue() {
     );
     assert!(!pigeonmq::mailbox_generation::lock_path(&database).exists());
 }
+
+#[test]
+fn managed_provider_uses_controlled_path_and_reports_no_private_command_output() {
+    use pigeonmq::arrival_notify::{RelayConfig, RelayTarget};
+
+    let fixture = tempfile::tempdir().unwrap();
+    let dir = fixture.path().canonicalize().unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let database = dir.join("queue.sqlite3");
+    let registration = dir.join("registration.json");
+    let state = dir.join("arrival-state.json");
+    let config = dir.join("recipients.json");
+    let launcher = dir.join("record-arrival");
+    let records = dir.join("record-arrival.log");
+    write_private(
+        &registration,
+        br#"{"cue":{"mailbox":"cue","revoked":false},"dot":{"mailbox":"dot","revoked":false}}"#,
+        0o600,
+    );
+    let recipient = "config-recipient@example.invalid";
+    let targets = RelayConfig::from([(
+        "cue".into(),
+        RelayTarget {
+            recipient: recipient.into(),
+            generation: "cue".into(),
+            after: 0,
+        },
+    )]);
+    write_private(&config, &serde_json::to_vec(&targets).unwrap(), 0o600);
+    write_private(
+        &launcher,
+        br#"#!/bin/sh
+[ "$PATH" = "/usr/bin:/bin:/usr/sbin:/sbin" ] || exit 91
+printf '%s %s\n' "$1" "$2" >> "$0.log"
+"#,
+        0o700,
+    );
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+            .env_clear()
+            .env("PATH", dir.join("untrusted-path"))
+            .current_dir(&dir)
+            .arg("notify-arrivals")
+            .arg("--queue")
+            .arg(&database)
+            .arg("--registration")
+            .arg(&registration)
+            .arg("--state")
+            .arg(&state)
+            .arg("--command")
+            .arg(&launcher)
+            .arg("--config")
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+
+    let mut queue = Queue::open(&database).unwrap();
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+    let accepted = send(&mut queue, "dot", "cue");
+    assert_success(run());
+    assert_eq!(
+        fs::read_to_string(&records).unwrap(),
+        format!("{recipient} {accepted}\n")
+    );
+
+    let pending = send(&mut queue, "dot", "cue");
+    write_private(
+        &launcher,
+        br#"#!/bin/sh
+printf 'synthetic-private-marker %s %s\n' "$1" "$2"
+printf 'synthetic-private-marker %s %s\n' "$1" "$2" >&2
+exit 4
+"#,
+        0o700,
+    );
+    let failed = run();
+    assert!(!failed.status.success());
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(stderr.contains("provider_exited_unsuccessfully"));
+    for output in [&*stderr, &String::from_utf8_lossy(&failed.stdout)] {
+        for private_text in ["synthetic-private-marker", recipient, pending.as_str()] {
+            assert!(!output.contains(private_text));
+        }
+    }
+}

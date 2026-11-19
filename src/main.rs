@@ -435,6 +435,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         println!("{status}")
                     }
                     Ok(_) => {}
+                    Err(error) if config.is_some() => {
+                        eprintln!("{}", pigeonmq::arrival_notify::safe_failure(error.as_ref()));
+                    }
                     Err(_) => eprintln!("arrival notification sweep incomplete"),
                 }
                 std::thread::sleep(Duration::from_secs(*interval));
