@@ -7,9 +7,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - Dot Events notify the existing subscription about ordinary messages and linked terminal replies.
 - Grok Bot wake covers ordinary messages and linked terminal replies.
 - An optional local notifier passes new arrival identifiers to an owner-selected command.
-- macOS can stage and apply compatible built-in profiles. Cue and Instinct can opt in to a shared arrival email relay.
-- A dedicated local mailbox can be retired and staged again with a new Bearer and isolated message history.
-- The hub continues to use queue schema 4.
+- On macOS, `init NAME` stages a built-in profile; `init NAME --apply` starts or updates the managed hub. Repeating the same setup preserves the Bearer and leaves running services alone.
+- Cue and Instinct can opt in separately to one shared email relay. Email carries only the new message ID; agents still read and reply through MCP.
+- A mailbox can be retired and staged again with a new Bearer and isolated message history.
+- The hub keeps queue schema 4. Older queues without the generation catalog can keep serving their existing profiles, but managed activation and removal are unavailable. See [older queue databases](docs/troubleshooting.md#older-queue-databases).
 
 ## 0.1.2
 
