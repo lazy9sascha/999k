@@ -13,7 +13,7 @@ const QUEUE: &str = "pigeonmq-cloud-queue.sqlite3";
 const WAKE: &str = "grok-webhook-keychain";
 
 fn run(home: &Path, digest: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+    Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
         .env_clear()
         .args(["setup-grok", "--home"])
         .arg(home)

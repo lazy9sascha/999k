@@ -2037,6 +2037,47 @@ mod dot_wire {
     }
 
     #[test]
+    fn dot_can_list_and_address_registered_codex_sessions() {
+        let (temp, mut queue, state) = fixture();
+        let registration = temp.path().join("pigeonmq-cloud-dot-registration.json");
+        private_json(
+            &registration,
+            json!({
+                "dot":{"mailbox":"dot","revoked":false},
+                "codex-local1":{"mailbox":"codex-local1","revoked":false},
+                "codex-local-abcdef012345":{"mailbox":"codex-local-abcdef012345","revoked":false},
+                "codex-local2":{"mailbox":"codex-local2","revoked":true},
+                "test-peer":{"mailbox":"test-peer","revoked":false},
+            }),
+        );
+        let call = |tool, args| success(post(&state, TOKEN, json!(1), tool, args));
+        let listed = call("pigeonmq_recipients", json!({}));
+        assert_eq!(
+            listed["recipients"],
+            json!(["codex-local-abcdef012345", "codex-local1", "test-peer"])
+        );
+        assert_eq!(listed["connection_status"], "unknown");
+        call(
+            "pigeonmq_send",
+            json!({"recipient":"codex-local1","body":"first","idempotency_key":"session-one"}),
+        );
+        call(
+            "pigeonmq_send",
+            json!({"recipient":"codex-local-abcdef012345","body":"second","idempotency_key":"session-two"}),
+        );
+        for (recipient, body) in [
+            ("codex-local1", "first"),
+            ("codex-local-abcdef012345", "second"),
+        ] {
+            let delivery = queue
+                .receive(recipient, Duration::from_secs(30))
+                .unwrap()
+                .unwrap();
+            assert_eq!(delivery.message.envelope.body, body);
+        }
+    }
+
+    #[test]
     fn dot_native_post_queues_reads_and_completes_atomically() {
         let (_temp, mut queue, state) = fixture();
         let db = &state.db;

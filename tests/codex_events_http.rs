@@ -101,7 +101,7 @@ fn prepared_codex_events_are_exposed_only_on_the_existing_authenticated_hub_rout
         std::fs::write(path, value.to_string()).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let prepare = Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+    let prepare = Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
         .args(["codex-prepare", "--queue"])
         .arg(&db)
         .arg("--auth-policy")
@@ -121,7 +121,7 @@ fn prepared_codex_events_are_exposed_only_on_the_existing_authenticated_hub_rout
         .unwrap()
         .port();
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
             .args(["serve-hub", "--queue"])
             .arg(&db)
             .arg("--bundled-profiles")
@@ -296,7 +296,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
         .port();
     // No Events settings, resolver, or codex-prepare command is supplied.
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
             .env_clear()
             .args(["serve-hub", "--queue"])
             .arg(&db)
@@ -486,7 +486,7 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
         .unwrap()
         .port();
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
             .env_clear()
             .args(["serve-hub", "--queue"])
             .arg(&db)

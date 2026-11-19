@@ -65,7 +65,7 @@ fn dot_events_run_only_on_authenticated_dot_route_with_explicit_preparation() {
         std::fs::write(path, value.to_string()).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let prep = Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+    let prep = Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
         .args(["dot-prepare", "--queue"])
         .arg(&db)
         .arg("--auth-policy")
@@ -83,7 +83,7 @@ fn dot_events_run_only_on_authenticated_dot_route_with_explicit_preparation() {
         .unwrap()
         .port();
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
             .args(["serve-hub", "--queue"])
             .arg(&db)
             .arg("--bundled-profiles")
@@ -222,7 +222,7 @@ fn dot_prepare_adds_only_its_binding_to_an_existing_shared_manifest() {
     put(&registration, registrations.to_string());
     pigeonmq::muse_mailbox::prepare(&db).unwrap();
 
-    let binary = env!("CARGO_BIN_EXE_pigeonmq-cloud");
+    let binary = env!("CARGO_BIN_EXE_pigeonmq");
     let prepare = || {
         Command::new(binary)
             .args(["dot-prepare", "--queue"])

@@ -159,7 +159,7 @@ impl Manifest {
             }
             let policy = resolve_policy(home, &entry.policy).ok_or_else(invalid)?;
             let metadata = open_private_file(&policy)
-                .map_err(|_| io::Error::other("selected Cloud profile policy unavailable"))?
+                .map_err(|_| io::Error::other("selected hub profile policy unavailable"))?
                 .metadata()?;
             if !policies.insert((metadata.dev(), metadata.ino())) {
                 return Err(invalid());
@@ -240,7 +240,7 @@ impl Manifest {
 }
 
 fn invalid_manifest() -> io::Error {
-    io::Error::other("invalid Cloud profile manifest")
+    io::Error::other("invalid hub profile manifest")
 }
 
 fn open_manifest(path: &Path) -> io::Result<fs::File> {
@@ -279,7 +279,7 @@ pub(crate) fn prepare_dot_binding(queue: &Path, policy: &Path, path: &Path) -> i
     let file = open_manifest(path)?;
     // SAFETY: the open manifest descriptor stays live through validation and replacement.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(io::Error::other("Cloud profile manifest is being edited"));
+        return Err(io::Error::other("Hub profile manifest is being edited"));
     }
     let metadata = file.metadata()?;
     let before = read_manifest(&file)?;
@@ -299,7 +299,7 @@ pub(crate) fn prepare_dot_binding(queue: &Path, policy: &Path, path: &Path) -> i
         return Ok(false);
     }
     if metadata.mode() & 0o200 == 0 {
-        return Err(io::Error::other("Cloud profile manifest is read-only"));
+        return Err(io::Error::other("Hub profile manifest is read-only"));
     }
 
     let mut input = parse_manifest(&before)?;
@@ -337,7 +337,7 @@ pub(crate) fn prepare_dot_binding(queue: &Path, policy: &Path, path: &Path) -> i
         || before != read_manifest(&latest)?
     {
         return Err(io::Error::other(
-            "Cloud profile manifest changed during Dot preparation",
+            "Hub profile manifest changed during Dot preparation",
         ));
     }
     pigeonmq::private_file::replace_private(path, &after)?;

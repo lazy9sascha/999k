@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq-cloud");
+const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq");
 const DB: &str = "pigeonmq-cloud-queue.sqlite3";
 const REG: &str = "pigeonmq-cloud-registration.json";
 static ROLES: LazyLock<[(&catalog::HttpProfile, &str, &str); 5]> = LazyLock::new(|| {

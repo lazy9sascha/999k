@@ -1,4 +1,4 @@
-//! Foreground Cloud hub supervisor.
+//! Foreground hub supervisor.
 use crate::{
     cloud_credentials::{self, App},
     cloud_transport::{Provider, Transport},
@@ -46,7 +46,7 @@ pub(crate) struct RunOptions {
     /// For loopback testing only. Ignore tunnel variables and any env file.
     #[arg(long)]
     local_only: bool,
-    /// Serve GET /health on pigeonmq-cloud-health.sock in the private Cloud home.
+    /// Serve GET /health on pigeonmq-cloud-health.sock in the private hub home.
     ///
     /// Use curl --unix-socket <home>/pigeonmq-cloud-health.sock http://localhost/health.
     #[arg(long)]
@@ -83,7 +83,7 @@ fn private_home(home: &Path) -> std::io::Result<fs::File> {
     let metadata = directory.metadata()?;
     // SAFETY: geteuid has no arguments or preconditions.
     if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
-        return Err(std::io::Error::other("owner-private Cloud home required"));
+        return Err(std::io::Error::other("owner-private hub home required"));
     }
     Ok(directory)
 }

@@ -31,10 +31,10 @@ PIGEONMQ_PUBLIC_URL=https://pigeon.example.com
 Use one unquoted `KEY=value` per line. The file accepts only the two named keys and requires `PIGEONMQ_TUNNEL`. Blank lines and whole-line `#` comments are allowed. The limit is 4 KiB of UTF-8 text. Do not include credentials, `export`, or shell expressions.
 
 ```sh
-pigeonmq-cloud run --home "$CLOUD_HOME" --env-file "$CLOUD_HOME/.env"
+pigeonmq run --home "$CLOUD_HOME" --env-file "$CLOUD_HOME/.env"
 ```
 
-If your checkout itself is owner-only, you can instead use `(umask 077; cp .env.example .env)` and `pigeonmq-cloud run --home "$CLOUD_HOME" --env-file .env`. Do not copy over an existing settings file.
+If your checkout itself is owner-only, you can instead use `(umask 077; cp .env.example .env)` and `pigeonmq run --home "$CLOUD_HOME" --env-file .env`. Do not copy over an existing settings file.
 
 ## Use your own HTTPS origin
 
@@ -61,7 +61,7 @@ Use the [private env file](#use-a-private-env-file) above, or set the same proce
 
 ```sh
 PIGEONMQ_TUNNEL=external PIGEONMQ_PUBLIC_URL=https://pigeon.example.com \
-  pigeonmq-cloud run --home "$CLOUD_HOME"
+  pigeonmq run --home "$CLOUD_HOME"
 ```
 
 Use the default HTTPS port. Do not include a path beyond an optional trailing slash, credentials, a query, or a fragment. When replacing a running instance, keep its home, port, and profile or policy settings. Stop the old runner before starting the new one. If a supervisor starts the hub, update that service's existing command rather than starting a second runner against the same home.
@@ -70,7 +70,7 @@ This setting starts the hub without SSH. It does not start the proxy, configure 
 
 ### Verify and update the clients
 
-1. Run `pigeonmq-cloud health --home "$CLOUD_HOME"` to check the local hub and queue without contacting the public hostname. Use a temporary private home and synthetic mail if rehearsing the switch.
+1. Run `pigeonmq health --home "$CLOUD_HOME"` to check the local hub and queue without contacting the public hostname. Use a temporary private home and synthetic mail if rehearsing the switch.
 2. Verify that you control the endpoint and trust the TLS terminator. It can read the Bearer token. Set the new URL and matching token in the connector's secure fields. Stop if it has no secure credential field. PigeonMQ does not configure clients or hand off credentials for external origins. See [credential custody](configuration.md#credential-custody-and-handoff).
 3. In the updated connector, make a permitted read-only MCP call. For a manual MCP check, start with `initialize`, then send the negotiated version in the `MCP-Protocol-Version` header on later requests. A successful call proves that connector can reach the hub. It does not verify delivery or Events. The optional `health --probe-public` command sends no credentials. It can confirm that a request reached PigeonMQ's authentication check, but a proxy's own authentication may stop it earlier.
 
@@ -93,7 +93,7 @@ Read these limits before you start:
 - The [terms of service](https://tunnl.gg/terms) apply to that connection.
 
 ```sh
-PIGEONMQ_TUNNEL=tunnl pigeonmq-cloud run --home "$CLOUD_HOME"
+PIGEONMQ_TUNNEL=tunnl pigeonmq run --home "$CLOUD_HOME"
 ```
 
 ## When the public URL changes

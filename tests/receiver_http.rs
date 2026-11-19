@@ -78,7 +78,7 @@ impl Hub {
             .local_addr()
             .unwrap()
             .port();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
         command
             .env_clear()
             .args(["serve-hub", "--queue"])

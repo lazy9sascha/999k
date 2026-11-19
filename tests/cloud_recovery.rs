@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq-cloud");
+const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq");
 const ORIGIN: &str = "https://private-origin.example";
 const TOKEN: &str = "fixture-bearer-sentinel";
 const WAKE_URL: &str = "http://private-wake.example";
