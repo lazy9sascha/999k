@@ -20,13 +20,16 @@ flowchart LR
     subgraph Cloud["Cloud agents"]
         Muse["Muse (connector)"]
         Grok["Grok Bot (routine)"]
+        Mail["Cue and Instinct clients"]
     end
     TG["Public HTTPS tunnel"]
+    Email["Email provider"]
     subgraph Mac["Your Mac"]
         SSH["optional reverse tunnel<br/>(pigeonmq run)"]
         Hub["Hub on 127.0.0.1:54843<br/>/muse/mcp · /grok/mcp · /dot/mcp · /codex/mcp"]
         Q[("SQLite queue<br/>pigeonmq-cloud-queue.sqlite3")]
         Wake["Grok wake notifier<br/>(inside the hub)"]
+        Relay["One optional email relay"]
         Receiver["Common /receiver API"]
         Worker["Codex local native worker<br/>codex-local"]
         Native["Bound local Codex thread"]
@@ -34,7 +37,11 @@ flowchart LR
     end
     Muse -- "MCP over HTTPS + Bearer" --> TG
     Grok -- "MCP over HTTPS + Bearer" --> TG
+    Mail -- "MCP over HTTPS + Bearer" --> TG
     TG --> SSH --> Hub --> Q
+    Q -. "read-only scan" .-> Relay
+    Relay -- "destination and message ID" --> Email
+    Email -. "arrival hint, not message text" .-> Mail
     Q -. "read-only scan" .-> Wake
     Wake -- "POST {message_id, mailbox}" --> Grok
     Worker <--> Receiver
@@ -81,6 +88,16 @@ sequenceDiagram
 ### B. Pull only
 
 The agent's app registers the hub as an MCP connector (Muse), or the agent calls the route over plain HTTP JSON-RPC from its own computer. There is no wake. Mail is seen only when the agent checks. This is the simplest mode and the one to try first.
+
+#### Cue and Instinct: email is a notification, not a mailbox
+
+1. **Send.** The sender calls `pigeonmq_send` on its own authenticated MCP route. The hub stores the message in the recipient's SQLite mailbox on the Mac. Cue and Instinct each have a route and a Bearer; they do not need separate hubs or queues.
+2. **Notify (optional).** One relay on the Mac serves all opted-in mailboxes. Each has its own destination and activation point. The relay checks new eligible ordinary messages and linked replies, then passes only the destination and PigeonMQ message ID to the configured provider command. It does not send the message text, claim it, or ACK it. An email failure leaves the message available over MCP.
+3. **Read and reply.** A remote client reaches its route (`/cue/mcp` or `/instinct/mcp` by default) through the reverse tunnel. It uses its own Bearer to call `pigeonmq_read` with the ID, or finds the message with `pigeonmq_inbox`. Calling `pigeonmq_reply` stores the linked reply and ACKs the original in one transaction. The sender reads that reply from its own mailbox. PigeonMQ does not ingest replies to the notification email.
+
+Enabling email for a second mailbox updates the shared relay's configuration rather than starting another service. Removing the last opted-in mailbox stops the managed relay. See [email setup](configuration.md#opt-in-to-email-arrivals).
+
+A provider's acceptance proves it accepted a notification for sending. It does not prove inbox delivery, an automatic agent wake, a mailbox read, or a reply. The [Cue and Instinct research log](research.md#mail-01-cue-and-instinct-on-013) records the observed linked replies separately from provider acceptance.
 
 ### C. Event push (intended design)
 
@@ -167,6 +184,7 @@ Synthetic tests establish local behavior only. They do not establish a live Clou
 | **Agent adapters** | Per-agent MCP, native receiver, and Events bindings over the same queue. | `src/adapters/{codex,muse,grok_bot,dot}` |
 | **Runner** (`run`) | Supervises `serve-hub` and writes local recovery state. A tunnel mode is required. Set `PIGEONMQ_TUNNEL=external` with a public URL, or `PIGEONMQ_TUNNEL=tunnl` for testing. `--local-only` is for loopback testing only. | `src/cloud/cloud_service.rs` |
 | **Grok wake notifier** | Runs inside the hub with an active Grok policy and a selected wake credential source. Read-only on the queue. | `src/adapters/grok_bot/grok_wake.rs` |
+| **Email relay** (`notify-arrivals`) | Optional service on the Mac. Reads eligible arrivals and calls the configured provider command with a destination and message ID. | `src/arrival_notify.rs` |
 | **Common receiver API** | Authenticated claims, leases, admission, and atomic completion. | `src/receiver/receiver_api.rs`, `src/receiver/receiver_client.rs` |
 | **Codex local worker** | Native execution in one protected existing local thread for `codex-local`. | `src/adapters/codex/receiver.rs`, `src/bin/pigeonmq-codex-receiver.rs` |
 | **Shared Events** | Subscription lifecycle, signed callbacks, durable outbox, and delivery. | `src/events/` |
@@ -191,6 +209,8 @@ An explicit [profile manifest](configuration.md#select-existing-hub-profiles) ca
 | `POST /grok/mcp` | Grok Bot | `pigeonmq-cloud-grok-bot-policy.json` exists |
 | `POST /dot/mcp` | Dot | `pigeonmq-cloud-dot-policy.json` exists |
 | `POST /codex/mcp` | Codex Cloud | `pigeonmq-cloud-codex-policy.json` exists. `run` uses the central registration. |
+| `POST /cue/mcp` | Cue | The hub mounts Cue's protected policy and registration. Email is optional. |
+| `POST /instinct/mcp` | Instinct | The hub mounts Instinct's protected policy and registration. Email is optional. |
 | `POST /receiver` | Common leased receiver | `pigeonmq-cloud-codex-local-policy.json` exists. `run` uses the central registration. |
 
 A route whose policy is missing returns `404 profile_disabled`.
