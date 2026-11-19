@@ -324,11 +324,12 @@ pub fn inspect_state(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(Duration::from_secs(2))?;
-    conn.execute_batch("PRAGMA query_only=ON; BEGIN;")?;
     crate::validate_schema(&conn).map_err(|err| match err {
         crate::Error::Database(error) => error.into(),
         _ => error("requires_current_schema_queue"),
     })?;
+    crate::mailbox_generation::scope_connection(&conn)?;
+    conn.execute_batch("PRAGMA query_only=ON; BEGIN;")?;
     let tables: HashSet<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='table'")?
         .query_map([], |r| r.get(0))?
@@ -344,10 +345,11 @@ pub fn inspect_state(
     if !initialized {
         return Ok(result);
     }
+    let owner = super::subscriptions::generation_owner(&conn, policy)?;
     let mut subscriptions = json!({"active":0,"expired":0,"inactive":0,"policy_blocked":0});
     let mut statement =
         conn.prepare("SELECT active,expires,url FROM dot_event_subscriptions WHERE owner=?1")?;
-    let rows = statement.query_map([&policy.principal], |r| {
+    let rows = statement.query_map([&owner], |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, f64>(1)?,
@@ -370,8 +372,8 @@ pub fn inspect_state(
         subscriptions[category] = json!(subscriptions[category].as_u64().unwrap_or(0) + 1);
     }
     let mut outbox = json!({"pending":0,"accepted":0,"stopped":0});
-    let mut statement = conn.prepare("SELECT o.state,count(*) FROM dot_event_outbox o JOIN dot_event_subscriptions s ON s.id=o.subscription_id WHERE s.owner=?1 GROUP BY o.state")?;
-    for row in statement.query_map([&policy.principal], |r| {
+    let mut statement = conn.prepare("SELECT o.state,count(*) FROM dot_event_outbox o JOIN dot_event_subscriptions s ON s.id=o.subscription_id JOIN messages m ON m.id=o.message_id WHERE s.owner=?1 GROUP BY o.state")?;
+    for row in statement.query_map([&owner], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
     })? {
         let (state, count) = row?;
@@ -382,7 +384,7 @@ pub fn inspect_state(
     result["subscriptions"] = subscriptions;
     result["outbox"] = outbox;
     if tables.contains("dot_subscription_diagnostic") {
-        let diagnostic = conn.query_row("SELECT observed_at,outcome,reason,ttl_mode,granted_expires FROM dot_subscription_diagnostic WHERE owner=?1", [&policy.principal], |r| Ok(json!({"observed_at":r.get::<_,f64>(0)?,"outcome":r.get::<_,String>(1)?,"reason":r.get::<_,Option<String>>(2)?,"ttl_mode":r.get::<_,String>(3)?,"granted_expires":r.get::<_,Option<f64>>(4)?}))).optional()?;
+        let diagnostic = conn.query_row("SELECT observed_at,outcome,reason,ttl_mode,granted_expires FROM dot_subscription_diagnostic WHERE owner=?1", [&owner], |r| Ok(json!({"observed_at":r.get::<_,f64>(0)?,"outcome":r.get::<_,String>(1)?,"reason":r.get::<_,Option<String>>(2)?,"ttl_mode":r.get::<_,String>(3)?,"granted_expires":r.get::<_,Option<f64>>(4)?}))).optional()?;
         result["last_subscription_attempt"] = diagnostic.unwrap_or(Value::Null);
     }
     Ok(result)

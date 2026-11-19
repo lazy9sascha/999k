@@ -73,10 +73,22 @@ impl Profile {
     }
     fn owner(&self, authorization: &[Vec<u8>]) -> Result<Principal, Fault> {
         self.route()?;
+        self.check_generation()?;
         let p = auth::authenticate_private(&self.policy, authorization)?;
         p.identity(self.mailbox())?;
+        self.check_generation()?;
         registration::validate_registration(&self.registration, self.mailbox(), self.mailbox())?;
         Ok(p)
+    }
+    fn check_generation(&self) -> Result<(), Fault> {
+        if let Identity::Local(local) = &self.identity {
+            let storage = pigeonmq::mailbox_generation::active_storage(&self.db, self.mailbox())
+                .map_err(|_| (503, "mailbox_generation_unavailable"))?;
+            if storage.as_deref() != Some(local.generation()) {
+                return Err((403, "mailbox_generation_retired"));
+            }
+        }
+        Ok(())
     }
     pub fn validate(&self) -> Result<(), Fault> {
         self.route()?;

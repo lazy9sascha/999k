@@ -23,6 +23,7 @@ pub mod inbox_page;
 pub mod logging;
 #[path = "mailbox/engine.rs"]
 mod mailbox_engine;
+pub mod mailbox_generation;
 use mailbox_engine::{Ack as CompletionAck, ReplyCommit, commit_reply, insert_message};
 #[path = "mcp/catalog.rs"]
 pub mod mailbox_catalog;
@@ -335,6 +336,7 @@ impl Queue {
         validate_queue_journal(&connection)?;
         connection.pragma_update(None, "synchronous", "FULL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        mailbox_generation::scope_connection(&connection)?;
         Ok(Self { connection })
     }
     /// Open a current queue or create an empty queue. Never convert an existing schema.
@@ -380,11 +382,13 @@ impl Queue {
             );
             PRAGMA application_id=1346851153;",
             )?;
+            tx.execute_batch(mailbox_generation::SCHEMA)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
             validate_schema(&tx)?;
         }
         tx.commit()?;
+        mailbox_generation::scope_connection(&connection)?;
         Ok(Self { connection })
     }
     /// Returns only after commit. Same key/envelope replays return the original message.
@@ -555,7 +559,7 @@ impl Queue {
             .checked_add(millis)
             .ok_or(Error::Invalid("lease overflow"))?;
         let changed = tx.execute(
-            "UPDATE messages SET lease_until_ms=?1 WHERE id=?2 AND recipient=?3 AND receipt=?4 AND acknowledged_at_ms IS NULL AND dead_lettered_at_ms IS NULL AND lease_until_ms>?5",
+            "UPDATE main.messages SET lease_until_ms=?1 WHERE id=?2 AND id IN (SELECT id FROM messages WHERE id=?2 AND recipient=?3) AND receipt=?4 AND acknowledged_at_ms IS NULL AND dead_lettered_at_ms IS NULL AND lease_until_ms>?5",
             params![until, id, recipient, receipt, now],
         )?;
         if changed != 1 {
@@ -644,7 +648,7 @@ impl Queue {
             };
             if !rpc {
                 let changed = tx.execute(
-                    "UPDATE messages SET dead_lettered_at_ms=?1 WHERE id=?2 AND recipient=?3
+                    "UPDATE main.messages SET dead_lettered_at_ms=?1 WHERE id=?2 AND id IN (SELECT id FROM messages WHERE id=?2 AND recipient=?3)
                      AND dead_lettered_at_ms IS NULL AND acknowledged_at_ms IS NULL
                      AND in_reply_to IS NULL AND attempts>=?4 AND receipt IS NOT NULL
                      AND lease_until_ms IS NOT NULL AND lease_until_ms<=?1
@@ -661,7 +665,7 @@ impl Queue {
         };
         let receipt = Uuid::new_v4().to_string();
         tx.execute(
-            "UPDATE messages SET receipt=?1,lease_until_ms=?2,attempts=attempts+1 WHERE id=?3",
+            "UPDATE main.messages SET receipt=?1,lease_until_ms=?2,attempts=attempts+1 WHERE id=?3",
             params![receipt, until, message.id],
         )?;
         let attempt = tx.query_row(
@@ -739,7 +743,7 @@ impl Queue {
                 return Err(Error::StaleReceipt);
             }
             tx.execute(
-                "UPDATE messages SET acknowledged_at_ms=?1 WHERE id=?2",
+                "UPDATE main.messages SET acknowledged_at_ms=?1 WHERE id=?2",
                 params![now, id],
             )?;
             AckResult::Acknowledged
@@ -863,7 +867,7 @@ impl Queue {
                 }
                 let fresh = Uuid::new_v4().to_string();
                 tx.execute(
-                    "UPDATE messages SET receipt=?1,lease_until_ms=?2,attempts=1 WHERE id=?3",
+                    "UPDATE main.messages SET receipt=?1,lease_until_ms=?2,attempts=1 WHERE id=?3",
                     params![
                         fresh,
                         now.checked_add(1000).ok_or(Error::Conflict)?,
@@ -1382,7 +1386,7 @@ impl Queue {
             params![encoded, id],
         )?;
         tx.execute(
-            "UPDATE messages SET acknowledged_at_ms=?1 WHERE id=?2",
+            "UPDATE main.messages SET acknowledged_at_ms=?1 WHERE id=?2",
             params![now, id],
         )?;
         tx.commit()?;

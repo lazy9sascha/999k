@@ -21,9 +21,14 @@ impl Drop for Hub {
 }
 
 fn init(home: &Path, name: &str) -> (Value, Vec<u8>) {
+    init_with_flags(home, name, &[])
+}
+
+fn init_with_flags(home: &Path, name: &str, flags: &[&str]) -> (Value, Vec<u8>) {
     let out = Command::new(BIN)
         .args(["init", name, "--home"])
         .arg(home)
+        .args(flags)
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -477,4 +482,189 @@ fn invalid_or_unsupported_triage_never_stages_a_mailbox() {
     std::os::unix::fs::symlink(candidate, path).unwrap();
     assert!(!run("fixture-blocked").status.success());
     assert!(!home.join("local-mailboxes").exists());
+}
+
+#[test]
+fn cli_remove_stages_a_fresh_bearer_and_apply_preserves_its_bytes() {
+    use pigeonmq::{Envelope, Error, Queue, mailbox_generation};
+    use sha2::{Digest, Sha256};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("sandbox");
+    let name = "fixture-lifecycle";
+    let (initial, previous_token) = init(&home, name);
+    let route = initial["route"].as_str().unwrap();
+    let start = || {
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut listener = Hub(Command::new(BIN)
+            .args(["serve-hub", "--mailbox-home"])
+            .arg(&home)
+            .args(["--port", &port.to_string(), "--seconds", "10"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap());
+        let mut line = String::new();
+        BufReader::new(listener.0.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let readiness: Value = serde_json::from_str(&line).expect("fixture readiness");
+        assert_eq!(readiness["local_mailbox_port"], port);
+        (listener, port)
+    };
+    let (old_listener, old_port) = start();
+    assert_eq!(
+        request(old_port, route, &previous_token, "tools/list", json!({})).0,
+        200
+    );
+    let token_path = PathBuf::from(initial["token_file"].as_str().unwrap());
+    let profile = token_path.parent().unwrap();
+    let queue_path = home.join("local-mailboxes/mailboxes.sqlite3");
+    let mut queue = Queue::open_existing(&queue_path).unwrap();
+    let message = Envelope {
+        sender: name.into(),
+        recipient: name.into(),
+        body: "synthetic generation fixture".into(),
+        correlation_id: None,
+        in_reply_to: None,
+        idempotency_key: Some("same-name-key".into()),
+    };
+    let old = queue.send(message.clone()).unwrap().message;
+    let lease = Duration::from_secs(60);
+    let old_claim = queue.receive(name, lease).unwrap().unwrap();
+    assert_eq!(old_claim.message, old);
+
+    let removed = Command::new(BIN)
+        .args(["remove", name, "--home"])
+        .arg(&home)
+        .output()
+        .unwrap();
+    assert!(removed.status.success());
+    let result: Value = serde_json::from_slice(&removed.stdout).unwrap();
+    assert_eq!(result["removed"], true);
+    assert!(!token_path.exists());
+    assert!(
+        mailbox_generation::active_storage(&queue_path, name)
+            .unwrap()
+            .is_none()
+    );
+
+    let (staged, new_token) = init(&home, name);
+    assert_eq!(staged["generation_pending"], true);
+    assert_eq!(
+        request(old_port, route, &previous_token, "tools/list", json!({})).0,
+        403
+    );
+    assert_eq!(
+        request(old_port, route, &new_token, "tools/list", json!({})).0,
+        403
+    );
+    assert_eq!(staged["token_file"], initial["token_file"]);
+    assert_ne!(new_token, previous_token);
+    assert!(
+        mailbox_generation::active_storage(&queue_path, name)
+            .unwrap()
+            .is_none()
+    );
+    let snapshot = || {
+        [
+            "bearer-token",
+            "policy.json",
+            "profile.json",
+            "registration.json",
+        ]
+        .map(|file| fs::read(profile.join(file)).unwrap())
+    };
+    let staged_files = snapshot();
+    let (still_staged, repeated_token) = init(&home, name);
+    assert_eq!(still_staged["generation_pending"], true);
+    assert_eq!(still_staged["created"], false);
+    assert_eq!(repeated_token, new_token);
+    assert_eq!(snapshot(), staged_files);
+
+    let (activated, applied_token) = init_with_flags(&home, name, &["--apply"]);
+    assert_eq!(activated["generation_pending"], false);
+    assert_eq!(activated["created"], false);
+    assert_eq!(applied_token, new_token);
+    assert_eq!(snapshot(), staged_files);
+    let manifest: Value = serde_json::from_slice(&staged_files[2]).unwrap();
+    assert_eq!(
+        mailbox_generation::active_storage(&queue_path, name)
+            .unwrap()
+            .as_deref(),
+        manifest["generation"].as_str(),
+    );
+    let policy: Value = serde_json::from_slice(&staged_files[1]).unwrap();
+    let digest = |token: &[u8]| {
+        Sha256::digest(token)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(policy["principals"][0]["token_sha256"], digest(&new_token));
+    assert_ne!(
+        policy["principals"][0]["token_sha256"],
+        digest(&previous_token)
+    );
+
+    let queue_before = fs::read(&queue_path).unwrap();
+    let (repeated, same_token) = init(&home, name);
+    assert_eq!(repeated["generation_pending"], false);
+    assert_eq!(repeated["created"], false);
+    assert_eq!(same_token, applied_token);
+    assert_eq!(snapshot(), staged_files);
+    assert_eq!(fs::read(&queue_path).unwrap(), queue_before);
+
+    assert!(matches!(
+        queue.observe_ordinary(&old.id, name),
+        Err(Error::NotFound)
+    ));
+    assert!(queue.ack(name, &old.id, &old_claim.receipt).is_err());
+    let fresh = queue.send(message.clone()).unwrap();
+    assert!(!fresh.duplicate);
+    assert_ne!(fresh.message.id, old.id);
+    assert_eq!(fresh.message.envelope, message);
+    assert_eq!(
+        request(old_port, route, &new_token, "tools/list", json!({})).0,
+        403
+    );
+    drop(old_listener);
+    let (_new_listener, new_port) = start();
+    assert_eq!(
+        request(new_port, route, &previous_token, "tools/list", json!({})).0,
+        401
+    );
+    let (_, denied) = request(
+        new_port,
+        route,
+        &new_token,
+        "tools/call",
+        json!({"name":"pigeonmq_read","arguments":{"message_id":old.id}}),
+    );
+    assert_eq!(denied["result"]["isError"], true, "{denied}");
+    assert!(!denied.to_string().contains(&old.envelope.body));
+    let (_, current) = request(
+        new_port,
+        route,
+        &new_token,
+        "tools/call",
+        json!({"name":"pigeonmq_read","arguments":{"message_id":fresh.message.id}}),
+    );
+    assert_eq!(current["result"]["isError"], false);
+    assert_eq!(
+        queue.observe_ordinary(&fresh.message.id, name).unwrap(),
+        fresh.message
+    );
+    let stored: (String, String) = rusqlite::Connection::open(&queue_path)
+        .unwrap()
+        .query_row(
+            "SELECT body,receipt FROM main.messages WHERE id=?1",
+            [&old.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (old.envelope.body, old_claim.receipt));
 }

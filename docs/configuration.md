@@ -11,7 +11,8 @@ Run `pigeonmq <command> --help` for exact flags.
 | Command | What it does |
 | --- | --- |
 | `init --home DIR` | Create the home, an empty queue, and settings drafts for every app. Detects installed apps. |
-| `init <agent> --home DIR` | Stage an isolated local mailbox. See [local mailbox setup](#stage-local-mailboxes). |
+| `init <agent> --home DIR` | Stage an isolated local mailbox. Add `--apply` to activate a staged replacement. See [local mailbox setup](#stage-local-mailboxes). |
+| `remove <agent> --home DIR` | Retire a dedicated local mailbox and preserve its queue rows. |
 | `discover --home DIR` | Same detection. Only creates settings that are missing. Detection means "app bundle found", not "connected". |
 | `setup-muse --home DIR --peer NAME` | Muse in one step: queue, registration (`muse` + peer), policy, Keychain token. Safe to repeat. |
 | `setup-codex --home DIR --peer NAME [--callback-host HOST --resolver PATH]` | Prepare the Codex Cloud queue, registration, policy, Keychain token, and optional Events storage. |
@@ -65,7 +66,7 @@ By default, `run --home DIR` uses the conventional policy files in the Cloud hom
 }
 ```
 
-Valid adapter IDs are `muse`, `dot`, `grok-bot`, `codex-cloud`, and `codex-local`. Use one entry per adapter, one route per entry, and a distinct private policy file. In `policy`, use a filename at the top of the Cloud home or the absolute path to an existing file, including one outside the Cloud home. Relative subpaths and `.` or `..` path segments are not allowed. The policy file and its containing directory must be owner-private and must not be symlinks. An MCP route can use a lowercase slug in `/<slug>/mcp`. The native receiver keeps `/receiver`. A route reserved for another adapter cannot be reused.
+Valid adapter IDs are `muse`, `dot`, `grok-bot`, `codex-cloud`, `codex-local`, `cue`, and `instinct`. Use one entry per adapter, one route per entry, and a distinct private policy file. In `policy`, use a filename at the top of the Cloud home or the absolute path to an existing file, including one outside the Cloud home. Relative subpaths and `.` or `..` path segments are not allowed. The policy file and its containing directory must be owner-private and must not be symlinks. An MCP route can use a lowercase slug in `/<slug>/mcp`. The native receiver keeps `/receiver`. A route reserved for another adapter cannot be reused.
 
 The hub uses each mounted route exactly as written. The manifest mounts only the listed profiles. A renamed route does not leave an alias at the default route. A missing or invalid policy stops startup instead of falling back to a conventional file. The running supervisor pins the manifest contents when it starts. Restart the supervisor to apply a deliberate change. Use the existing Bearer policy and registration rules. The file cannot set credentials, grant access, add a new adapter, or start the hub by itself.
 
@@ -88,6 +89,28 @@ Each init prints JSON with `mailbox`, `route`, `token_file`, `created`, `runtime
 The same binary serves any valid staged name through the official Rust MCP SDK (rmcp). For a local test, use POST with `Content-Type: application/json` and `Accept: application/json, text/event-stream` on the exact route printed by init. Each mailbox has its own policy and registration and registers no peers. A token for one route cannot access the other. To stage from triage, save a [valid local record](architecture.md#triage-file-to-init) as `$TEST_HOME/triage/<agent>.json` before init. The record selects read, wait, or both. Without a record, a new mailbox offers both. Do not use the checked-in Vooy candidate as a local record: it describes an unverified remote app.
 
 This command does not connect the real Vooy app, configure a connector, or start a tunnel. Do not forward this test listener through a tunnel. The normal runner does not load these routes. Start a new bounded listener to apply new registrations.
+
+### Replace a dedicated local mailbox
+
+Run these commands against the same dedicated home:
+
+```sh
+pigeonmq remove my-agent --home "$MAILBOX_HOME"
+pigeonmq init my-agent --home "$MAILBOX_HOME"
+pigeonmq init my-agent --home "$MAILBOX_HOME" --apply
+```
+
+Removal revokes the existing binding and preserves its queue records.
+The next `init` stages a new Bearer and storage identity for the same route.
+The staged replacement stays inactive until `--apply`. Repeat `init` to reuse the staged credential.
+Restart a dedicated listener to mount the active replacement.
+Use the new protected Bearer. The retired listener binding rejects requests.
+These commands apply to dedicated local mailboxes. Built-in cloud profiles use their own setup and deployment procedures.
+
+Queues created by this release include the generation catalog and retain schema 4.
+A legacy queue without that catalog can continue serving existing bindings.
+Removal and same-name replacement fail closed on that queue.
+Use a generation-aware build for every process serving a queue with replaced mailboxes.
 
 ## Dot through a private Secure MCP Tunnel
 
@@ -195,8 +218,8 @@ The subscription owner is the authenticated Dot principal. A caller cannot selec
 The worker checks current registration and policy before subscription changes and callback delivery.
 It uses the Dot instance lock. Codex keeps its separate policy and lock.
 
-Callbacks contain message identifiers, `in_reply_to`, and `terminal: true`. They contain no message body or mailbox credential.
-The first successful subscription excludes replies that already exist in the queue.
+Callbacks contain message identifiers. Linked terminal callbacks also include `in_reply_to` and `terminal: true`.
+The first successful subscription excludes messages that already exist in the queue.
 The server stores the queue sequence boundary in the same transaction as the grant.
 Active refresh and restart preserve that boundary. The caller cannot request replay or select a cutoff.
 A subscription after expiry or unsubscribe starts with a new boundary.

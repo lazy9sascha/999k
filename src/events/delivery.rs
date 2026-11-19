@@ -110,6 +110,7 @@ fn message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
 
 struct Subscription {
     owner: String,
+    stored_owner: String,
     id: String,
     url: String,
     secret: String,
@@ -228,6 +229,7 @@ impl EventDelivery {
             crate::Error::Database(error) => error.into(),
             _ => error("requires_current_schema_queue"),
         })?;
+        crate::mailbox_generation::scope_connection(&conn)?;
         Ok(conn)
     }
     fn policy(&self) -> Result<EventsPolicy> {
@@ -256,10 +258,13 @@ impl EventDelivery {
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let policy = self.policy()?; // Revalidate after acquiring the storage lock.
+        let Some(stored_owner) = super::subscriptions::generation_owner(&tx, &policy)? else {
+            return Ok(Vec::new());
+        };
         let now = clock();
         Self::time(now)?;
         let subscriptions:Vec<(String,String)>=tx.prepare("SELECT id,url FROM dot_event_subscriptions WHERE active=1 AND owner=?1 AND (expires>?2 OR (expires=0 AND ?3))")?
-            .query_map(params![policy.principal(),now,self.allow_nonexpiring],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
+            .query_map(params![stored_owner,now,self.allow_nonexpiring],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?;
         let mut candidates = Vec::new();
         for (sid, url) in subscriptions {
             if !policy.callback_allowed(&url) {
@@ -315,9 +320,12 @@ impl EventDelivery {
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let policy = self.policy()?;
+        let Some(stored_owner) = super::subscriptions::generation_owner(&tx, &policy)? else {
+            return Ok(None);
+        };
         let now = clock();
         Self::time(now)?;
-        let sub=tx.query_row("SELECT s.id,s.url,s.secret,s.previous_secret,s.rotation_until,COALESCE(g.generation,0) FROM dot_event_subscriptions s LEFT JOIN dot_subscription_generations g ON g.subscription_id=s.id WHERE s.id=?1 AND active=1 AND owner=?2 AND (expires>?3 OR (expires=0 AND ?4))",params![sid,policy.principal(),now,self.allow_nonexpiring],|r|Ok(Subscription { owner:policy.principal().to_owned(), id:r.get(0)?,url:r.get(1)?,secret:r.get(2)?,previous:r.get(3)?,rotation_until:r.get(4)?,generation:r.get(5)? })).optional()?;
+        let sub=tx.query_row("SELECT s.id,s.url,s.secret,s.previous_secret,s.rotation_until,COALESCE(g.generation,0) FROM dot_event_subscriptions s LEFT JOIN dot_subscription_generations g ON g.subscription_id=s.id WHERE s.id=?1 AND active=1 AND owner=?2 AND (expires>?3 OR (expires=0 AND ?4))",params![sid,stored_owner,now,self.allow_nonexpiring],|r|Ok(Subscription { owner:policy.principal().to_owned(), stored_owner:stored_owner.clone(), id:r.get(0)?,url:r.get(1)?,secret:r.get(2)?,previous:r.get(3)?,rotation_until:r.get(4)?,generation:r.get(5)? })).optional()?;
         let Some(sub) = sub else { return Ok(None) };
         if !policy.callback_allowed(&sub.url) {
             return Ok(None);
@@ -409,6 +417,21 @@ impl EventDelivery {
         }))
     }
 
+    /// A reserved callback can be superseded before its transport starts.
+    pub fn still_current(&self, attempt: &DeliveryAttempt) -> Result<bool> {
+        let conn = self.connect()?;
+        let policy = self.policy()?;
+        Ok(
+            super::subscriptions::generation_owner(&conn, &policy)?.as_deref()
+                == Some(attempt.subscription.stored_owner.as_str())
+                && conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1)",
+                    [&attempt.message_id],
+                    |row| row.get::<_, bool>(0),
+                )?,
+        )
+    }
+
     /// Apply a response only to the exact persisted generation and attempt.
     /// Status means signed callback delivery, never message consumption or ACK.
     pub fn finish(&self, attempt: &DeliveryAttempt, status: u16) -> Result<DeliveryOutcome> {
@@ -417,6 +440,12 @@ impl EventDelivery {
         }
         let mut conn = self.connect()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let policy = self.policy()?;
+        if super::subscriptions::generation_owner(&tx, &policy)?.as_deref()
+            != Some(attempt.subscription.stored_owner.as_str())
+        {
+            return Ok(DeliveryOutcome::Superseded);
+        }
         let generation:Option<i64>=tx.query_row("SELECT COALESCE(g.generation,0) FROM dot_event_subscriptions s LEFT JOIN dot_subscription_generations g ON g.subscription_id=s.id WHERE s.id=?1",[&attempt.subscription.id],|r|r.get(0)).optional()?;
         if generation != Some(attempt.subscription.generation) {
             return Ok(DeliveryOutcome::Superseded);

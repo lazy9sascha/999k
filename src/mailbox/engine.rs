@@ -56,9 +56,16 @@ pub(crate) fn insert_message(
         created_at_ms,
     };
     let e = &message.envelope;
+    let sender = crate::mailbox_generation::current_storage(tx, &e.sender)?
+        .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+    let recipient = crate::mailbox_generation::current_storage(tx, &e.recipient)?
+        .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+    if let Some(parent) = &e.in_reply_to {
+        crate::mailbox_generation::check_link(tx, parent)?;
+    }
     tx.execute(
-        "INSERT INTO messages(id,sender,recipient,body,correlation_id,in_reply_to,idempotency_key,created_at_ms,conversation_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        params![message.id,e.sender,e.recipient,e.body,e.correlation_id,e.in_reply_to,e.idempotency_key,message.created_at_ms,message.conversation_id],
+        "INSERT INTO main.messages(id,sender,recipient,body,correlation_id,in_reply_to,idempotency_key,created_at_ms,conversation_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![message.id,sender,recipient,e.body,e.correlation_id,e.in_reply_to,e.idempotency_key,message.created_at_ms,message.conversation_id],
     )?;
     Ok(message)
 }
@@ -77,7 +84,7 @@ pub(crate) fn commit_reply<E>(
         // path validates the relationship and rechecks authority below.
         let thread = crate::conversation::parent_thread(&tx, plan.original_id).map_err(&storage)?;
         tx.execute(
-            "UPDATE messages SET conversation_id=?1 WHERE id=?2 AND in_reply_to=?3 AND conversation_id<>?1",
+            "UPDATE main.messages SET conversation_id=?1 WHERE id=?2 AND in_reply_to=?3 AND conversation_id<>?1",
             params![thread, plan.reply_id, plan.original_id],
         ).map_err(&storage)?;
     }
@@ -85,14 +92,14 @@ pub(crate) fn commit_reply<E>(
         Ack::Unchanged => {}
         Ack::Timestamp { now } => {
             tx.execute(
-                "UPDATE messages SET acknowledged_at_ms=?1 WHERE id=?2",
+                "UPDATE main.messages SET acknowledged_at_ms=?1 WHERE id=?2",
                 params![now, plan.original_id],
             )
             .map_err(&storage)?;
         }
         Ack::DeferredClaim { now, until } => {
             tx.execute(
-                "UPDATE messages SET receipt=?1,lease_until_ms=?2,attempts=1,acknowledged_at_ms=?3 WHERE id=?4",
+                "UPDATE main.messages SET receipt=?1,lease_until_ms=?2,attempts=1,acknowledged_at_ms=?3 WHERE id=?4",
                 params![Uuid::new_v4().to_string(), until, now, plan.original_id],
             ).map_err(&storage)?;
         }

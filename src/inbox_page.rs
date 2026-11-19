@@ -57,9 +57,39 @@ struct PageRequest {
 }
 
 impl PageRequest {
-    fn fingerprint(&self, mailbox: &str, peers: &[String]) -> Result<String, Fault> {
-        let scope = serde_json::to_vec(&(mailbox, peers, self.all, self.newest, &self.query))
-            .map_err(|_| (503, "serialization_failed"))?;
+    fn fingerprint(
+        &self,
+        conn: &Connection,
+        mailbox: &str,
+        peers: &[String],
+    ) -> Result<String, Fault> {
+        let storage_mailbox = crate::mailbox_generation::current_storage(conn, mailbox)
+            .map_err(storage)?
+            .ok_or((403, "mailbox_generation_retired"))?;
+        let storage_peers = peers
+            .iter()
+            .map(|peer| crate::mailbox_generation::current_storage(conn, peer))
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage)?;
+        let legacy = storage_mailbox == mailbox
+            && peers
+                .iter()
+                .zip(&storage_peers)
+                .all(|(peer, stored)| stored.as_ref() == Some(peer));
+        let scope = if legacy {
+            serde_json::to_vec(&(mailbox, peers, self.all, self.newest, &self.query))
+        } else {
+            serde_json::to_vec(&(
+                mailbox,
+                storage_mailbox,
+                peers,
+                storage_peers,
+                self.all,
+                self.newest,
+                &self.query,
+            ))
+        }
+        .map_err(|_| (503, "serialization_failed"))?;
         Ok(Sha256::digest(scope)
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -252,10 +282,11 @@ pub fn list_with(
     )
     .map_err(storage)?;
     sql_deadline(&mut c, deadline)?;
+    crate::mailbox_generation::scope_connection(&c).map_err(storage)?;
     c.pragma_update(None, "query_only", true).map_err(storage)?;
     let tx = c.transaction().map_err(storage)?;
     let permitted = serde_json::to_string(&allowed).map_err(|_| (503, "serialization_failed"))?;
-    let fingerprint = request.fingerprint(mailbox, &allowed)?;
+    let fingerprint = request.fingerprint(&tx, mailbox, &allowed)?;
     let high: i64 = tx
         .query_row(
             &format!("SELECT COUNT(*) FROM messages m WHERE {CANDIDATES}"),

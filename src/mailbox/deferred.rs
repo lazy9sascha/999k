@@ -95,12 +95,13 @@ fn connect(p: impl AsRef<Path>, ro: bool) -> Result<Connection> {
     // Host checks cancellation between pages and before commit.
     // This timeout limits lock waits only; SQL execution is not interrupted.
     c.busy_timeout(Duration::from_secs(2))?;
+    schema(&c)?;
+    crate::mailbox_generation::scope_connection(&c)?;
     if ro {
         c.pragma_update(None, "query_only", true)?;
     } else {
         c.pragma_update(None, "synchronous", "FULL")?;
     }
-    schema(&c)?;
     Ok(c)
 }
 

@@ -162,6 +162,7 @@ fn send(runtime: &tokio::runtime::Runtime, command: &Path, mailbox: &str, id: &s
 
 fn sweep(
     conn: &Connection,
+    queue: &Path,
     registration: &Path,
     state_path: &Path,
     state: &mut State,
@@ -171,6 +172,7 @@ fn sweep(
     let mut delivered = 0;
     let mut expired = 0;
     for _ in 0..LIMIT {
+        let _dispatch = crate::mailbox_generation::lock_dispatch(queue)?;
         let time = now()?;
         let cursor = &state.mailboxes[mailbox];
         let Some((seq, id, sender)) = next(conn, mailbox, cursor.after, time)? else {
@@ -251,8 +253,9 @@ pub fn run(
     let _lock = acquire_lock(state_path)?;
     let conn = Connection::open_with_flags(queue, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     conn.busy_timeout(Duration::from_secs(2))?;
-    conn.pragma_update(None, "query_only", true)?;
     crate::validate_schema(&conn)?;
+    crate::mailbox_generation::scope_connection(&conn)?;
+    conn.pragma_update(None, "query_only", true)?;
     let Some(mut state) = load(state_path)? else {
         for mailbox in mailboxes {
             registration::active_peers(registration, mailbox).map_err(|_| {
@@ -308,6 +311,7 @@ pub fn run(
     for mailbox in mailboxes {
         match sweep(
             &conn,
+            queue,
             registration,
             state_path,
             &mut state,

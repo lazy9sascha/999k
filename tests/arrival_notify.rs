@@ -166,6 +166,14 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
     assert_eq!(fs::read_to_string(&records).unwrap(), expected);
 
     let mut queue = Queue::open_existing(&database).unwrap();
+    // These rows are newer than the relay cursor but belong to a retired generation.
+    send(&mut queue, "dot", "cue");
+    linked(&mut queue, "cue");
+    pigeonmq::mailbox_generation::retire(&database, "cue").unwrap();
+    pigeonmq::mailbox_generation::reactivate(&database, "cue").unwrap();
+    let cue = send(&mut queue, "dot", "cue");
+    let cue_terminal = linked(&mut queue, "cue");
+    expected.push_str(&format!("cue {cue}\ncue {cue_terminal}\n"));
     let next = send(&mut queue, "dot", "instinct");
     drop(queue);
     expected.push_str(&format!("instinct {next}\n"));

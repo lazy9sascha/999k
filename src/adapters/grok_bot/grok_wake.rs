@@ -214,11 +214,12 @@ fn pending_page(db: &Path, now_ms: i64, after: i64) -> Result<(Vec<String>, i64)
     )
     .map_err(storage)?;
     c.busy_timeout(Duration::from_secs(2)).map_err(storage)?;
-    c.pragma_update(None, "query_only", true).map_err(storage)?;
     crate::validate_schema(&c).map_err(|err| match err {
         crate::Error::Database(error) => storage(error),
         _ => WakeError("requires_current_schema_queue"),
     })?;
+    crate::mailbox_generation::scope_connection(&c).map_err(storage)?;
+    c.pragma_update(None, "query_only", true).map_err(storage)?;
     let mut s = c
         .prepare(&PENDING.replace("{PLAIN_MESSAGE}", PLAIN_MESSAGE))
         .map_err(storage)?;
@@ -674,6 +675,9 @@ async fn sweep(
             tracing::warn!(component = "grok_wake", event = "wake_hourly_cap_reached");
             return;
         }
+        let Ok(_dispatch) = crate::mailbox_generation::lock_dispatch(&c.db) else {
+            continue;
+        };
         if authorize(&id).is_none() {
             continue;
         }

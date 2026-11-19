@@ -546,3 +546,83 @@ fn fresh_cutoff_is_fail_closed_and_reactivation_starts_fresh() {
     );
     assert_eq!(f.state(&pending), (0, None));
 }
+
+#[test]
+fn replacement_generation_uses_a_new_grant_and_never_wakes_old_messages() {
+    const NEW_TOKEN: &str = "PUBLIC_REPLACEMENT_DOT_FIXTURE_NOT_A_CREDENTIAL";
+    let fixture = Fixture::new();
+    let runtime = fixture.prepared();
+    let original = runtime
+        .event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
+        .unwrap();
+    fixture.send("muse", "dot");
+    fixture.terminal();
+    runtime
+        .tick_with(&context(), |_, _| {
+            Ok(CallbackResponse {
+                status: 503,
+                body: vec![],
+            })
+        })
+        .unwrap();
+
+    let dispatch_lock = pigeonmq::mailbox_generation::lock_dispatch(&fixture.db).unwrap();
+    assert!(pigeonmq::mailbox_generation::retire(&fixture.db, "dot").is_err());
+    drop(dispatch_lock);
+    pigeonmq::mailbox_generation::retire(&fixture.db, "dot").unwrap();
+    pigeonmq::mailbox_generation::reactivate(&fixture.db, "dot").unwrap();
+
+    let mut policy: Value =
+        serde_json::from_slice(&std::fs::read(&fixture.policy).unwrap()).unwrap();
+    policy["token_sha256"] = json!(
+        Sha256::digest(NEW_TOKEN)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    put(&fixture.policy, &policy);
+    assert!(
+        runtime
+            .event_with(
+                TOKEN,
+                "events/subscribe",
+                &grant("dot"),
+                &context(),
+                |_, _| panic!("retired bearer reached callback verification")
+            )
+            .is_err()
+    );
+
+    let replacement = runtime
+        .event_with(
+            NEW_TOKEN,
+            "events/subscribe",
+            &grant("dot"),
+            &context(),
+            echo,
+        )
+        .unwrap();
+    assert_ne!(original["id"], replacement["id"]);
+    runtime
+        .tick_with(&context(), |_, _| {
+            panic!("prior generation callback repeated")
+        })
+        .unwrap();
+    let ordinary = fixture.send("muse", "dot");
+    let (_, terminal) = fixture.terminal();
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        runtime
+            .tick_with(&context(), |_, request| {
+                assert_eq!(Some(request.subscription_id), replacement["id"].as_str());
+                let event: Value = serde_json::from_slice(request.body).unwrap();
+                delivered.push(event["data"]["message_id"].as_str().unwrap().to_owned());
+                Ok(CallbackResponse {
+                    status: 200,
+                    body: vec![],
+                })
+            })
+            .unwrap();
+    }
+    assert_eq!(delivered, [ordinary, terminal]);
+}

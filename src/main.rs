@@ -130,6 +130,15 @@ enum Command {
         /// Prepare an operational mailbox policy and private bearer for Instinct or Cue.
         #[arg(long, requires = "agent")]
         operational: bool,
+        /// Activate a staged replacement in a dedicated local mailbox home.
+        #[arg(long, requires = "agent", conflicts_with = "operational")]
+        apply: bool,
+    },
+    /// Retire a named mailbox in a dedicated local mailbox home.
+    Remove {
+        agent: String,
+        #[arg(long)]
+        home: PathBuf,
     },
     /// Prepare a private Muse queue, registration, policy, and Keychain bearer.
     SetupMuse {
@@ -292,6 +301,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             agent,
             home,
             operational,
+            apply,
         } => {
             if *operational {
                 let mailbox = agent.as_deref().ok_or("mailbox name required")?;
@@ -299,11 +309,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             if let Some(name) = agent {
-                println!("{}", runtime_profiles::init(home, name)?);
+                println!("{}", runtime_profiles::init(home, name, *apply)?);
                 Ok(())
             } else {
                 cloud_setup::setup(home, true)
             }
+        }
+        Command::Remove { agent, home } => {
+            println!("{}", runtime_profiles::remove(home, agent)?);
+            Ok(())
         }
         Command::SetupMuse { home, peer } => cloud_setup::setup_muse(home, peer),
         Command::SetupGrok { home, token_sha256 } => {

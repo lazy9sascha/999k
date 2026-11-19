@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Dot Events notify the existing subscription about ordinary messages and linked terminal replies.
 - Grok Bot wake covers ordinary messages and linked terminal replies.
 - An optional local notifier passes new arrival identifiers to an owner-selected command.
+- A dedicated local mailbox can be retired and staged again with a new Bearer and isolated message history.
 - The hub continues to use queue schema 4.
 
 ## 0.1.2
