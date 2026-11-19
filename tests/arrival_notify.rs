@@ -166,18 +166,27 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
     assert_eq!(fs::read_to_string(&records).unwrap(), expected);
 
     let mut queue = Queue::open_existing(&database).unwrap();
-    // These rows are newer than the relay cursor but belong to a retired generation.
+    let next = send(&mut queue, "dot", "instinct");
+    expected.push_str(&format!("instinct {next}\n"));
+    drop(queue);
+    assert_success(run());
+    assert_eq!(fs::read_to_string(&records).unwrap(), expected);
+
+    let cursor = fs::read(&state).unwrap();
+    pigeonmq::mailbox_generation::retire(&database, "cue").unwrap();
+    assert!(!run().status.success());
+    pigeonmq::mailbox_generation::reactivate(&database, "cue").unwrap();
+    let mut queue = Queue::open_existing(&database).unwrap();
     send(&mut queue, "dot", "cue");
     linked(&mut queue, "cue");
-    pigeonmq::mailbox_generation::retire(&database, "cue").unwrap();
-    pigeonmq::mailbox_generation::reactivate(&database, "cue").unwrap();
-    let cue = send(&mut queue, "dot", "cue");
-    let cue_terminal = linked(&mut queue, "cue");
-    expected.push_str(&format!("cue {cue}\ncue {cue_terminal}\n"));
-    let next = send(&mut queue, "dot", "instinct");
     drop(queue);
-    expected.push_str(&format!("instinct {next}\n"));
-    assert_success(run());
+    let rejected = run();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("mailbox generation requires managed relay --config")
+    );
+    assert_eq!(fs::read(&state).unwrap(), cursor);
     assert_eq!(fs::read_to_string(&records).unwrap(), expected);
 }
 
@@ -292,4 +301,44 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
     );
     assert!(!observed.contains(&retired_cue));
     assert!(!observed.contains(BODY));
+}
+
+#[test]
+fn legacy_relay_still_reads_a_catalogless_queue() {
+    use pigeonmq::arrival_notify::run;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let dir = fixture.path().canonicalize().unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let database = dir.join("queue.sqlite3");
+    drop(Queue::open(&database).unwrap());
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+    Connection::open(&database)
+        .unwrap()
+        .execute_batch("DROP TABLE pigeonmq_mailbox_generations")
+        .unwrap();
+
+    let registration = dir.join("registration.json");
+    let command = dir.join("record-arrival");
+    let state = dir.join("state.json");
+    write_private(
+        &registration,
+        br#"{"cue":{"mailbox":"cue","revoked":false},"dot":{"mailbox":"dot","revoked":false}}"#,
+        0o600,
+    );
+    write_private(
+        &command,
+        b"#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" > \"$0.log\"\n",
+        0o700,
+    );
+    let run_legacy = || run(&database, &registration, &state, &command, &["cue".into()]);
+    assert_eq!(run_legacy().unwrap()["state"], "initialized");
+    let mut queue = Queue::open_existing(&database).unwrap();
+    let id = send(&mut queue, "dot", "cue");
+    assert_eq!(run_legacy().unwrap()["delivered"], 1);
+    assert_eq!(
+        fs::read_to_string(dir.join("record-arrival.log")).unwrap(),
+        format!("cue {id}\n")
+    );
+    assert!(!pigeonmq::mailbox_generation::lock_path(&database).exists());
 }

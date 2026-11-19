@@ -57,6 +57,10 @@ fn invalid_state() -> io::Error {
     io::Error::other("arrival notification state unavailable")
 }
 
+fn legacy_mailbox_error() -> io::Error {
+    io::Error::other("mailbox generation requires managed relay --config")
+}
+
 fn private_descriptor(path: &Path) -> io::Result<File> {
     private_file::open_private_file(path)
         .map_err(|_| io::Error::other("arrival notifier requires an owner-private file"))
@@ -197,14 +201,17 @@ fn sweep(
 ) -> Result<(u32, u32), Box<dyn std::error::Error>> {
     let Destination { mailbox, target } = destination;
     let recipient = target.map_or(mailbox, |item| item.recipient.as_str());
+    let expected_storage = target.map_or(mailbox, |item| item.generation.as_str());
     let mut delivered = 0;
     let mut expired = 0;
     for _ in 0..LIMIT {
         let _dispatch = crate::mailbox_generation::lock_dispatch(queue)?;
-        if let Some(target) = target
-            && crate::mailbox_generation::current_storage(conn, mailbox)?.as_deref()
-                != Some(target.generation.as_str())
+        if crate::mailbox_generation::current_storage(conn, mailbox)?.as_deref()
+            != Some(expected_storage)
         {
+            if target.is_none() {
+                return Err(legacy_mailbox_error().into());
+            }
             break;
         }
         let time = now()?;
@@ -350,6 +357,16 @@ pub fn run(
         return Err(io::Error::other("invalid arrival notifier configuration").into());
     }
     let (queue_meta, _lock, conn) = open_run(queue, registration, state_path, command)?;
+    {
+        let _dispatch = crate::mailbox_generation::lock_dispatch(queue)?;
+        for mailbox in mailboxes {
+            if crate::mailbox_generation::current_storage(&conn, mailbox)?.as_deref()
+                != Some(mailbox.as_str())
+            {
+                return Err(legacy_mailbox_error().into());
+            }
+        }
+    }
     let Some(mut state) = load(state_path)? else {
         for mailbox in mailboxes {
             registration::active_peers(registration, mailbox).map_err(|_| {
