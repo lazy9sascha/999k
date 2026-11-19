@@ -135,7 +135,13 @@ fn check_scoped_mailbox(
             )
             .is_ok()
     );
-    let unrelated_thread = profile.call(&headers, "pigeonmq_read_thread", json!({"conversation_id":unrelated})).unwrap();
+    let unrelated_thread = profile
+        .call(
+            &headers,
+            "pigeonmq_read_thread",
+            json!({"conversation_id":unrelated}),
+        )
+        .unwrap();
     assert!(unrelated_thread["messages"].as_array().unwrap().is_empty());
     assert!(unrelated_thread["next_cursor"].is_null());
     let recipients = profile
