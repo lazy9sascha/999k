@@ -11,15 +11,18 @@ Use a checked executable on macOS, or build this checkout with stable Rust and 2
 
 ```sh
 cargo build --locked --release
-export PIGEONMQ_CLOUD_BIN="$PWD/target/release/pigeonmq-cloud"
-"$PIGEONMQ_CLOUD_BIN" --help
+export PATH="$PWD/target/release:$PATH"
+export PIGEONMQ_BIN="$PWD/target/release/pigeonmq"
+"$PIGEONMQ_BIN" --help
 ```
+
+Version 0.1.0 built `target/release/pigeonmq-cloud`. Update scripts and service definitions to use the full path to the new binary. The archived project also used the command `pigeonmq`. Run `"$PIGEONMQ_BIN" --version` to check which build you selected.
 
 Pick a private runtime folder **outside the repository**. It holds the queue, policies, and tunnel keys.
 
 ```sh
 export CLOUD_HOME="$HOME/.pigeonmq-cloud"
-"$PIGEONMQ_CLOUD_BIN" init --home "$CLOUD_HOME"
+"$PIGEONMQ_BIN" init --home "$CLOUD_HOME"
 ```
 
 Use the same explicit `--home` in later commands. `init` creates the queue if it is missing and writes connector drafts.
@@ -40,7 +43,7 @@ If you have no domain, you can opt in to tunnl.gg for testing.
 This sends one message, reads it over HTTP like an agent would, replies, and checks the reply survives a restart. It uses a throwaway folder and a fake token. You need Python 3 and curl.
 
 ```sh
-bin="$PIGEONMQ_CLOUD_BIN"
+bin="$PIGEONMQ_BIN"
 export PIGEON_HOME="$(mktemp -d)"
 export PIGEON_PORT=54900          # any free loopback port
 export TEST_TOKEN=local-test-only-not-a-credential
@@ -116,7 +119,7 @@ The service that handles public TLS can read the Bearer token and message bodies
 For **Muse**, one command does everything (queue, registration, policy, Keychain token):
 
 ```sh
-"$PIGEONMQ_CLOUD_BIN" setup-muse --home "$CLOUD_HOME" --peer my-peer
+"$PIGEONMQ_BIN" setup-muse --home "$CLOUD_HOME" --peer my-peer
 ```
 
 `--peer` is the mailbox allowed to message Muse. Running it again is safe. It keeps existing policies and tells you which tunnel files are missing.
@@ -148,25 +151,25 @@ For a reverse tunnel on your own domain:
 
 ```sh
 PIGEONMQ_TUNNEL=external PIGEONMQ_PUBLIC_URL=https://pigeon.example.com \
-  "$PIGEONMQ_CLOUD_BIN" run --home "$CLOUD_HOME"
+  "$PIGEONMQ_BIN" run --home "$CLOUD_HOME"
 ```
 
 For tunnl.gg testing:
 
 ```sh
-PIGEONMQ_TUNNEL=tunnl "$PIGEONMQ_CLOUD_BIN" run --home "$CLOUD_HOME"
+PIGEONMQ_TUNNEL=tunnl "$PIGEONMQ_BIN" run --home "$CLOUD_HOME"
 ```
 
 For loopback testing only:
 
 ```sh
-"$PIGEONMQ_CLOUD_BIN" run --home "$CLOUD_HOME" --local-only
+"$PIGEONMQ_BIN" run --home "$CLOUD_HOME" --local-only
 ```
 
-In another terminal, set the same `CLOUD_HOME` and `PIGEONMQ_CLOUD_BIN`. Check the local hub:
+In another terminal, set the same `CLOUD_HOME` and `PIGEONMQ_BIN`. Check the local hub:
 
 ```sh
-"$PIGEONMQ_CLOUD_BIN" health --home "$CLOUD_HOME"
+"$PIGEONMQ_BIN" health --home "$CLOUD_HOME"
 ```
 
 `"local_ready":true` means the loopback hub answered. It does not check the tunnel or agent.
@@ -180,13 +183,13 @@ Only one `run` can own a folder. Use `--port` to change the loopback port (defau
 To connect through tunnl.gg, copy a connector prompt after the runner reports `connected`. For your own HTTPS origin, [configure the connector manually](tunnels.md#use-your-own-https-origin).
 
 ```sh
-"$PIGEONMQ_CLOUD_BIN" handoff --home "$CLOUD_HOME" --app muse        # or grok-bot, dot
+"$PIGEONMQ_BIN" handoff --home "$CLOUD_HOME" --app muse        # or grok-bot, dot
 ```
 
 Paste it into the app's chat if it accepts setup by prompt. Then copy the token **separately** and paste it only into the app's secure credential field:
 
 ```sh
-"$PIGEONMQ_CLOUD_BIN" handoff --home "$CLOUD_HOME" --app muse --copy-token
+"$PIGEONMQ_BIN" handoff --home "$CLOUD_HOME" --app muse --copy-token
 ```
 
 Copy something else afterwards to clear the clipboard. If the app has no secure field for a Bearer token, stop: that app can't use this connection yet.
@@ -202,7 +205,7 @@ Grok Bot can't keep a connection open, so the hub can wake it with a webhook (mo
 3. Restart the hub under the same macOS user. Check `$CLOUD_HOME/grok-wake-status.json`. If Keychain access fails, the wake stops and the hub stays online.
 
 ```sh
-"$PIGEONMQ_CLOUD_BIN" setup-grok-wake --home "$CLOUD_HOME"
+"$PIGEONMQ_BIN" setup-grok-wake --home "$CLOUD_HOME"
 ```
 
 If both private credential files already exist, add `--from-private-files HOST`. Specify the HTTPS host that you checked. The command does not print the credentials or change the original files. Add `--stage-only` to store the item without selecting it for the notifier.

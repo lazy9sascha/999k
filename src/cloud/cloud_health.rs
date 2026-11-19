@@ -48,7 +48,7 @@ fn client() -> ClientBuilder {
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
-        .user_agent("PigeonMQ-Cloud-Health")
+        .user_agent("PigeonMQ-Health")
 }
 
 async fn request(client: &Client, url: Url) -> Result<Response, reqwest::Error> {

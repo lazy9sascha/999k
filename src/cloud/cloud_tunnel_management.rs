@@ -9,7 +9,7 @@ use std::{
 };
 
 const NAME: &str = "pigeonmq-cloud-dot";
-const DESCRIPTION: &str = "PigeonMQ Cloud Dot MCP";
+const DESCRIPTION: &str = "PigeonMQ Dot MCP";
 const PENDING: &str = "dot-tunnel-create-attempted";
 const PLATFORM: &str = "Check the selected organization and workspace at https://platform.openai.com/settings/organization/tunnels.";
 

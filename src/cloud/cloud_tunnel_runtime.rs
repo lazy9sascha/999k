@@ -261,7 +261,7 @@ pub(crate) fn run(
         }
         if client.0.try_wait()?.is_some() {
             return Err(io::Error::other(
-                "OpenAI tunnel-client stopped. Check the Cloud runtime key and tunnel ID.",
+                "OpenAI tunnel-client stopped. Check the tunnel runtime key and tunnel ID.",
             ));
         }
         if !matches!(hub_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {

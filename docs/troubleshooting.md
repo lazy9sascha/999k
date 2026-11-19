@@ -4,7 +4,7 @@ Use the same executable and private `CLOUD_HOME` from the [quickstart](quickstar
 If a setup command fails, read its terminal error first. If `run` started, check the loopback hub:
 
 ```sh
-"$PIGEONMQ_CLOUD_BIN" health --home "$CLOUD_HOME"
+"$PIGEONMQ_BIN" health --home "$CLOUD_HOME"
 ```
 
 If the hub is not ready, check `$CLOUD_HOME/pigeonmq-cloud-state.json` for the runner's `reason`.

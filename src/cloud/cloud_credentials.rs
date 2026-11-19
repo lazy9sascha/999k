@@ -269,7 +269,7 @@ fn credentials_with_rng(
     } else {
         if policy["mailbox"] != options.app.slug() || policy["enabled"] != true {
             return Err(io::Error::other(
-                "expected an enabled Cloud policy for this app",
+                "expected an enabled hub policy for this app",
             ));
         }
         &policy
@@ -509,11 +509,11 @@ fn private_json(path: &Path) -> io::Result<Value> {
 
 fn private_bytes(path: &Path) -> io::Result<Vec<u8>> {
     let file = pigeonmq::private_file::open_private_file(path)
-        .map_err(|_| io::Error::other("private Cloud file unavailable"))?;
+        .map_err(|_| io::Error::other("private hub file unavailable"))?;
     let mut bytes = Vec::new();
     file.take(16385).read_to_end(&mut bytes)?;
     if bytes.len() > 16384 {
-        return Err(io::Error::other("Cloud file too large"));
+        return Err(io::Error::other("Hub file too large"));
     }
     Ok(bytes)
 }
@@ -589,7 +589,7 @@ pub(crate) fn provision(policy: &Path, app: App) -> io::Result<()> {
         let mut value = value;
         if value["mailbox"] != app.slug() || value["enabled"] != true {
             return Err(io::Error::other(
-                "expected an enabled Cloud policy for this app",
+                "expected an enabled hub policy for this app",
             ));
         }
         let home = policy
@@ -598,7 +598,7 @@ pub(crate) fn provision(policy: &Path, app: App) -> io::Result<()> {
             .unwrap_or(Path::new("."));
         if policy.file_name() != policy_path(home, app).file_name() {
             return Err(io::Error::other(
-                "Keychain requires the standard Cloud policy name",
+                "Keychain requires the standard hub policy name",
             ));
         }
         // Local issuance only. Explicit export or secure-field entry does not prove agent use.
@@ -787,7 +787,7 @@ pub(crate) fn handoff(home: &Path, app: App, copy_token: bool) -> io::Result<()>
     let policy = private_json(&policy_path(home, app))?;
     if policy["mailbox"] != app.slug() || policy["enabled"] != true {
         return Err(io::Error::other(
-            "expected an enabled Cloud policy for this app",
+            "expected an enabled hub policy for this app",
         ));
     }
     if copy_token {
@@ -802,7 +802,7 @@ pub(crate) fn handoff(home: &Path, app: App, copy_token: bool) -> io::Result<()>
                 .is_some_and(|expected| matching_bearer(expected, &bearer))
             {
                 return Err(io::Error::other(
-                    "Keychain bearer does not match the Cloud policy",
+                    "Keychain bearer does not match the hub policy",
                 ));
             }
             copy(&bearer)?;
@@ -831,7 +831,7 @@ pub(crate) fn handoff(home: &Path, app: App, copy_token: bool) -> io::Result<()>
         "Set up a new MCP connector named pigeonmq-cloud-{} at {endpoint}. Keep any existing PigeonMQ connector unchanged. {secret_input} Never ask me to send the token in chat. After setup, list the connector tools and report whether it connected. Do not send or acknowledge a message.",
         app.slug()
     ).as_bytes())?;
-    println!("Copied the Cloud connector prompt.");
+    println!("Copied the connector prompt.");
     Ok(())
 }
 

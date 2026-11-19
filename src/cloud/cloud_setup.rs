@@ -18,7 +18,7 @@ fn require_home(path: &Path) -> io::Result<PathBuf> {
     let uid = unsafe { libc::geteuid() };
     if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
         return Err(io::Error::other(
-            "Cloud home must be an owner-private directory",
+            "Hub home must be an owner-private directory",
         ));
     }
     path.canonicalize()
@@ -40,7 +40,7 @@ fn create_private(path: &Path) -> io::Result<Option<fs::File>> {
 fn check_private(path: &Path) -> io::Result<()> {
     pigeonmq::private_file::open_private_file(path)
         .map(|_| ())
-        .map_err(|_| io::Error::other("expected an owner-private Cloud file"))
+        .map_err(|_| io::Error::other("expected an owner-private hub file"))
 }
 
 pub(crate) fn create_settings(path: &Path, value: &Value) -> io::Result<bool> {
@@ -200,7 +200,14 @@ fn probe_dot(queue: PathBuf, policy: PathBuf, bearer: &str) -> io::Result<()> {
         }
         serde_json::from_slice(reply.body()).map_err(io::Error::other)
     };
-    let initialize = dispatch(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"pigeonmq-cloud-setup","version":"0.1.0"}}}"#)?;
+    let request = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26", "capabilities": {},
+            "clientInfo": {"name": env!("CARGO_PKG_NAME"), "version": env!("CARGO_PKG_VERSION")}
+        }
+    });
+    let initialize = dispatch(&serde_json::to_vec(&request)?)?;
     if initialize["result"]["serverInfo"]["name"] != "pigeonmq-cloud-dot" {
         return Err(io::Error::other("Local Dot MCP initialize failed"));
     }
@@ -490,10 +497,10 @@ fn setup_muse_with(
     let custody = credential(&home, &policy)?;
     let home_arg = format!("'{}'", home.to_string_lossy().replace('\'', "'\\''"));
     if custody["local_available"] != true {
-        return Err(format!("Muse local_available=false. Import a surviving token:\n  pigeonmq-cloud credentials --home {home_arg} --app muse import --token-file /ABSOLUTE_PRIVATE_TOKEN_FILE\nIf no copy survives, explicitly reissue:\n  pigeonmq-cloud credentials --home {home_arg} --app muse reissue --token-file /ABSOLUTE_PRIVATE_NEW_TOKEN_FILE\nUpdate the connector after reissue.").into());
+        return Err(format!("Muse local_available=false. Import a surviving token:\n  pigeonmq credentials --home {home_arg} --app muse import --token-file /ABSOLUTE_PRIVATE_TOKEN_FILE\nIf no copy survives, explicitly reissue:\n  pigeonmq credentials --home {home_arg} --app muse reissue --token-file /ABSOLUTE_PRIVATE_NEW_TOKEN_FILE\nUpdate the connector after reissue.").into());
     }
     if custody["matches_policy"] != true {
-        return Err(format!("Muse matches_policy=false. Check local custody:\n  pigeonmq-cloud credentials --home {home_arg} --app muse status\nIf Keychain is authoritative, explicitly select its existing token:\n  pigeonmq-cloud credentials --home {home_arg} --app muse reissue --token-file /ABSOLUTE_PRIVATE_TOKEN_FILE --use-stored-token\nUpdate the connector after repair.").into());
+        return Err(format!("Muse matches_policy=false. Check local custody:\n  pigeonmq credentials --home {home_arg} --app muse status\nIf Keychain is authoritative, explicitly select its existing token:\n  pigeonmq credentials --home {home_arg} --app muse reissue --token-file /ABSOLUTE_PRIVATE_TOKEN_FILE --use-stored-token\nUpdate the connector after repair.").into());
     }
     crate::local_http::prepare_muse(&home.join(QUEUE), &policy)?;
     if !crate::local_http::check_muse(&home.join(QUEUE), &policy)? {
@@ -559,7 +566,7 @@ fn setup_grok_config(path: &Path, token_sha256: &str) -> io::Result<Value> {
     let registration = home.join(REGISTRY);
     let registration_text = registration
         .to_str()
-        .ok_or_else(|| io::Error::other("Cloud home path must be UTF-8"))?;
+        .ok_or_else(|| io::Error::other("Hub home path must be UTF-8"))?;
     let policy = cloud_credentials::policy_path(&home, App::GrokBot);
     let grok = App::GrokBot.http_profile();
     let before = grok_registration_snapshot(&registration)?;

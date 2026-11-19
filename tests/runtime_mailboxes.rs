@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq-cloud");
+const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq");
 
 struct Hub(Child);
 impl Drop for Hub {

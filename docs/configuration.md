@@ -4,7 +4,7 @@ Everything lives in one private runtime folder (the "home"). Pass it with `--hom
 
 ## Commands
 
-Run `pigeonmq-cloud <command> --help` for exact flags.
+Run `pigeonmq <command> --help` for exact flags.
 
 ### Everyday
 
@@ -78,9 +78,9 @@ The low-level `serve-hub` command can also take `--profiles-file PATH` with the 
 Use a new owner-private home for synthetic data. PigeonMQ creates the home if its parent exists. Use an absolute path.
 
 ```sh
-pigeonmq-cloud init synthetic-pull --home "$TEST_HOME"
-pigeonmq-cloud init vooy --home "$TEST_HOME"
-pigeonmq-cloud serve-hub --mailbox-home "$TEST_HOME" --port 54925 --seconds 60
+pigeonmq init synthetic-pull --home "$TEST_HOME"
+pigeonmq init vooy --home "$TEST_HOME"
+pigeonmq serve-hub --mailbox-home "$TEST_HOME" --port 54925 --seconds 60
 ```
 
 Each init prints JSON with `mailbox`, `route`, `token_file`, `created`, `runtime`, and `remote_verified`. It reports the token file path, not the token. The token file has mode 0600. Running init again checks the existing configuration and token without replacing them. Keep this home and its tokens out of Git.
@@ -95,12 +95,12 @@ Use a separate tunnel for this Dot profile. Keep existing agent tunnels unchange
 This procedure requires a prepared queue, an active `dot` registration, and a matching Dot policy.
 Keep the policy and both credentials outside Git. Use owner-only directories and mode 600 credential files.
 
-1. Prepare the Dot storage with `pigeonmq-cloud dot-prepare --queue "$QUEUE" --auth-policy "$DOT_POLICY"`.
+1. Prepare the Dot storage with `pigeonmq dot-prepare --queue "$QUEUE" --auth-policy "$DOT_POLICY"`.
 2. Use the existing hub if it serves the Dot route. For a dedicated listener, set `PROFILES_FILE` to the absolute path of a private Dot-only [profile manifest](#select-existing-hub-profiles).
    Use adapter `dot`, route `/dot/mcp`, and the absolute `DOT_POLICY` path in its `policy` field.
 
 ```sh
-pigeonmq-cloud serve-hub --queue "$QUEUE" --profiles-file "$PROFILES_FILE" \
+pigeonmq serve-hub --queue "$QUEUE" --profiles-file "$PROFILES_FILE" \
   --port "$DOT_PORT" --continuous
 ```
 
@@ -200,13 +200,13 @@ Choose mailbox-only operation or Events when you first prepare the profile.
 Mailbox-only setup does not start a model or require Events storage:
 
 ```sh
-pigeonmq-cloud setup-codex --home "$CLOUD_HOME" --peer my-peer
+pigeonmq setup-codex --home "$CLOUD_HOME" --peer my-peer
 ```
 
 For Events, supply the authorized callback host and the installed resolver's absolute path:
 
 ```sh
-pigeonmq-cloud setup-codex --home "$CLOUD_HOME" --peer my-peer \
+pigeonmq setup-codex --home "$CLOUD_HOME" --peer my-peer \
   --callback-host '<authorized-callback-host>' \
   --resolver /absolute/path/to/pigeonmq-dot-resolve
 ```
@@ -229,7 +229,7 @@ For a new, dedicated private hub, save this [profile manifest](#select-existing-
 Start one listener for that home. This example uses port 54843 and the filename `codex-profiles.json`:
 
 ```sh
-pigeonmq-cloud serve-hub --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" \
+pigeonmq serve-hub --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" \
   --profiles-file "$CLOUD_HOME/codex-profiles.json" --port 54843 --continuous
 ```
 
@@ -261,6 +261,17 @@ Native desktop UI clicks and unattended restart recovery were not tested.
 ## Local Codex receiver
 
 Keep `codex-local` separate from the Cloud mailbox `codex-cloud`.
+
+### Choose a local Codex session from Dot
+
+Give each local session its own receiver token and mailbox, such as `codex-local1` or `codex-local2`.
+Register each mailbox and grant its worker `receive` and `reply` for that mailbox. The workers share the hub's `/receiver` route.
+
+In Dot, call `pigeonmq_recipients` to list registered mailboxes. Choose the session's exact mailbox name and pass it as `recipient` to `pigeonmq_send`.
+A mailbox can appear in the list while its worker is offline.
+
+### Configure the receiver
+
 The local worker uses the common receiver API. It does not open the queue or run a Cloud conversation.
 
 Select the `codex-local` adapter at `/receiver` in the [profile manifest](#select-existing-hub-profiles). Use the central registration or set the manifest's `registration` path.
@@ -343,7 +354,7 @@ authorize any new identity before unattended use.
 
 ## Dead-letter inspection
 
-Run `pigeonmq-cloud dlq-inspect --queue PATH --id ID` on this Mac. Use the real path to a current owner-private queue, not a symlink. The command does not create, migrate, or repair a queue.
+Run `pigeonmq dlq-inspect --queue PATH --id ID` on this Mac. Use the real path to a current owner-private queue, not a symlink. The command does not create, migrate, or repair a queue.
 
 The command prints JSON. `dead_lettered` includes the attempt count and `dead_lettered_at_ms` (Unix time in milliseconds). `not_dead_lettered_or_missing` means there is no matching quarantined ordinary request. Both results exit with status 0. Read or validation errors exit nonzero.
 
@@ -420,7 +431,7 @@ They use the existing policy and the same home-specific Keychain account as prov
 Check the selected profile before a handoff:
 
 ```sh
-pigeonmq-cloud credentials --home "$CLOUD_HOME" --app grok-bot status
+pigeonmq credentials --home "$CLOUD_HOME" --app grok-bot status
 ```
 
 The result reports `local_available`, `matches_policy`, and `agent_use: "unverified"`.
@@ -428,7 +439,7 @@ A stored policy digest does not prove that a matching token exists locally or at
 If a matching token survives in a protected file, recover it explicitly:
 
 ```sh
-pigeonmq-cloud credentials --home "$CLOUD_HOME" --app grok-bot import \
+pigeonmq credentials --home "$CLOUD_HOME" --app grok-bot import \
   --token-file /private/path/existing-token
 ```
 
@@ -437,7 +448,7 @@ Import rejects a digest mismatch or a different stored token. It never rotates t
 A digest cannot recover a lost token. If no plaintext copy survives, explicitly reissue it:
 
 ```sh
-pigeonmq-cloud credentials --home "$CLOUD_HOME" --app grok-bot reissue \
+pigeonmq credentials --home "$CLOUD_HOME" --app grok-bot reissue \
   --token-file "$CLOUD_HOME/pigeonmq-cloud-grok-bot-token-repair"
 ```
 
@@ -452,7 +463,7 @@ If local custody exists but its digest differs, choose the authoritative credent
 To explicitly select the existing Keychain token, add `--use-stored-token`:
 
 ```sh
-pigeonmq-cloud credentials --home "$CLOUD_HOME" --app grok-bot reissue \
+pigeonmq credentials --home "$CLOUD_HOME" --app grok-bot reissue \
   --token-file "$CLOUD_HOME/pigeonmq-cloud-grok-bot-token-repair" \
   --use-stored-token
 ```
@@ -467,7 +478,7 @@ For a native receiver, export the raw token to its `--token-file` path.
 For an official tunnel-client header reference, export the complete `Bearer TOKEN` value:
 
 ```sh
-pigeonmq-cloud credentials --home "$CLOUD_HOME" --app codex-cloud export \
+pigeonmq credentials --home "$CLOUD_HOME" --app codex-cloud export \
   --token-file "$CLOUD_HOME/pigeonmq-cloud-codex-header" \
   --format authorization-header
 ```
@@ -487,14 +498,14 @@ Use the supported secure credential field or an explicit protected file referenc
 If you already have the SHA-256 digest for your Grok Bot token, run the following command. It prepares the Grok Bot registration and policy. Register the intended peers, then continue at step 3.
 
 ```sh
-pigeonmq-cloud setup-grok --home "$CLOUD_HOME" --token-sha256 "$TOKEN_SHA256"
+pigeonmq setup-grok --home "$CLOUD_HOME" --token-sha256 "$TOKEN_SHA256"
 ```
 
 For manual setup, start with a home that `init` or `setup-muse` created.
 
 1. Add `"grok-bot": {"mailbox": "grok-bot", "revoked": false}` and each peer to `pigeonmq-cloud-registration.json`.
 2. Create `pigeonmq-cloud-grok-bot-policy.json` with mode 600. Use the policy example above with `principal` and `mailbox` set to `grok-bot`.
-3. `pigeonmq-cloud grok-prepare --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" --auth-policy "$CLOUD_HOME/pigeonmq-cloud-grok-bot-policy.json"`
+3. `pigeonmq grok-prepare --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" --auth-policy "$CLOUD_HOME/pigeonmq-cloud-grok-bot-policy.json"`
 4. Start the hub with the [tunnel settings](tunnels.md) for your connection.
 5. For `external`, set the connector URL to your HTTPS origin plus `/grok/mcp`. Enter the matching Bearer token in the secure credential field.
    For a connected tunnl.gg test tunnel with a matching Keychain token, follow [Connect an app](quickstart.md#4-connect-an-app).

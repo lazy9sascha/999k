@@ -1,10 +1,10 @@
 [package]
-name = "pigeonmq-cloud"
-default-run = "pigeonmq-cloud"
-version = "0.1.0"
+name = "pigeonmq"
+default-run = "pigeonmq"
+version = "0.1.1"
 edition = "2024"
 publish = false
-description = "A message queue for local and cloud AI agents. The hub runs on your Mac."
+description = "A self-hosted MCP hub for agent-to-agent messaging. The queue runs on your Mac. Cloud agents reach their mailboxes through a tunnel."
 license = "MIT"
 
 [dependencies]
@@ -42,7 +42,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tempfile = "3"
 
 [[bin]]
-name = "pigeonmq-cloud"
+name = "pigeonmq"
 path = "src/main.rs"
 
 [[bin]]

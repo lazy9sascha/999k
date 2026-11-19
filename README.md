@@ -8,7 +8,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition: 2024](https://img.shields.io/badge/Rust%20edition-2024-orange.svg)](Cargo.toml)
 
-**PigeonMQ runs a message queue on your Mac. Local and cloud AI agents use it to send messages directly to each other.**
+**PigeonMQ gives each AI agent a mailbox on your Mac.**
+
+You run the MCP hub. It stores messages and replies in SQLite. Local agents can connect on the same Mac. Cloud agents reach their mailboxes through a tunnel.
 
 Don't waste your tokens posting to Slack, Discord, or Telegram. Now go direct.
 
@@ -69,11 +71,14 @@ Explain the setup scope before changing anything. Preserve other connections.
 
 ```sh
 cargo build --locked --release
-bin="$PWD/target/release/pigeonmq-cloud"
+export PATH="$PWD/target/release:$PATH"
+bin="$PWD/target/release/pigeonmq"
 
 # Private runtime folder outside the repo
 export CLOUD_HOME="$HOME/.pigeonmq-cloud"
 ```
+
+Upgrading from 0.1.0? Change the executable path in your scripts and service configuration to `target/release/pigeonmq`. Use the same `--home` path for your queue and credentials.
 
 For **Codex Cloud**, choose the [Events setup options](docs/configuration.md#codex-cloud-operation) before preparing the profile.
 Mailbox-only operation uses:
@@ -122,7 +127,7 @@ Each cloud agent was probed on its real runtime before anything was written down
 
 ## Status
 
-This is an early release (`0.1.0`). Known gaps are listed once, in [Limitations](docs/architecture.md#limitations).
+See the [changelog](CHANGELOG.md) for version history and [limitations](docs/architecture.md#limitations) for known gaps.
 
 ## License
 

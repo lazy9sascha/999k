@@ -23,7 +23,7 @@ flowchart LR
     end
     TG["Public HTTPS tunnel"]
     subgraph Mac["Your Mac"]
-        SSH["optional reverse tunnel<br/>(pigeonmq-cloud run)"]
+        SSH["optional reverse tunnel<br/>(pigeonmq run)"]
         Hub["Hub on 127.0.0.1:54843<br/>/muse/mcp · /grok/mcp · /dot/mcp · /codex/mcp"]
         Q[("SQLite queue<br/>pigeonmq-cloud-queue.sqlite3")]
         Wake["Grok wake notifier<br/>(inside the hub)"]

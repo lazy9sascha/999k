@@ -1,6 +1,6 @@
 //! Read the current ChatGPT plan through the Codex CLI without refreshing login.
 // NOTE: canonical Dot/OpenAI tunnel design; not wired yet, do not remove.
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -32,13 +32,13 @@ async fn read_plan() -> Option<String> {
     let mut input = child.stdin.take()?;
     let mut lines = BufReader::new(child.stdout.take()?).lines();
 
-    input
-        .write_all(
-            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"pigeonmq-cloud","version":"0.1.0"}}}
-"#,
-        )
-        .await
-        .ok()?;
+    let initialize = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"clientInfo": {"name": env!("CARGO_PKG_NAME"), "version": env!("CARGO_PKG_VERSION")}}
+    });
+    let mut line = serde_json::to_vec(&initialize).ok()?;
+    line.push(b'\n');
+    input.write_all(&line).await.ok()?;
     response(&mut lines, 1).await?;
 
     input

@@ -3,7 +3,7 @@ use std::process::Command;
 #[test]
 fn disabled_message_commands_do_not_open_a_queue() {
     let dir = tempfile::tempdir().unwrap();
-    let binary = env!("CARGO_BIN_EXE_pigeonmq-cloud");
+    let binary = env!("CARGO_BIN_EXE_pigeonmq");
     for name in ["send", "reply"] {
         let result = Command::new(binary)
             .current_dir(dir.path())
@@ -20,7 +20,7 @@ fn disabled_message_commands_do_not_open_a_queue() {
 #[test]
 fn help_keeps_install_and_operations_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let binary = env!("CARGO_BIN_EXE_pigeonmq-cloud");
+    let binary = env!("CARGO_BIN_EXE_pigeonmq");
     let result = Command::new(binary)
         .current_dir(dir.path())
         .arg("--help")
@@ -68,7 +68,7 @@ fn run_loads_only_the_explicit_tunnel_env_file() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let missing_home = dir.path().join("missing-home");
     let run = |args: &[&str], process_mode: &str| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
         command.env_clear().env("PIGEONMQ_TUNNEL", process_mode);
         if process_mode == "external" {
             command.env("PIGEONMQ_PUBLIC_URL", "https://process.example");
@@ -86,7 +86,7 @@ fn run_loads_only_the_explicit_tunnel_env_file() {
     };
     let home_error = "cloud_runner_owned_or_home_unavailable";
     let unset = |extra: &[&str]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+        let output = Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
             .env_clear()
             .env_remove("PIGEONMQ_TUNNEL")
             .env_remove("PIGEONMQ_PUBLIC_URL")
@@ -134,7 +134,7 @@ fn queue_file_flag_is_reverse_scoped_to_codex_queue() {
     let db = dir.path().join("fixture.sqlite3");
     drop(pigeonmq::Queue::open(&db).unwrap());
     let command = || {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
         c.current_dir(dir.path());
         c
     };
@@ -173,7 +173,7 @@ fn queue_file_flag_is_reverse_scoped_to_codex_queue() {
 fn hidden_dot_setup_still_denies_without_writing_and_has_no_home_argument() {
     let dir = tempfile::tempdir().unwrap();
     let command = || {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
         c.current_dir(dir.path()).arg("dot-tunnel-setup");
         c
     };

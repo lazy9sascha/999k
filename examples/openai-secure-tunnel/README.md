@@ -34,11 +34,11 @@ Use the exact hub port and route for the selected mailbox:
 If a private manifest remaps the route, use that path. Keep files in owner-only directories outside Git. Use mode 600 for credential files and use absolute paths.
 
 - **Dot:** Use an existing queue, an active Dot registration, and the matching Dot policy. If needed, follow [the Dot setup](../../docs/configuration.md#dot-through-a-private-secure-mcp-tunnel) to prepare storage. For an approved new Dot binding in an existing shared manifest, use the command below. This branch does not provision a bearer. If the binding already exists, retain it.
-- **Codex Cloud:** If the mailbox is not prepared, run `pigeonmq-cloud setup-codex --home "$CLOUD_HOME" --peer "$APPROVED_PEER"` for mailbox-only use. If the hub uses a manifest, it must also [select the Codex profile](../../docs/configuration.md#select-existing-hub-profiles).
+- **Codex Cloud:** If the mailbox is not prepared, run `pigeonmq setup-codex --home "$CLOUD_HOME" --peer "$APPROVED_PEER"` for mailbox-only use. If the hub uses a manifest, it must also [select the Codex profile](../../docs/configuration.md#select-existing-hub-profiles).
 
 ```sh
 # Dot only: add the approved binding to an existing private manifest.
-pigeonmq-cloud dot-prepare --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" \
+pigeonmq dot-prepare --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" \
   --auth-policy "$DOT_POLICY" --profiles-file "$PROFILES_FILE"
 ```
 
@@ -48,7 +48,7 @@ For a new private Codex hub, follow [Codex Cloud operation](../../docs/configura
 For a conventional home policy with matching Keychain custody, set `PIGEON_APP` to the export app in the table:
 
 ```sh
-pigeonmq-cloud credentials --home "$CLOUD_HOME" --app "$PIGEON_APP" export \
+pigeonmq credentials --home "$CLOUD_HOME" --app "$PIGEON_APP" export \
   --token-file "$PIGEON_HEADER_FILE" --format authorization-header
 ```
 
@@ -71,7 +71,7 @@ tunnel-client run \
   --health.listen-addr 127.0.0.1:0 --health.url-file "$HEALTH_URL_FILE"
 ```
 
-1. If `run` supervises the hub, check it with `pigeonmq-cloud health --home "$CLOUD_HOME"`. Separately check the client's `/readyz` at the loopback URL in `HEALTH_URL_FILE`.
+1. If `run` supervises the hub, check it with `pigeonmq health --home "$CLOUD_HOME"`. Separately check the client's `/readyz` at the loopback URL in `HEALTH_URL_FILE`.
 2. In the intended workspace, [create or select the private MCP app](https://developers.openai.com/api/docs/guides/custom-mcp-server). Select **Connection: Tunnel** and the same tunnel ID. Use no additional OAuth only for the approved private app with the enforced upstream Bearer configuration above. If the workspace requires OAuth, this example does not apply. Do not publish the app. For Codex, use the supported Cloud product connection and the intended conversation, not a raw tunnel URL.
 3. From that Dot or Codex Cloud conversation, run a permitted read-only call such as `pigeonmq_inbox`. A successful call shows that this caller can access the mailbox. Discovery and tunnel readiness alone do not. Events, reply delivery, and automatic startup require separate tests.
 

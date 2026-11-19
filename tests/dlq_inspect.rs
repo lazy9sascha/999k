@@ -10,7 +10,7 @@ use std::{
 };
 
 fn inspect(queue: &Path, id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pigeonmq-cloud"))
+    Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
         .env_clear()
         .args(["dlq-inspect", "--queue"])
         .arg(queue)

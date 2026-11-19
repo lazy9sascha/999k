@@ -5,8 +5,8 @@ Owner only. Keep the policy and both credentials outside Git, in owner-only dire
 Use a private Dot-only [profile manifest](../../../docs/configuration.md#dot-through-a-private-secure-mcp-tunnel). Set `PROFILES_FILE` to its absolute path.
 
 ```sh
-pigeonmq-cloud dot-prepare --queue "$QUEUE" --auth-policy "$DOT_POLICY"
-pigeonmq-cloud serve-hub --queue "$QUEUE" --profiles-file "$PROFILES_FILE" \
+pigeonmq dot-prepare --queue "$QUEUE" --auth-policy "$DOT_POLICY"
+pigeonmq serve-hub --queue "$QUEUE" --profiles-file "$PROFILES_FILE" \
   --port "$DOT_PORT" --continuous
 ```
 

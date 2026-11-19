@@ -46,7 +46,7 @@ struct CodexFinal {
 }
 
 #[derive(Parser)]
-#[command(version, about = "A lightweight message queue for cloud agents.")]
+#[command(version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -81,7 +81,7 @@ struct ServeHubOptions {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Supervise the Cloud hub until stopped.
+    /// Supervise the hub until stopped.
     ///
     /// A tunnel mode is required. There is no default.
     /// Set PIGEONMQ_TUNNEL=external and PIGEONMQ_PUBLIC_URL to record an
@@ -120,7 +120,7 @@ enum Command {
     },
     /// Configure Grok Bot's inbound policy and central registration without Keychain.
     SetupGrok {
-        /// Existing owner-private Cloud home. Edit shared registration only while the hub is stopped.
+        /// Existing owner-private hub home. Edit shared registration only while the hub is stopped.
         #[arg(long)]
         home: PathBuf,
         /// SHA-256 hex digest of the owner-provided Bearer token, not the token itself.
@@ -398,7 +398,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .as_ref()
                     .is_some_and(|file| file.fingerprint() == expected)
             {
-                return Err("Cloud profile manifest changed before hub startup".into());
+                return Err("Hub profile manifest changed before hub startup".into());
             }
             let bindings = if *bundled_profiles || manifest.is_some() {
                 mailbox_startup::bindings(home, manifest.as_ref())

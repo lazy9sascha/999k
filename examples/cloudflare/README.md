@@ -61,7 +61,7 @@ Run `cloudflared` separately.
 
 ## 4. Check each part before switching clients
 
-1. Run `pigeonmq-cloud health --home "$CLOUD_HOME"` to check the local hub and queue. Separately check that Cloudflare sees the intended connector as healthy. A public MCP call tests the full route.
+1. Run `pigeonmq health --home "$CLOUD_HOME"` to check the local hub and queue. Separately check that Cloudflare sees the intended connector as healthy. A public MCP call tests the full route.
 2. On the approved public path, send a JSON POST without the PigeonMQ Bearer. If the route uses Access, authenticate to Access with an approved client first. HTTP `401` with PigeonMQ's JSON `{"error":{"code":"unauthorized"}}` shows the request reached the hub's authentication check. A Cloudflare or Access error does not. Check that the route denies other paths.
 3. In the intended MCP client, set the HTTPS endpoint, for example `https://pigeon.example.com/muse/mcp`, and the matching PigeonMQ Bearer in its secure field. Send `initialize` with `Accept: application/json, text/event-stream`. Use the returned version in `MCP-Protocol-Version` on later requests. Make a permitted read-only call such as `pigeonmq_inbox`. This proves access for that client, not Events or reply delivery.
 

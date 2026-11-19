@@ -19,7 +19,7 @@ pigeonmq-codex-receiver --state /private/path/receiver-state \
 ## Cloud (`codex-cloud`)
 
 ```sh
-pigeonmq-cloud setup-codex --home "$CLOUD_HOME" --peer my-peer \
+pigeonmq setup-codex --home "$CLOUD_HOME" --peer my-peer \
   --callback-host '<authorized-callback-host>' \
   --resolver /absolute/path/to/pigeonmq-dot-resolve
 ```
