@@ -23,6 +23,8 @@ mod codex_setup;
 mod local_http;
 #[path = "cloud/mailbox_startup.rs"]
 mod mailbox_startup;
+#[path = "cloud/reply_mailbox_setup.rs"]
+mod reply_mailbox_setup;
 #[path = "cloud/runtime_profiles.rs"]
 mod runtime_profiles;
 
@@ -105,11 +107,29 @@ enum Command {
         #[arg(long)]
         id: String,
     },
+    /// Deliver arrival identifiers to an owner-selected local command.
+    NotifyArrivals {
+        #[arg(long)]
+        queue: PathBuf,
+        #[arg(long)]
+        registration: PathBuf,
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long)]
+        command: PathBuf,
+        #[arg(long = "mailbox", required = true)]
+        mailboxes: Vec<String>,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=3600))]
+        interval_secs: Option<u64>,
+    },
     /// Prepare Cloud settings, or stage a named mailbox in a dedicated local-only home.
     Init {
         agent: Option<String>,
         #[arg(long, default_value = ".local")]
         home: PathBuf,
+        /// Prepare an operational mailbox policy and private bearer for Instinct or Cue.
+        #[arg(long, requires = "agent")]
+        operational: bool,
     },
     /// Prepare a private Muse queue, registration, policy, and Keychain bearer.
     SetupMuse {
@@ -268,7 +288,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::DotTunnelStatus { home } => {
             cloud_setup::dot_tunnel_status(home).map_err(Into::into)
         }
-        Command::Init { agent, home } => {
+        Command::Init {
+            agent,
+            home,
+            operational,
+        } => {
+            if *operational {
+                let mailbox = agent.as_deref().ok_or("mailbox name required")?;
+                println!("{}", reply_mailbox_setup::stage(home, mailbox)?);
+                return Ok(());
+            }
             if let Some(name) = agent {
                 println!("{}", runtime_profiles::init(home, name)?);
                 Ok(())
@@ -291,6 +320,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::Run(options) => cloud_service::start(options).map_err(Into::into),
         Command::Health { home, probe_public } => {
             std::process::exit(cloud_service::health(home, *probe_public))
+        }
+        Command::NotifyArrivals {
+            queue,
+            registration,
+            state,
+            command,
+            mailboxes,
+            interval_secs,
+        } => {
+            let sweep =
+                || pigeonmq::arrival_notify::run(queue, registration, state, command, mailboxes);
+            let Some(interval) = interval_secs else {
+                println!("{}", sweep()?);
+                return Ok(());
+            };
+            loop {
+                match sweep() {
+                    Ok(status)
+                        if status["delivered"] != 0
+                            || status["expired"].as_u64().unwrap_or(0) > 0 =>
+                    {
+                        println!("{status}")
+                    }
+                    Ok(_) => {}
+                    Err(_) => eprintln!("arrival notification sweep incomplete"),
+                }
+                std::thread::sleep(Duration::from_secs(*interval));
+            }
         }
         Command::DlqInspect { queue, id } => {
             let result = Queue::inspect_dead_letter(queue, id).map_err(|error| match error {

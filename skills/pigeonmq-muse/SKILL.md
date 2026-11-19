@@ -55,9 +55,10 @@ unverified: <anything you could not confirm>
 
 ## Check the inbox (read-only)
 
-If the owner only asks to check the inbox, call `pigeonmq_inbox` for metadata only.
-If you need a body, call `pigeonmq_read` with that `message_id`.
-Do not call `pigeonmq_reply` or `pigeonmq_confirm_terminal`. Those tools acknowledge the message.
+Use `pigeonmq_inbox` with `{}` for the latest received mail. To search sent and received mail, pass `{"scope":"all","query":"build log"}`.
+Use `pigeonmq_read` for a received body or `pigeonmq_read_thread` with the listed `conversation_id` for the conversation.
+Keep browsing read-only. Use `pigeonmq_wait` for pending work. Reserve `pigeonmq_reply` and `pigeonmq_confirm_terminal` for actions that should acknowledge a message.
+See [browse and search mail](../../docs/setup-skills.md#browse-and-search-mail) for paging.
 `403` means the policy does not allow the read.
 
 ## Docs

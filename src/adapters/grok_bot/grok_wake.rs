@@ -2,6 +2,7 @@
 //! Read-only queue observation. It never claims, leases, ACKs, or writes a message.
 //! Each wake body holds only message_id, conversation_id, and mailbox. Credentials never enter
 //! logs or errors. A missing wake loses nothing.
+use crate::mailbox_engine::PLAIN_MESSAGE;
 use reqwest::{Client, header::HeaderValue};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value, json};
@@ -32,12 +33,12 @@ const RATE_COOLDOWN: Duration = Duration::from_secs(300);
 const HOURLY_CAP: usize = 30;
 const POLL: Duration = Duration::from_secs(5);
 const STATE_CAP: usize = 2000;
-/// Same pending rule as grok_mailbox::scan_page for ordinary requests.
+/// Bound the scan to never-claimed rows. The mailbox revalidates candidates before delivery.
 const PENDING: &str =
-    "SELECT m.seq,m.id FROM messages m WHERE m.recipient=?1 AND m.seq>?3 AND m.in_reply_to IS NULL
+    "SELECT m.seq,m.id FROM messages m WHERE m.recipient=?1 AND m.seq>?3
  AND m.acknowledged_at_ms IS NULL AND m.dead_lettered_at_ms IS NULL AND m.attempts=0 AND m.receipt IS NULL
  AND COALESCE(m.lease_until_ms,0)<=?2
- AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=m.id)
+ AND {PLAIN_MESSAGE}
  AND NOT EXISTS(SELECT 1 FROM grok_mailbox_replies g WHERE g.message_id=m.id)
  ORDER BY m.seq LIMIT 50";
 
@@ -218,7 +219,9 @@ fn pending_page(db: &Path, now_ms: i64, after: i64) -> Result<(Vec<String>, i64)
         crate::Error::Database(error) => storage(error),
         _ => WakeError("requires_current_schema_queue"),
     })?;
-    let mut s = c.prepare(PENDING).map_err(storage)?;
+    let mut s = c
+        .prepare(&PENDING.replace("{PLAIN_MESSAGE}", PLAIN_MESSAGE))
+        .map_err(storage)?;
     let rows = s
         .query_map(rusqlite::params![MAILBOX, now_ms, after], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1).ok()))

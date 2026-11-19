@@ -293,7 +293,7 @@ impl SubscriptionStore {
         self.authorize(owner, token)?;
         tx.execute_batch(BRIDGE_SCHEMA)?;
         validate_bridge_schema(&tx)?;
-        if self.authorize(owner, token)?.terminal_only() {
+        if self.authorize(owner, token)?.dot_subscription_cutoff() {
             tx.execute_batch(DOT_CUTOFF_SCHEMA)?;
             validate_dot_cutoff_schema(&tx)?;
         }
@@ -308,7 +308,7 @@ impl SubscriptionStore {
         (self.policy)()?;
         tx.execute_batch(BRIDGE_SCHEMA)?;
         validate_bridge_schema(&tx)?;
-        if (self.policy)()?.terminal_only() {
+        if (self.policy)()?.dot_subscription_cutoff() {
             tx.execute_batch(DOT_CUTOFF_SCHEMA)?;
             validate_dot_cutoff_schema(&tx)?;
         }
@@ -359,7 +359,7 @@ impl SubscriptionStore {
         callback_transport::validate_callback_url(&policy, url).map_err(|_| {
             // identity() has already authenticated the caller and fixed the event/recipient.
             if secret
-                && policy.terminal_only()
+                && policy.dot_subscription_cutoff()
                 && let Some(hostname) = rejected_callback_hostname(url)
             {
                 eprintln!(
@@ -579,7 +579,7 @@ impl SubscriptionStore {
         let previous = old.map(|(secret, _, _)| secret).filter(|old| old != secret);
         let rotation = previous.as_ref().map(|_| granted + 60.0);
         tx.execute("INSERT INTO dot_event_subscriptions VALUES (?1,?2,?3,?4,?5,?6,?7,1) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,previous_secret=COALESCE(excluded.previous_secret,dot_event_subscriptions.previous_secret),rotation_until=CASE WHEN excluded.previous_secret IS NULL THEN dot_event_subscriptions.rotation_until ELSE excluded.rotation_until END,expires=excluded.expires,active=1",params![sid,owner,url,secret,previous,rotation,expiry])?;
-        if policy.terminal_only() {
+        if policy.dot_subscription_cutoff() {
             // The write transaction serializes this boundary with message insertion.
             // AUTOINCREMENT high water survives deletion and does not depend on clocks.
             // Active refresh retains the boundary. A new or expired grant starts fresh.

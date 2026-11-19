@@ -912,7 +912,7 @@ mod tests {
     #[tokio::test]
     async fn watchdog_restarts_a_hung_owned_child_once() {
         let (_directory, mut a) = fixture(
-            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nroot=${0%/*}\nprintf '%s\\n' \"$$\" >> \"$root/host-starts\"\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"codex_events_enabled\":false}'\nexec /bin/sleep 30\n",
+            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nroot=${0%/*}\nprintf '%s\\n' \"$$\" >> \"$root/host-starts\"\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"instinct_enabled\":false,\"cue_enabled\":false,\"codex_events_enabled\":false}'\nexec /bin/sleep 30\n",
         );
         a.transport = Transport::LocalOnly;
         a.watchdog_interval = Duration::from_millis(40);
@@ -1016,7 +1016,7 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| *arg == "--muse-auth-policy"));
         let mut ready = json!({"transport":"hub-local-http","muse_enabled":true,"generic_enabled":false,
-            "grok_enabled":false,"dot_enabled":false,"codex_enabled":false,"receiver_enabled":false,
+            "grok_enabled":false,"dot_enabled":false,"codex_enabled":false,"receiver_enabled":false,"instinct_enabled":false,"cue_enabled":false,
             "codex_events_enabled":false,"profiles_fingerprint":fingerprint});
         assert_eq!(profile(&ready, &a), Ok(()));
         ready["profiles_fingerprint"] = json!("changed");
@@ -1055,7 +1055,7 @@ mod tests {
         }
         let ready = json!({"transport":"hub-local-http","muse_enabled":false,"generic_enabled":false,
             "grok_enabled":false,"dot_enabled":false,
-            "codex_enabled":true,"receiver_enabled":true,"codex_events_enabled":false});
+            "codex_enabled":true,"receiver_enabled":true,"instinct_enabled":false,"cue_enabled":false,"codex_events_enabled":false});
         assert_eq!(profile(&ready, &a), Ok(()));
         for key in ["codex_enabled", "receiver_enabled", "codex_events_enabled"] {
             let mut wrong = ready.clone();
@@ -1104,7 +1104,7 @@ mod tests {
             profile(
                 &json!({"transport":"hub-local-http","muse_enabled":false,"generic_enabled":false,
             "grok_enabled":false,"dot_enabled":false,
-            "codex_enabled":true,"receiver_enabled":true,"codex_events_enabled":true}),
+            "codex_enabled":true,"receiver_enabled":true,"instinct_enabled":false,"cue_enabled":false,"codex_events_enabled":true}),
                 &a
             ),
             Ok(())
@@ -1113,7 +1113,7 @@ mod tests {
     #[tokio::test]
     async fn configured_origin_keeps_the_same_profiles_and_never_starts_ssh() {
         let (_dir, mut a) = fixture(
-            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"codex_events_enabled\":false}'\nexec /bin/sleep 30\n",
+            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"instinct_enabled\":false,\"cue_enabled\":false,\"codex_events_enabled\":false}'\nexec /bin/sleep 30\n",
         );
         let default_command = host_command(&a);
         a.transport = Transport::External("https://pigeon.example".into());
@@ -1174,7 +1174,7 @@ mod tests {
     #[tokio::test]
     async fn local_only_recovers_a_failed_host_without_ssh_or_changed_ownership() {
         let (dir, mut a) = fixture(
-            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nroot=${0%/*}\nprintf '%s\\n' \"$$\" >> \"$root/host-starts\"\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"codex_events_enabled\":false}'\nif [ ! -e \"$root/first-exit\" ]; then : > \"$root/first-exit\"; exit 7; fi\nexec /bin/sleep 30\n",
+            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nroot=${0%/*}\nprintf '%s\\n' \"$$\" >> \"$root/host-starts\"\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"instinct_enabled\":false,\"cue_enabled\":false,\"codex_events_enabled\":false}'\nif [ ! -e \"$root/first-exit\" ]; then : > \"$root/first-exit\"; exit 7; fi\nexec /bin/sleep 30\n",
         );
         a.transport = Transport::LocalOnly;
         for name in [
@@ -1246,7 +1246,7 @@ mod tests {
                 "{".into()
             };
             let script = format!(
-                "#!/bin/sh\nroot=${{0%/*}}\nprintf '%s\\n' \"$$\" >> \"$root/host-starts\"\nprintf '%s\\n' '{{\"transport\":\"hub-local-http\",\"muse_enabled\":false,\"generic_enabled\":false,\"grok_enabled\":false,\"dot_enabled\":false,\"codex_enabled\":true,\"receiver_enabled\":true,\"codex_events_enabled\":false}}'\nif [ ! -e \"$root/first-exit\" ]; then : > \"$root/first-exit\"; printf '%s' '{registry}' > \"$root/pigeonmq-cloud-registration.json\"; exit 7; fi\nexec /bin/sleep 30\n"
+                "#!/bin/sh\nroot=${{0%/*}}\nprintf '%s\\n' \"$$\" >> \"$root/host-starts\"\nprintf '%s\\n' '{{\"transport\":\"hub-local-http\",\"muse_enabled\":false,\"generic_enabled\":false,\"grok_enabled\":false,\"dot_enabled\":false,\"codex_enabled\":true,\"receiver_enabled\":true,\"instinct_enabled\":false,\"cue_enabled\":false,\"codex_events_enabled\":false}}'\nif [ ! -e \"$root/first-exit\" ]; then : > \"$root/first-exit\"; printf '%s' '{registry}' > \"$root/pigeonmq-cloud-registration.json\"; exit 7; fi\nexec /bin/sleep 30\n"
             );
             fs::write(&a.binary, script).unwrap();
             let home = a.home.clone();
@@ -1312,7 +1312,7 @@ mod tests {
     #[tokio::test]
     async fn host_recovery_rejects_a_replacement_queue() {
         let (dir, mut a) = fixture(
-            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nroot=${0%/*}\nprintf '%s\\n' started >> \"$root/host-starts\"\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"codex_events_enabled\":false}'\nprintf replacement > \"$root/replacement\"\n/bin/chmod 600 \"$root/replacement\"\n/bin/mv \"$root/replacement\" \"$root/pigeonmq-cloud-queue.sqlite3\"\nexit 7\n",
+            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nroot=${0%/*}\nprintf '%s\\n' started >> \"$root/host-starts\"\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"instinct_enabled\":false,\"cue_enabled\":false,\"codex_events_enabled\":false}'\nprintf replacement > \"$root/replacement\"\n/bin/chmod 600 \"$root/replacement\"\n/bin/mv \"$root/replacement\" \"$root/pigeonmq-cloud-queue.sqlite3\"\nexit 7\n",
         );
         a.transport = Transport::LocalOnly;
         assert_eq!(
@@ -1344,7 +1344,7 @@ mod tests {
     #[tokio::test]
     async fn requested_stop_wins_when_host_exits_during_tunnel_cleanup() {
         let (dir, a) = fixture(
-            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nroot=${0%/*}\nprintf '%s\\n' \"$$\" >> \"$root/host-starts\"\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"codex_events_enabled\":false}'\nexec /bin/sleep 30\n",
+            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\nroot=${0%/*}\nprintf '%s\\n' \"$$\" >> \"$root/host-starts\"\nprintf '%s\\n' '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"instinct_enabled\":false,\"cue_enabled\":false,\"codex_events_enabled\":false}'\nexec /bin/sleep 30\n",
         );
         let home = a.home.clone();
         let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -1432,7 +1432,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
         };
         let (dir, mut a) = fixture(
-            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\necho '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"codex_events_enabled\":false,\"local_mailbox_enabled\":false,\"local_mailbox_port\":null}'\nexec /bin/sleep 30\n",
+            "#!/bin/sh\nif [ \"$1\" != serve-hub ]; then exit 0; fi\necho '{\"transport\":\"hub-local-http\",\"muse_enabled\":true,\"generic_enabled\":false,\"dot_enabled\":false,\"grok_enabled\":false,\"codex_enabled\":false,\"receiver_enabled\":false,\"instinct_enabled\":false,\"cue_enabled\":false,\"codex_events_enabled\":false,\"local_mailbox_enabled\":false,\"local_mailbox_port\":null}'\nexec /bin/sleep 30\n",
         );
         a.watchdog_interval = Duration::from_secs(60);
         let home = a.home.clone();
@@ -1497,7 +1497,7 @@ mod tests {
         let (_dir, a) = fixture(
             r#"#!/bin/sh
 if [ "$1" != serve-hub ]; then exit 0; fi
-printf '%s\n' '{"transport":"hub-local-http","muse_enabled":true,"generic_enabled":false,"dot_enabled":false,"grok_enabled":false,"codex_enabled":false,"receiver_enabled":false,"codex_events_enabled":false}'
+printf '%s\n' '{"transport":"hub-local-http","muse_enabled":true,"generic_enabled":false,"dot_enabled":false,"grok_enabled":false,"codex_enabled":false,"receiver_enabled":false,"instinct_enabled":false,"cue_enabled":false,"codex_events_enabled":false}'
 exec /bin/sleep 30
 "#,
         );
@@ -1605,7 +1605,7 @@ exec /bin/sleep 30
         let (_dir, args) = fixture(
             r#"#!/bin/sh
 if [ "$1" != serve-hub ]; then exit 0; fi
-printf '%s\n' '{"transport":"hub-local-http","muse_enabled":true,"generic_enabled":false,"dot_enabled":false,"grok_enabled":false,"codex_enabled":false,"receiver_enabled":false,"codex_events_enabled":false,"local_mailbox_enabled":false,"local_mailbox_port":null}'
+printf '%s\n' '{"transport":"hub-local-http","muse_enabled":true,"generic_enabled":false,"dot_enabled":false,"grok_enabled":false,"codex_enabled":false,"receiver_enabled":false,"instinct_enabled":false,"cue_enabled":false,"codex_events_enabled":false,"local_mailbox_enabled":false,"local_mailbox_port":null}'
 printf '%s\n' '{"level":"INFO","fields":{"component":"fixture_host","event":"fixture_host_diagnostic"}}' >&2
 exec /bin/sleep 30
 "#,
@@ -1657,7 +1657,7 @@ exec /bin/sleep 30
             let good = json!({
                 "transport":"hub-local-http","muse_enabled":true,"generic_enabled":generic,
                 "dot_enabled":false,"grok_enabled":false,"codex_enabled":false,
-                "receiver_enabled":false,"codex_events_enabled":false,
+                "receiver_enabled":false,"instinct_enabled":false,"cue_enabled":false,"codex_events_enabled":false,
             });
             assert_eq!(profile(&good, &a), Ok(()));
             for key in [

@@ -211,10 +211,17 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
     );
     let (status, visible) = request(port, &read_route, &read_token, "tools/list", json!({}));
     assert_eq!(status, 200);
-    let visible = visible["result"]["tools"].as_array().unwrap();
-    assert_eq!(visible.len(), 2);
-    assert_eq!(visible[0]["name"], "pigeonmq_read");
-    assert_eq!(visible[1]["name"], "pigeonmq_read_thread");
+    let mut visible: Vec<_> = visible["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    visible.sort_unstable();
+    assert_eq!(
+        visible,
+        ["pigeonmq_inbox", "pigeonmq_read", "pigeonmq_read_thread"]
+    );
     let mut queue =
         pigeonmq::Queue::open_existing(home.join("local-mailboxes/mailboxes.sqlite3")).unwrap();
     let message = queue
@@ -282,7 +289,12 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         (
             "/synthetic-pull/mcp",
             &synthetic_token,
-            &["pigeonmq_read", "pigeonmq_read_thread", "pigeonmq_wait"][..],
+            &[
+                "pigeonmq_inbox",
+                "pigeonmq_read",
+                "pigeonmq_read_thread",
+                "pigeonmq_wait",
+            ][..],
         ),
         ("/vooy/mcp", &vooy_token, &["pigeonmq_wait"][..]),
     ] {
@@ -309,6 +321,14 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
                 .unwrap();
         assert_eq!(result, json!({"message":null}));
     }
+    let (_, forbidden) = request(
+        port,
+        "/vooy/mcp",
+        &vooy_token,
+        "tools/call",
+        json!({"name":"pigeonmq_inbox","arguments":{"scope":"all","query":"synthetic"}}),
+    );
+    assert!(forbidden.get("error").is_some() || forbidden["result"]["isError"] == true);
     assert_eq!(
         request(port, "/vooy/mcp", &[], "tools/list", json!({})).0,
         401

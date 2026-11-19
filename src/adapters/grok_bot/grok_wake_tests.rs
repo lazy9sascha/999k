@@ -68,7 +68,7 @@ fn ids_are_validated() {
 }
 
 #[test]
-fn pending_lists_only_unclaimed_ordinary_grok_messages() {
+fn pending_rejects_invalid_links_and_excludes_claimed_and_rpc() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("q.sqlite3");
     let mut q = Queue::open(&db).unwrap();

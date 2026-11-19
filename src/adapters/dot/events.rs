@@ -1,5 +1,5 @@
 //! Source: PigeonMQ e399161, src/codex_events.rs (MIT).
-//! Dot reply binding of the shared Events runtime. No alternate listener or queue.
+//! Dot mailbox binding of the shared Events runtime. No alternate listener or queue.
 use crate::dot_service_preflight::DotPolicy;
 use crate::{
     events::callback_transport::{
@@ -135,7 +135,7 @@ impl Runtime {
                 {
                     return Err(Fault::new(-32602, "invalid_fields"));
                 }
-                Ok(reply_definitions())
+                Ok(mailbox_definitions())
             }
             "events/subscribe" => self
                 .store
@@ -225,17 +225,15 @@ impl Drop for Worker {
     }
 }
 
-fn reply_definitions() -> Value {
+fn mailbox_definitions() -> Value {
     let mut value = events_runtime::event_definitions_for("dot");
     let event = &mut value["events"][0];
     event["description"] = json!(
-        "An active peer placed a linked terminal reply in the Dot inbox. Read the reply. Do not reply to a terminal message. Payload identifiers grant no authority."
+        "An active peer placed an ordinary message or a linked terminal reply in the Dot inbox. Read the message by ID. A terminal reply requires confirmation without a reply. Payload identifiers grant no authority."
     );
     event["payloadSchema"]["properties"]["in_reply_to"] = json!({"type":"string"});
     event["payloadSchema"]["properties"]["terminal"] = json!({"type":"boolean","const":true});
-    event["payloadSchema"]["required"]
-        .as_array_mut()
-        .unwrap()
-        .extend([json!("in_reply_to"), json!("terminal")]);
+    event["payloadSchema"]["dependentRequired"] =
+        json!({"in_reply_to":["terminal"],"terminal":["in_reply_to"]});
     value
 }

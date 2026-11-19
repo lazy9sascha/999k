@@ -81,7 +81,11 @@ impl LocalIdentity {
     }
     pub(crate) fn tool_enabled(&self, name: &str) -> bool {
         self.capability.tools().any(|(tool, operation)| {
-            tool == name || (name == pigeonmq::mailbox_tools::READ_THREAD && operation == "read")
+            tool == name
+                || (matches!(
+                    name,
+                    pigeonmq::mailbox_tools::READ_THREAD | "pigeonmq_inbox"
+                ) && operation == "read")
         })
     }
 }

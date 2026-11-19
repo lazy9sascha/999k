@@ -46,6 +46,7 @@ pub struct HttpProfile {
     pub policy_file: &'static str,
     pub enabled_key: &'static str,
     pub endpoint_key: Option<&'static str>,
+    pub manifest_only: bool,
     pub mailbox: Option<Profile>,
 }
 
@@ -71,6 +72,8 @@ struct Entry<'a> {
     endpoint_key: Option<&'a str>,
     #[serde(borrow)]
     server_name: Option<&'a str>,
+    #[serde(default)]
+    manifest_only: bool,
     #[serde(default)]
     events: EventsCapability,
 }
@@ -132,6 +135,7 @@ fn parse_registry(data: &'static str) -> Option<Vec<HttpProfile>> {
             policy_file: entry.policy_file,
             enabled_key: entry.enabled_key,
             endpoint_key: entry.endpoint_key,
+            manifest_only: entry.manifest_only,
             mailbox,
         });
     }

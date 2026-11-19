@@ -1885,10 +1885,13 @@ fn serve_hub_on(
             .map(|config| {
                 pigeonmq::grok_wake::spawn(config, deadline, move |id| {
                     let scope = grok_bot::observation_scope(&policy).ok()?;
-                    let message = pigeonmq::grok_mailbox::read(&queue, id, &scope).ok()?;
+                    let (sender, conversation_id) =
+                        pigeonmq::grok_mailbox::wake_candidate(&queue, id, &scope).ok()??;
                     let latest = grok_bot::observation_scope(&policy).ok()?;
-                    (message.state == "pending" && latest.allowed_senders.contains(&message.sender))
-                        .then_some(message.conversation_id)
+                    latest
+                        .allowed_senders
+                        .contains(&sender)
+                        .then_some(conversation_id)
                 })
             })
             .transpose()?

@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.1.3
+
+- Dot Events notify the existing subscription about ordinary messages and linked terminal replies.
+- Grok Bot wake covers ordinary messages and linked terminal replies.
+- An optional local notifier passes new arrival identifiers to an owner-selected command.
+- The hub continues to use queue schema 4.
+
+## 0.1.2
+
+- `pigeonmq_inbox` lists received mail newest first by default. Set `scope: all` for sent and received mail, add `query` to search either view, or set `order: oldest` to reverse the list.
+- The same arguments are available on Dot, Codex, Muse, Grok, and read-enabled registered mailbox routes. Upgrades keep the existing queue. Start a new page sequence and refresh saved apps using the [upgrade checklist](docs/quickstart.md#upgrade-an-existing-app-to-012).
+
 ## 0.1.1
 
 - The Cargo package and hub executable are now named `pigeonmq`.

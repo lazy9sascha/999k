@@ -221,7 +221,7 @@ fn validate_tool(params: &Value) -> Result<()> {
     let args = &params["arguments"];
     match params["name"].as_str() {
         Some("pigeonmq_recipients") => fields(args, &[], &[])?,
-        Some("pigeonmq_inbox") => fields(args, &[], &["limit", "continuation"])?,
+        Some("pigeonmq_inbox") => fields(args, &[], crate::inbox_page::ARGUMENTS)?,
         Some("pigeonmq_send") => {
             fields(
                 args,

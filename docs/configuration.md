@@ -144,9 +144,25 @@ Codex Cloud Events and a shared tunnel need separate configuration and acceptanc
 See the official [tunnel configuration](https://github.com/openai/tunnel-client/blob/master/docs/configuration.md)
 and [ChatGPT connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt).
 
-### Optional Dot reply Events
+### Optional local arrival notifier
 
-The standalone Dot profile can send signed callbacks for linked terminal replies.
+Run `pigeonmq notify-arrivals` as a separate service to notify selected registered mailboxes.
+It uses the existing queue in read-only mode. First start records the current sequence.
+Later sweeps observe new eligible ordinary messages and linked terminal replies.
+
+Set `--queue`, `--registration`, `--state`, and `--command` to absolute paths.
+Set `--mailbox` once per selected mailbox. Use an owner-private directory for the notifier state.
+The command receives two arguments in order: the mailbox and message ID.
+Keep the command owner-private and executable. Use the message ID as the recipient provider's idempotency key.
+The provider must suppress repeat sends for at least 24 hours.
+The notifier retries an uncertain delivery for up to 20 hours and reports expired reservations.
+Set `--interval-secs` for a long-running local service.
+
+### Optional Dot mailbox Events
+
+The Dot profile can send signed callbacks for ordinary messages and linked terminal replies.
+It delivers eligible messages that arrived after the subscription became active.
+Callbacks carry identifiers only. Read the message through the authenticated mailbox.
 The Dot profile disables this feature when its protected policy has no `events` field.
 It uses the existing `/dot/mcp` route, queue, subscriptions, and durable outbox.
 It does not use a scheduled mailbox check in ChatGPT.

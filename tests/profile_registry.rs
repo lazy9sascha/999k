@@ -1,5 +1,5 @@
 //! Real-binary comparison of built-in defaults and explicit synthetic route/policy mounts.
-use pigeonmq::{Queue, mailbox_catalog as catalog};
+use pigeonmq::{Envelope, Queue, mailbox_catalog as catalog};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -146,36 +146,14 @@ impl Fixture {
         command
     }
     fn start(&self, explicit: bool) -> Hub {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = Hub::available_port();
         let mut command = self.command(port);
         if explicit {
             command.arg("--profiles-file").arg(&self.manifest);
         } else {
             command.arg("--bundled-profiles");
         }
-        let mut hub = Hub {
-            child: command.spawn().unwrap(),
-            port,
-        };
-        let mut line = String::new();
-        BufReader::new(hub.child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        if line.is_empty() {
-            let mut diagnostic = String::new();
-            hub.child
-                .stderr
-                .take()
-                .unwrap()
-                .read_to_string(&mut diagnostic)
-                .unwrap();
-            panic!("synthetic hub failed: {diagnostic}");
-        }
-        let ready: Value = serde_json::from_str(&line).unwrap();
+        let (hub, ready) = Hub::launch(port, &mut command);
         assert_eq!(ready["profiles_fingerprint"].is_string(), explicit);
         assert_eq!(ready["generic_enabled"], false);
         for (role, _, _) in &*ROLES {
@@ -196,6 +174,37 @@ impl Drop for Hub {
     }
 }
 impl Hub {
+    fn available_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn launch(port: u16, command: &mut Command) -> (Self, Value) {
+        let mut hub = Self {
+            child: command.spawn().unwrap(),
+            port,
+        };
+        let mut line = String::new();
+        BufReader::new(hub.child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        if line.is_empty() {
+            let mut diagnostic = String::new();
+            hub.child
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut diagnostic)
+                .unwrap();
+            panic!("synthetic hub failed: {diagnostic}");
+        }
+        let ready = serde_json::from_str(&line).unwrap();
+        (hub, ready)
+    }
+
     fn request(&self, route: &str, token: &str, body: &Value) -> (u16, Value) {
         let body = body.to_string();
         let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
@@ -271,6 +280,205 @@ fn renamed_policy_and_route_preserve_each_real_adapters_authority_and_tools() {
             .unwrap()
             .contains("[default: 54843]")
     );
+}
+
+#[test]
+fn inbox_schema_and_filters_match_across_registered_mcp_routes() {
+    let fixture = Fixture::new();
+    let hub = fixture.start(false);
+    let mut queue = Queue::open_existing(&fixture.db).unwrap();
+    for (role, _, token) in &ROLES[..4] {
+        check_inbox_surface(&hub, role.route, token, &mut queue, role.id, "codex-local");
+    }
+
+    let local_home = fixture.home.path().join("registered-local");
+    let name = "fixture-local";
+    let init = Command::new(BIN)
+        .env_clear()
+        .args(["init", name, "--home"])
+        .arg(&local_home)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let profile: Value = serde_json::from_slice(&init.stdout).unwrap();
+    let token = fs::read_to_string(profile["token_file"].as_str().unwrap()).unwrap();
+    let port = Hub::available_port();
+    let (local_hub, ready) = Hub::launch(
+        port,
+        Command::new(BIN)
+            .env_clear()
+            .args(["serve-hub", "--mailbox-home"])
+            .arg(&local_home)
+            .args(["--port", &port.to_string(), "--seconds", "20"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
+    assert_eq!(ready["local_mailbox_enabled"], true);
+    let mut local_queue =
+        Queue::open_existing(local_home.join("local-mailboxes/mailboxes.sqlite3")).unwrap();
+    // A staged local profile has read authority for self-messages only.
+    check_inbox_surface(
+        &local_hub,
+        profile["route"].as_str().unwrap(),
+        &token,
+        &mut local_queue,
+        name,
+        name,
+    );
+}
+
+fn check_inbox_surface(
+    hub: &Hub,
+    route: &str,
+    token: &str,
+    queue: &mut Queue,
+    mailbox: &str,
+    peer: &str,
+) {
+    let request = |method, params| {
+        let (status, response) = hub.request(
+            route,
+            token,
+            &json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}),
+        );
+        assert_eq!(status, 200, "{route}: {response}");
+        response
+    };
+    let listed = request("tools/list", json!({}));
+    let listing = listed["result"]["tools"].as_array().unwrap();
+    let mut inbox = listing
+        .iter()
+        .filter(|tool| tool["name"] == "pigeonmq_inbox");
+    let tool = inbox
+        .next()
+        .unwrap_or_else(|| panic!("missing inbox on {route}"));
+    assert!(inbox.next().is_none(), "duplicate inbox on {route}");
+    assert_eq!(
+        tool["inputSchema"],
+        pigeonmq::mailbox_tools::inbox_tool()["inputSchema"],
+        "{route}"
+    );
+    let properties = &tool["inputSchema"]["properties"];
+    assert_eq!(properties["scope"]["default"], "inbox");
+    assert_eq!(properties["query"]["type"], "string");
+    assert_eq!(properties["order"]["default"], "newest");
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+
+    let call_tool = |name, arguments| {
+        let response = request("tools/call", json!({"name":name,"arguments":arguments}));
+        assert!(response.get("error").is_none(), "{route}: {response}");
+        assert_ne!(response["result"]["isError"], true, "{route}: {response}");
+        serde_json::from_str::<Value>(response["result"]["content"][0]["text"].as_str().unwrap())
+            .unwrap()
+    };
+    let mut send = |sender: &str, recipient: &str, body: &str| {
+        queue
+            .send(Envelope {
+                sender: sender.into(),
+                recipient: recipient.into(),
+                body: body.into(),
+                correlation_id: None,
+                in_reply_to: None,
+                idempotency_key: None,
+            })
+            .unwrap()
+            .message
+            .id
+    };
+    let oldest = send(peer, mailbox, "oldest marker 10%_");
+    let outgoing = if mailbox == peer {
+        send(mailbox, peer, "sent marker 10%_")
+    } else {
+        let sent = call_tool(
+            "pigeonmq_send",
+            json!({"recipient":peer,"body":"sent marker 10%_","idempotency_key":"inbox-parity","continue_from_message_id":oldest}),
+        );
+        sent["message_id"]
+            .as_str()
+            .or_else(|| sent["message"]["id"].as_str())
+            .unwrap()
+            .to_owned()
+    };
+    let nonmatch = send(peer, mailbox, "similar marker 10zz");
+    let newest = send(peer, mailbox, "newest marker 10%_");
+    send("unregistered-peer", mailbox, "hidden incoming marker 10%_");
+    send(mailbox, "unregistered-peer", "hidden outgoing marker 10%_");
+    send(
+        "unregistered-peer",
+        "outside-mailbox",
+        "unrelated marker 10%_",
+    );
+
+    let call = |arguments| call_tool("pigeonmq_inbox", arguments);
+    let ids = |page: &Value| {
+        assert_eq!(page["metadata_only"], true);
+        page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| {
+                assert!(message.get("body").is_none());
+                assert!(message.get("envelope").is_none());
+                assert!(message.get("receipt").is_none());
+                message["id"].as_str().unwrap().to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut inbox_matches = vec![newest.clone()];
+    if mailbox == peer {
+        inbox_matches.push(outgoing.clone());
+    }
+    inbox_matches.push(oldest.clone());
+    let mut default_order = inbox_matches.clone();
+    default_order.insert(1, nonmatch);
+    assert_eq!(
+        ids(&call(json!({}))),
+        default_order,
+        "default inbox at {route}"
+    );
+    assert_eq!(
+        ids(&call(json!({"query":"MARKER 10%_"}))),
+        inbox_matches,
+        "filtered inbox at {route}"
+    );
+    let first = call(json!({"scope":"all","query":"10%_","order":"oldest","limit":1}));
+    assert_eq!(
+        ids(&first),
+        std::slice::from_ref(&oldest),
+        "first filtered page at {route}"
+    );
+    assert!(first["next_continuation"].is_string(), "{route}: {first}");
+    let next = call(
+        json!({"scope":"all","query":"10%_","order":"oldest","continuation":first["next_continuation"]}),
+    );
+    assert_eq!(
+        ids(&next),
+        [outgoing.clone(), newest],
+        "second filtered page at {route}"
+    );
+    assert!(next["next_continuation"].is_null(), "{route}: {next}");
+    let conversation = &next["messages"][0]["conversation_id"];
+    assert_eq!(
+        conversation,
+        if mailbox == peer { &outgoing } else { &oldest }
+    );
+    let thread = call_tool(
+        "pigeonmq_read_thread",
+        json!({"conversation_id":conversation}),
+    );
+    let sent = thread["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["message_id"] == outgoing)
+        .unwrap();
+    assert_eq!(sent["body"], "sent marker 10%_");
 }
 
 #[test]
@@ -797,7 +1005,6 @@ fn standalone_has_one_profile_manifest_option_and_no_per_app_flags() {
 
 #[test]
 fn terminal_confirmation_reports_only_in_scope_domain_errors_over_rmcp() {
-    use pigeonmq::Envelope;
     let fixture = Fixture::new();
     let hub = fixture.start(true);
     let mut queue = Queue::open_existing(&fixture.db).unwrap();

@@ -34,6 +34,9 @@ pub(crate) fn selected_policy(
     if let Some(manifest) = manifest {
         return manifest.policy(profile).map(Path::to_path_buf);
     }
+    if profile.manifest_only {
+        return None;
+    }
     // Only absence disables a conventional profile. Other errors reach validation.
     let path = home.join(profile.policy_file);
     (!matches!(fs::symlink_metadata(&path), Err(e) if e.kind() == std::io::ErrorKind::NotFound))

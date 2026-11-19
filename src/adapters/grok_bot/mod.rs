@@ -245,8 +245,8 @@ fn call_grok_tool(
                 ) {
                     Ok(m) => Ok(Some(json!({
                         "id": m.id, "sender": m.sender, "recipient": m.recipient,
-                        "correlation_id": m.correlation_id, "in_reply_to": m.in_reply_to,
-                        "state": m.state, "reply_id": m.reply_id,
+                        "conversation_id": m.conversation_id, "correlation_id": m.correlation_id,
+                        "in_reply_to": m.in_reply_to, "state": m.state, "reply_id": m.reply_id,
                     }))),
                     Err(e) => match e.reason {
                         "message_not_available" | "invalid_body" | "invalid_identifier" => Ok(None),

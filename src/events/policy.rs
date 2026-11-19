@@ -42,7 +42,7 @@ pub struct EventsPolicy {
     senders: Vec<String>,
     callback_hosts: Vec<String>,
     registered: bool,
-    terminal_only: bool,
+    dot_subscription_cutoff: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -149,8 +149,8 @@ impl EventsPolicy {
             Some(senders),
         )
     }
-    /// Trusted standalone Dot projection. Only linked replies can wake this recipient.
-    pub fn for_dot_replies(
+    /// Trusted standalone Dot projection with an activation boundary for each subscription.
+    pub fn for_dot_mailbox(
         principal: String,
         token_sha256: String,
         senders: Vec<String>,
@@ -172,11 +172,11 @@ impl EventsPolicy {
             "dot",
             Some(senders),
         )?;
-        policy.terminal_only = true;
+        policy.dot_subscription_cutoff = true;
         Ok(policy)
     }
-    pub fn terminal_only(&self) -> bool {
-        self.terminal_only
+    pub fn dot_subscription_cutoff(&self) -> bool {
+        self.dot_subscription_cutoff
     }
     fn from_input(
         input: PolicyInput,
@@ -234,7 +234,7 @@ impl EventsPolicy {
             senders,
             callback_hosts,
             registered,
-            terminal_only: false,
+            dot_subscription_cutoff: false,
         })
     }
     pub fn send_enabled(&self) -> bool {

@@ -4,6 +4,13 @@ use crate::{Envelope, Message};
 use rusqlite::{Transaction, params};
 use uuid::Uuid;
 
+pub(crate) const PLAIN_MESSAGE: &str = "(m.in_reply_to IS NULL OR EXISTS (
+ SELECT 1 FROM messages parent WHERE parent.id=m.in_reply_to
+ AND parent.sender=m.recipient AND parent.recipient=m.sender AND parent.in_reply_to IS NULL
+ AND m.correlation_id=COALESCE(parent.correlation_id,parent.id)
+ AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=parent.id)))
+ AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=m.id)";
+
 #[derive(Clone, Copy)]
 pub(crate) enum ReplyTable {
     Muse,

@@ -8,9 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition: 2024](https://img.shields.io/badge/Rust%20edition-2024-orange.svg)](Cargo.toml)
 
-**PigeonMQ gives each AI agent a mailbox on your Mac.**
-
-You run the MCP hub. It stores messages and replies in SQLite. Local agents can connect on the same Mac. Cloud agents reach their mailboxes through a tunnel.
+**A lightweight message queue for direct agent-to-agent messaging, running on your Mac.**
 
 Don't waste your tokens posting to Slack, Discord, or Telegram. Now go direct.
 

@@ -203,6 +203,17 @@ For sandbox use, named local profiles are registered from a dedicated private ho
 
 The mailbox tools are `pigeonmq_send`, `pigeonmq_read`, `pigeonmq_read_thread`, `pigeonmq_wait`, `pigeonmq_inbox`, `pigeonmq_reply`, `pigeonmq_recipients`, and `pigeonmq_confirm_terminal` (`src/mcp/mailbox_tools.rs`). `pigeonmq_send` also accepts `continue_from_message_id`. The policy decides which calls succeed.
 
+`pigeonmq_inbox` defaults to received mail (`scope: inbox`) in newest-first queue order. Use `scope: all` for sent and received mail together, or `order: oldest` to reverse the order. Optional `query` matches a literal substring of 1–256 characters in the message body, ignoring ASCII letter case. Results contain metadata. Use `pigeonmq_read` with a received message ID or `pigeonmq_read_thread` with its `conversation_id` to read bodies.
+
+| View | `pigeonmq_inbox` arguments |
+| --- | --- |
+| Received mail | `{}` |
+| Sent and received | `{"scope":"all"}` |
+| Search received mail | `{"query":"build log"}` |
+| Search sent and received, oldest first | `{"scope":"all","query":"build log","order":"oldest"}` |
+
+`limit` defaults to 20 and accepts 1–50. Pass `next_continuation` as `continuation` with the same scope, query, and order until it is null. A page can be short or empty while older or newer matches remain. Start from the first page after changing a filter or upgrading from an older release. Listing and search leave delivery state untouched.
+
 The tool list grows between versions. Clients check `tools/list` at runtime for the tools they need, never a fixed count.
 
 Muse and Grok use `result.isError: true` for tool failures. Parse the first text item as JSON and read its `error` reason.
@@ -216,7 +227,7 @@ The opt-in generic MCP routes use rmcp core dispatch behind a separate HTTP adap
 
 ### Queue schema essentials
 
-The queue supports schema version 3 only. New databases use this version. Older databases cause an error and remain unchanged. This release does not convert them.
+The queue supports schema version 4 only. New databases use this version. Older databases cause an error and remain unchanged. This release does not convert them.
 
 One `messages` table (plus `rpc_requests` for request/response calls and small per-adapter reply tables):
 

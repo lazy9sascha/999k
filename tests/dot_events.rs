@@ -183,12 +183,18 @@ fn dot_inbox_pages_exact_read_metadata_without_claiming_or_acknowledging() {
             .unwrap()
     };
     assert_eq!(list("wrong", json!({})).0, 401);
-    let page = data(list(TOKEN, json!({"limit":1})).1);
+    let page = data(list(TOKEN, json!({"limit":1,"order":"oldest"})).1);
     assert_eq!(page["metadata_only"], true);
     assert_eq!(page["messages"][0]["id"], first);
     assert_eq!(page["messages"][0]["state"], "pending");
     assert!(page["messages"][0].get("body").is_none());
-    let next = data(list(TOKEN, json!({"continuation":page["next_continuation"]})).1);
+    let next = data(
+        list(
+            TOKEN,
+            json!({"continuation":page["next_continuation"],"order":"oldest"}),
+        )
+        .1,
+    );
     assert_eq!(next["messages"].as_array().unwrap().len(), 1);
     assert_eq!(next["messages"][0]["id"], terminal);
     assert_eq!(next["messages"][0]["state"], "reply_received");
@@ -299,22 +305,28 @@ fn dot_event_auth_discovery_and_exact_recipient_are_fail_closed() {
     );
 }
 #[test]
-fn only_terminal_replies_wake_with_signed_metadata_and_survive_restart_without_ack() {
+fn ordinary_and_terminal_wakes_keep_signed_metadata_and_the_existing_subscription() {
     let f = Fixture::new();
     let r = f.prepared();
-    let ordinary = f.send("muse", "dot");
+    let old_ordinary = f.send("muse", "dot");
     f.send("muse", "grok-bot");
     let (_, old_reply) = f.terminal();
-    r.event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
+    let subscription = r
+        .event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
         .unwrap();
-    r.tick_with(&context(), |_, _| panic!("old terminal reply delivered"))
-        .unwrap();
+    r.tick_with(&context(), |_, _| {
+        panic!("pre-subscription message delivered")
+    })
+    .unwrap();
     let cutoff: i64 = f
         .conn()
         .query_row("SELECT after_seq FROM dot_subscription_cutoffs", [], |r| {
             r.get(0)
         })
         .unwrap();
+    let ordinary = f.send("muse", "dot");
+    f.send("muse", "grok-bot");
+    f.send("unregistered", "dot");
     let (parent, reply) = f.terminal();
     let (_, acked) = f.terminal();
     f.conn()
@@ -331,8 +343,10 @@ fn only_terminal_replies_wake_with_signed_metadata_and_survive_restart_without_a
         )
         .unwrap();
     // Refresh retains the initial boundary and does not drop the new pending reply.
-    r.event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
+    let refreshed = r
+        .event_with(TOKEN, "events/subscribe", &grant("dot"), &context(), echo)
         .unwrap();
+    assert_eq!(subscription["id"], refreshed["id"]);
     assert_eq!(
         f.conn()
             .query_row("SELECT after_seq FROM dot_subscription_cutoffs", [], |r| {
@@ -341,9 +355,32 @@ fn only_terminal_replies_wake_with_signed_metadata_and_survive_restart_without_a
             .unwrap(),
         cutoff
     );
-    let mut count = 0;
-    r.tick_with(&context(),|_,req| {count+=1;assert!(signed_headers(&req).unwrap().contains_key("webhook-signature"));let b:Value=serde_json::from_slice(req.body).unwrap();assert_eq!(b["data"],json!({"recipient":"dot","message_id":reply,"conversation_id":parent,"sender":"muse","correlation_id":parent,"in_reply_to":parent,"terminal":true}));assert!(!String::from_utf8_lossy(req.body).contains("synthetic fixture body"));Ok(CallbackResponse{status:200,body:vec![]})}).unwrap();
-    assert_eq!(count, 1);
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        r.tick_with(&context(), |_, req| {
+            assert!(
+                signed_headers(&req)
+                    .unwrap()
+                    .contains_key("webhook-signature")
+            );
+            let body: Value = serde_json::from_slice(req.body).unwrap();
+            assert_eq!(body["name"], "pigeonmq.message.created");
+            delivered.push(body["data"].clone());
+            Ok(CallbackResponse {
+                status: 200,
+                body: vec![],
+            })
+        })
+        .unwrap();
+    }
+    assert_eq!(
+        delivered,
+        vec![
+            json!({"recipient":"dot","message_id":ordinary,"conversation_id":ordinary,"sender":"muse","correlation_id":ordinary}),
+            json!({"recipient":"dot","message_id":reply,"conversation_id":parent,"sender":"muse","correlation_id":parent,"in_reply_to":parent,"terminal":true}),
+        ]
+    );
+    assert_eq!(f.state(&old_ordinary), (0, None));
     assert_eq!(f.state(&reply), (0, None));
     assert_eq!(f.state(&ordinary), (0, None));
     assert_eq!(f.state(&old_reply), (0, None));

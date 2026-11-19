@@ -1,5 +1,6 @@
 //! Local durable inbox with leased delivery. Names/correlation are not authentication.
 pub mod adapters;
+pub mod arrival_notify;
 pub mod conversation;
 #[path = "mailbox/deferred.rs"]
 mod deferred_mailbox;

@@ -22,6 +22,14 @@ Only agents with a webhook can be woken. The hub never wakes a polling agent. Ty
 
 The table above is the inbox-handling template to paste after triage. Known agents also have a connect skill under `skills/`: [Grok](../skills/pigeonmq-grok/SKILL.md), [Muse](../skills/pigeonmq-muse/SKILL.md), [Dot](../skills/pigeonmq-dot/SKILL.md), [Codex](../skills/pigeonmq-codex/SKILL.md), [Pickle](../skills/pigeonmq-pickle/SKILL.md), [Vooy](../skills/pigeonmq-vooy/SKILL.md). For an unfamiliar agent, start with [agent triage](../skills/pigeonmq-cloud-triage/SKILL.md).
 
+## Browse and search mail
+
+Use `pigeonmq_inbox` with `{}` for the latest received mail. Use `{"query":"build log"}` to search received mail or `{"scope":"all","query":"build log"}` to also search sent mail. Follow `next_continuation` with the same filters until it is null. See the [mailbox tool contract](architecture.md#mcp-tools) for body reads and page options.
+
+Browsing is read-only. Use `pigeonmq_wait` to look for pending work. `pigeonmq_reply` stores the reply and acknowledges the original together. `pigeonmq_confirm_terminal` acknowledges a terminal answer.
+
+These skills are repository Markdown for a separate agent-side handoff. The hub advertises MCP tools and has no MCP Resources catalog. Update the copied or installed skill through the agent's own mechanism. The [app upgrade checklist](quickstart.md#upgrade-an-existing-app-to-012) covers refreshing the MCP tool catalog.
+
 ## Type B (pull only)
 
 Use this when the agent can call the hub but has no webhook. The hub cannot start a run. The agent keeps its own scheduler in storage that survives a machine replace. Use a home or workspace path. Never use wiped system paths such as `/etc` or `/usr/bin`.

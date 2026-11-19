@@ -5,6 +5,7 @@
 //! DNS-pinned HTTPS transport with its existing ten-second callback bound.
 //! Callback success is not native consumption.
 use super::policy::{EventsPolicy, PolicySource, PreflightError};
+use crate::mailbox_engine::PLAIN_MESSAGE as PLAIN;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, TransactionBehavior, params, params_from_iter,
 };
@@ -15,12 +16,6 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, PreflightError>;
-const PLAIN: &str = "(m.in_reply_to IS NULL OR EXISTS (
- SELECT 1 FROM messages parent WHERE parent.id=m.in_reply_to
- AND parent.sender=m.recipient AND parent.recipient=m.sender AND parent.in_reply_to IS NULL
- AND m.correlation_id=COALESCE(parent.correlation_id,parent.id)
- AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=parent.id)))
- AND NOT EXISTS(SELECT 1 FROM rpc_requests r WHERE r.message_id=m.id)";
 fn error(reason: &'static str) -> PreflightError {
     PreflightError {
         reason,
@@ -272,18 +267,14 @@ impl EventDelivery {
             }
             candidates.push(sid.clone());
             let marks = vec!["?"; policy.allowed_senders().len()].join(",");
-            let cutoff = if policy.terminal_only() {
+            let cutoff = if policy.dot_subscription_cutoff() {
                 Some(super::subscriptions::dot_start_seq(&tx, &sid)?)
             } else {
                 None
             };
-            let terminal = if cutoff.is_some() {
-                "AND m.in_reply_to IS NOT NULL AND m.seq>?"
-            } else {
-                ""
-            };
+            let fresh = if cutoff.is_some() { "AND m.seq>?" } else { "" };
             let sql = format!(
-                "SELECT m.id,m.sender,m.body,m.correlation_id,m.in_reply_to,m.created_at_ms,m.seq,m.conversation_id FROM messages m WHERE m.recipient=? AND m.dead_lettered_at_ms IS NULL AND m.acknowledged_at_ms IS NULL AND m.attempts=0 AND m.sender IN ({marks}) AND {PLAIN} {terminal} AND NOT EXISTS(SELECT 1 FROM dot_event_outbox o WHERE o.message_id=m.id AND o.subscription_id=?) ORDER BY m.seq LIMIT 100"
+                "SELECT m.id,m.sender,m.body,m.correlation_id,m.in_reply_to,m.created_at_ms,m.seq,m.conversation_id FROM messages m WHERE m.recipient=? AND m.dead_lettered_at_ms IS NULL AND m.acknowledged_at_ms IS NULL AND m.attempts=0 AND m.sender IN ({marks}) AND {PLAIN} {fresh} AND NOT EXISTS(SELECT 1 FROM dot_event_outbox o WHERE o.message_id=m.id AND o.subscription_id=?) ORDER BY m.seq LIMIT 100"
             );
             let mut args: Vec<rusqlite::types::Value> = std::iter::once(policy.mailbox())
                 .chain(policy.allowed_senders().iter().map(String::as_str))
@@ -331,7 +322,7 @@ impl EventDelivery {
         if !policy.callback_allowed(&sub.url) {
             return Ok(None);
         };
-        let cutoff = if policy.terminal_only() {
+        let cutoff = if policy.dot_subscription_cutoff() {
             Some(super::subscriptions::dot_start_seq(&tx, sid)?)
         } else {
             None
@@ -389,7 +380,6 @@ impl EventDelivery {
             r.id.len() <= 128
                 && r.valid()
                 && policy.allowed_senders().contains(&r.sender)
-                && (!policy.terminal_only() || r.parent.is_some())
                 && cutoff.is_none_or(|seq| r.stored_seq > seq)
         });
         let Some(row) = row else {
@@ -411,7 +401,7 @@ impl EventDelivery {
             sender: row.sender,
             correlation: row.correlation.unwrap_or(row.id),
             created_ms: row.created_ms,
-            terminal_reply_to: if policy.terminal_only() {
+            terminal_reply_to: if policy.dot_subscription_cutoff() {
                 row.parent
             } else {
                 None

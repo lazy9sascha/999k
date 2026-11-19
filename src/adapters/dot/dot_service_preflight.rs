@@ -81,7 +81,7 @@ impl DotPolicy {
         if !settings.resolver.is_absolute() {
             return Err(Fault::new(-32003, "invalid_events_resolver"));
         }
-        let policy = crate::events::policy::EventsPolicy::for_dot_replies(
+        let policy = crate::events::policy::EventsPolicy::for_dot_mailbox(
             self.principal.clone(),
             self.digest.clone(),
             self.peers.clone(),

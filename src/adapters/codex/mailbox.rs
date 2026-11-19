@@ -637,6 +637,10 @@ fn tools() -> Value {
     ]))
 }
 
+#[cfg(test)]
+#[path = "instinct_reply_tests.rs"]
+mod instinct_reply_tests;
+
 fn observe_json(message: Message) -> Result<Value, Fault> {
     let mut value = serde_json::to_value(&message).map_err(|_| (500, "internal_error"))?;
     value["message_id"] = json!(message.id);
@@ -835,11 +839,12 @@ mod tests {
         let before = count(&p);
 
         let page = |args| p.call(&headers(), "pigeonmq_inbox", args);
-        let first_page = page(json!({"limit":1})).unwrap();
+        let first_page = page(json!({"limit":1,"order":"oldest"})).unwrap();
         assert_eq!(first_page["messages"][0]["id"], first);
         assert_eq!(first_page["messages"][0]["state"], "pending");
         assert_eq!(first_page["metadata_only"], true);
-        let next = page(json!({"continuation":first_page["next_continuation"]})).unwrap();
+        let next =
+            page(json!({"continuation":first_page["next_continuation"],"order":"oldest"})).unwrap();
         assert_eq!(next["messages"][0]["id"], terminal);
         assert_eq!(next["messages"][0]["state"], "reply_received");
         assert_eq!(next["messages"][1]["id"], own);
