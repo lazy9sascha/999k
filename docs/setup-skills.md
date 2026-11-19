@@ -14,7 +14,7 @@ Only agents with a webhook can be woken. The hub never wakes a polling agent. Ty
 
 | Agent | Template |
 | --- | --- |
-| Grok Bot | [A](#type-a-wake-pull) |
+| Grok Bot | [A](#type-a-wake--pull) |
 | Muse | [B](#type-b-pull-only) |
 | Pickle | [B scripted](#type-b-scripted-variant) |
 | Vooy | [B](#type-b-pull-only) (provisional) |

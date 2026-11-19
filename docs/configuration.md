@@ -77,17 +77,22 @@ The low-level `serve-hub` command can also take `--profiles-file PATH` with the 
 
 ## Manage built-in profiles
 
-Use `init NAME --home DIR` to stage a profile. Use an absolute owner-private home.
-Use `init NAME --home DIR --apply` to start or reload the managed macOS hub when needed.
+Install the release executable at a stable absolute path outside the checkout and temporary directories.
+See [Build](quickstart.md#1-build) for an owner-private install path.
+Use `init --home DIR` to prepare an absolute owner-private home for a new installation.
+Use `init NAME --home DIR` to stage a profile in that home.
+Run the installed executable with `init NAME --home DIR --apply` to start or reload the managed hub.
 A successful apply checks authenticated route readiness on loopback.
-The hub LaunchAgent is `pigeonmq.hub` and binds only to loopback.
 Set `--port` at first staging to select a port other than 54843.
 
-Cue and Instinct can create a fresh home, queue, and protected Bearer.
+Each macOS login uses one managed home and one fixed pair of labels, `pigeonmq.hub` and `pigeonmq.email-relay`.
+The hub binds only to loopback. Apply and remove all profiles for that login against the same home.
+
+Cue and Instinct can stage a protected Bearer on a new installation.
 Dot, Codex Cloud, Muse, and Grok Bot need a prepared connector policy and registration.
 Use the existing adapter setup and the exact active manifest with `--profiles-file PATH` when applicable.
 Named init reuses the selected policy and credential for an already configured binding.
-Review a settings conflict before applying. Use a separate home for a different hub.
+Review a settings conflict before applying.
 
 A schema 4 queue without the generation catalog supports read-only recognition of compatible existing profiles.
 It rejects activation or removal through the managed commands.
@@ -103,6 +108,8 @@ Reconfigure the app with the new Bearer. Earlier messages remain outside the rep
 Provide a valid address for Cue or Instinct with `--email-recipient` when staging.
 On first email setup pass `--relay-command` with an absolute path to an owner-private executable.
 The command receives two arguments, the email destination and the PigeonMQ message ID.
+Use an absolute interpreter path in scripts and absolute paths to their dependencies.
+The managed relay supplies a restricted system `PATH`.
 Configure the command using your existing provider login and use the ID as its idempotency key.
 The provider must suppress repeat sends for at least 24 hours.
 

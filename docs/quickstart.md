@@ -11,12 +11,14 @@ Use a checked executable on macOS, or build this checkout with stable Rust and 2
 
 ```sh
 cargo build --locked --release
-export PATH="$PWD/target/release:$PATH"
-export PIGEONMQ_BIN="$PWD/target/release/pigeonmq"
-"$PIGEONMQ_BIN" --help
+install -d -m 700 "$HOME/.local/libexec/pigeonmq"
+export PIGEONMQ_BIN="$HOME/.local/libexec/pigeonmq/pigeonmq"
+install -m 700 target/release/pigeonmq "$PIGEONMQ_BIN"
+"$PIGEONMQ_BIN" --version
 ```
 
-Version 0.1.0 built `target/release/pigeonmq-cloud`. Update scripts and service definitions to use the full path to the new binary. The archived project also used the command `pigeonmq`. Run `"$PIGEONMQ_BIN" --version` to check which build you selected.
+Keep the installed binary at this absolute path for managed service restarts.
+Version 0.1.0 built `pigeonmq-cloud`. Update scripts and service definitions to use the installed `pigeonmq` path.
 
 Pick a private runtime folder **outside the repository**. It holds the queue, policies, and tunnel keys.
 
@@ -41,15 +43,15 @@ If you have no domain, you can opt in to tunnl.gg for testing.
 
 ### Stage and apply Cue or Instinct on macOS
 
-Use an unused owner-private home outside the checkout. Keep the built executable at a stable path.
+Use the private `CLOUD_HOME` initialized above and the installed binary.
+Use one managed home for all profiles in the same macOS login.
 
 ```sh
-export MAIL_HOME="$HOME/.pigeonmq-mail"
-"$PIGEONMQ_BIN" init cue --home "$MAIL_HOME"
-"$PIGEONMQ_BIN" init cue --home "$MAIL_HOME" --apply
+"$PIGEONMQ_BIN" init cue --home "$CLOUD_HOME"
+"$PIGEONMQ_BIN" init cue --home "$CLOUD_HOME" --apply
 ```
 
-The first command stages the queue, profile, and Bearer file. The output gives the file path and the intended route.
+The first command stages the profile and Bearer file. The output gives the file path and the intended route.
 The second command registers and starts the managed loopback hub in your macOS login session.
 Repeat with `instinct` to add a second mailbox. Repeating the same active setup reuses the original Bearer.
 
@@ -229,7 +231,7 @@ On November 19, 2026, the hub listed `pigeonmq_inbox` and `pigeonmq_read_thread`
 
 ## 5. Optional: Grok Bot wake
 
-Grok Bot can't keep a connection open, so the hub can wake it with a webhook (mode A in [architecture](architecture.md#a-wake-pull)).
+Grok Bot can't keep a connection open, so the hub can wake it with a webhook (mode A in [architecture](architecture.md#a-wake--pull)).
 
 1. In Grok Bot, create a webhook routine for this hub only. The wake body has no hub ID, so another hub must not share it.
 2. On the Mac that runs the hub, run the command below from a local terminal. Enter the HTTPS URL and Authorization value at the hidden prompts. The command saves both values in one Keychain item.
