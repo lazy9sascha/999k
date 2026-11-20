@@ -1,0 +1,137 @@
+#!/bin/sh
+# Generated from the release archives. Run as your own user.
+set -eu
+
+version='@VERSION@'
+release='https://github.com/lazy9sascha/pigeonmq/releases/download'
+tmp=
+
+fail() {
+    printf 'pigeonmq: %s\n' "$*" >&2
+    exit 1
+}
+
+file_sha() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sum=$(sha256sum < "$1") || return 1
+    else
+        sum=$(shasum -a 256 < "$1") || return 1
+    fi
+    printf '%s\n' "${sum%% *}"
+}
+
+matches() {
+    [ -f "$1" ] && [ ! -L "$1" ] && [ "$(file_sha "$1")" = "$2" ]
+}
+
+verified_pair() {
+    [ -x "$1/pigeonmq" ] && [ -x "$1/pigeonmq-dot-resolve" ] &&
+        matches "$1/pigeonmq" "$main_sha" &&
+        matches "$1/pigeonmq-dot-resolve" "$resolver_sha"
+}
+
+install_pair() {
+    mkdir -p "$bin_dir"
+    for name in pigeonmq pigeonmq-dot-resolve; do
+        path=$bin_dir/$name
+        if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
+            fail "Cannot replace non-regular file: $path"
+        fi
+        if [ -z "$run" ] && [ -f "$path" ]; then
+            case $name in
+                pigeonmq) expected=$main_sha ;;
+                *) expected=$resolver_sha ;;
+            esac
+            matches "$path" "$expected" || fail "Existing file differs: $path. Choose a new --bin-dir."
+        fi
+    done
+
+    tmp=$(mktemp -d "$bin_dir/.pigeonmq.XXXXXXXX")
+    archive=pigeonmq-$version-$target.tar.gz
+    curl -q -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 \
+        --retry 2 -o "$tmp/archive" "$release/$version/$archive" ||
+        fail "Could not download $archive."
+    matches "$tmp/archive" "$archive_sha" || fail "SHA-256 mismatch for $archive."
+    tar -xzf "$tmp/archive" -C "$tmp" pigeonmq pigeonmq-dot-resolve ||
+        fail "Could not extract $archive."
+    verified_pair "$tmp" || fail "The release executables do not match their SHA-256 pins."
+
+    for name in pigeonmq pigeonmq-dot-resolve; do
+        chmod 755 "$tmp/$name"
+        mv -f "$tmp/$name" "$bin_dir/$name"
+    done
+}
+
+select_target() {
+    os=$(uname -s)
+    machine=$(uname -m)
+    case $os:$machine in
+# @PIN_CASES@
+        *) fail "No PigeonMQ $version archive for $os $machine." ;;
+    esac
+    if [ "$os" = Linux ]; then
+        getconf GNU_LIBC_VERSION >/dev/null 2>&1 || fail "PigeonMQ requires glibc on Linux."
+    fi
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        fail "Install sha256sum or shasum before running this installer."
+    fi
+}
+
+main() {
+    run=
+    case "${1:-}" in
+        --help|-h)
+            printf '%s\n' 'Usage: sh install.sh [--bin-dir /absolute/path]' \
+                'Default directory: $HOME/.local/bin'
+            return
+            ;;
+        --run)
+            case "${2:-}" in
+                pigeonmq|pigeonmq-dot-resolve) run=$2 ;;
+                *) fail "Unknown PigeonMQ executable." ;;
+            esac
+            shift 2
+            ;;
+        --bin-dir)
+            [ "$#" -eq 2 ] || fail "Give one absolute path after --bin-dir."
+            bin_dir=$2
+            ;;
+        '')
+            [ "$#" -eq 0 ] || fail "Use --help for installer options."
+            bin_dir=${HOME:?HOME is required}/.local/bin
+            ;;
+        *) fail "Use --help for installer options." ;;
+    esac
+
+    [ "$(id -u)" != 0 ] || fail "Run this installer as your own user, without sudo."
+    select_target
+    if [ -n "$run" ]; then
+        bin_dir=${HOME:?HOME is required}/.local/share/pigeonmq/npm/$version-$target/bin
+    fi
+    case $bin_dir in
+        /*) ;;
+        *) fail "The installation directory must be an absolute path." ;;
+    esac
+
+    umask 077
+    trap 'if [ -n "$tmp" ]; then rm -rf "$tmp"; fi' 0
+    trap 'exit 1' HUP INT TERM
+    if ! verified_pair "$bin_dir"; then
+        install_pair
+    fi
+    if [ -n "$run" ]; then
+        if [ -n "$tmp" ]; then
+            rm -rf "$tmp"
+            tmp=
+        fi
+        exec "$bin_dir/$run" "$@"
+    fi
+
+    printf 'Installed PigeonMQ %s in %s\n' "$version" "$bin_dir"
+    case ":$PATH:" in
+        *:"$bin_dir":*) ;;
+        *) printf 'Add %s to PATH, or use %s/pigeonmq.\n' "$bin_dir" "$bin_dir" ;;
+    esac
+}
+
+main "$@"

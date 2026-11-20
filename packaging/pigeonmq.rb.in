@@ -1,0 +1,18 @@
+class Pigeonmq < Formula
+  desc "Self-hosted MCP hub for agent-to-agent messaging"
+  homepage "https://github.com/lazy9sascha/pigeonmq"
+  version "@VERSION@"
+  license "MIT"
+
+# @BREW_SOURCES@
+
+  def install
+    bin.install "pigeonmq", "pigeonmq-dot-resolve"
+    prefix.install "LICENSE"
+  end
+
+  test do
+    assert_equal "pigeonmq #{version}", shell_output("#{bin}/pigeonmq --version").strip
+    shell_output("#{bin}/pigeonmq-dot-resolve", 2)
+  end
+end
