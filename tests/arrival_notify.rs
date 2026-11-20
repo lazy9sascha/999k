@@ -428,3 +428,89 @@ exit 4
         }
     }
 }
+
+#[test]
+fn invalid_static_mailboxes_are_rejected_before_starting_any_relay() {
+    use pigeonmq::arrival_notify::validate_static_mailboxes;
+    use serde_json::json;
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+    let manifest = home.join("companions.json");
+    let queue = home.join("missing.sqlite3");
+    let registration = home.join("registration.json");
+    let state = home.join("cursor.json");
+    let provider = home.join("provider");
+    let assert_exit = |mut command: Command, expected: &str| {
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let limit = Instant::now() + Duration::from_secs(4);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if Instant::now() >= limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Invalid relay configuration stayed running");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let result = child.wait_with_output().unwrap();
+        assert!(!result.status.success());
+        assert_eq!(String::from_utf8_lossy(&result.stderr).trim(), expected);
+        assert!(!state.exists());
+        assert!(!home.join("pigeonmq-cloud-run.lock").exists());
+    };
+    let valid = vec![String::from("peer"), "-peer_0.x:y".into()];
+    assert!(validate_static_mailboxes(&valid).is_ok());
+    for mailboxes in [
+        vec![String::from("duplicate"), "duplicate".into()],
+        vec![String::from("bad/name")],
+        vec!["a".repeat(129)],
+        (0..17).map(|n| format!("fixture-{n}")).collect(),
+    ] {
+        assert!(validate_static_mailboxes(&mailboxes).is_err());
+        write_private(
+            &manifest,
+            json!({"version":1, "queue_identity":{"device":1,"inode":1},
+            "email_relay":{"registration":registration,"state":state,"command":provider,
+                "interval_secs":1,"mailboxes":mailboxes}})
+            .to_string()
+            .as_bytes(),
+            0o600,
+        );
+        let mut runner = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
+        runner
+            .args(["run", "--home"])
+            .arg(&home)
+            .arg("--companions-file")
+            .arg(&manifest);
+        assert_exit(runner, "invalid_companions_file");
+
+        let mut relay = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
+        relay
+            .arg("notify-arrivals")
+            .arg("--queue")
+            .arg(&queue)
+            .arg("--registration")
+            .arg(&registration)
+            .arg("--state")
+            .arg(&state)
+            .arg("--command")
+            .arg(&provider)
+            .args(["--interval-secs", "1"]);
+        for name in mailboxes {
+            relay.arg(format!("--mailbox={name}"));
+        }
+        assert_exit(relay, "invalid arrival notifier configuration");
+    }
+}

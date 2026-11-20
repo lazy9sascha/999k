@@ -111,12 +111,7 @@ impl Manifest {
                 || !absolute(&relay.state)
                 || !absolute(&relay.command)
                 || !(1..=3600).contains(&relay.interval_secs)
-                || relay.mailboxes.is_empty()
-                || relay.mailboxes.iter().any(|name| {
-                    name.is_empty()
-                        || name.starts_with('-')
-                        || name.chars().any(|c| c.is_control() || c.is_whitespace())
-                }))
+                || pigeonmq::arrival_notify::validate_static_mailboxes(&relay.mailboxes).is_err())
         {
             return Err(invalid());
         }
@@ -175,8 +170,7 @@ impl Manifest {
                 relay.interval_secs.to_string().into(),
             ];
             for mailbox in &relay.mailboxes {
-                args.push("--mailbox".into());
-                args.push(mailbox.into());
+                args.push(format!("--mailbox={mailbox}").into());
             }
             roles.push(Role::new("email_relay", &a.binary, args));
         }

@@ -425,6 +425,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             config,
             interval_secs,
         } => {
+            if config.is_none() {
+                pigeonmq::arrival_notify::validate_static_mailboxes(mailboxes)?;
+            }
             let sweep = || match config {
                 Some(path) => {
                     pigeonmq::arrival_notify::run_config(queue, registration, state, command, path)

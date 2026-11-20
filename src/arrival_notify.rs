@@ -394,14 +394,8 @@ fn dispatch<'a>(
     Ok(serde_json::json!({"state":"ready","delivered":delivered,"expired":expired}))
 }
 
-/// Run one bounded sweep. Installation initializes a high water mark before enabling notifications.
-pub fn run(
-    queue: &Path,
-    registration: &Path,
-    state_path: &Path,
-    command: &Path,
-    mailboxes: &[String],
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+/// Validate the fixed mailbox list before starting a relay.
+pub fn validate_static_mailboxes(mailboxes: &[String]) -> io::Result<()> {
     if mailboxes.is_empty()
         || mailboxes.len() > 16
         || mailboxes
@@ -413,8 +407,20 @@ pub fn run(
             .len()
             != mailboxes.len()
     {
-        return Err(io::Error::other("invalid arrival notifier configuration").into());
+        return Err(io::Error::other("invalid arrival notifier configuration"));
     }
+    Ok(())
+}
+
+/// Run one bounded sweep. Installation initializes a high water mark before enabling notifications.
+pub fn run(
+    queue: &Path,
+    registration: &Path,
+    state_path: &Path,
+    command: &Path,
+    mailboxes: &[String],
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    validate_static_mailboxes(mailboxes)?;
     let (queue_meta, _lock, conn) = open_run(queue, registration, state_path, command)?;
     {
         let _dispatch = crate::mailbox_generation::lock_dispatch(queue)?;
