@@ -1,152 +1,125 @@
 # Quickstart
 
-Build, configure the selected profile, start its transport, and connect the agent.
-The local verification below is optional. It does not limit operational senders or message text.
+Install PigeonMQ, try a local exchange, and connect a client.
+For agent-specific connections, see [agents and capabilities](agents.md).
 
-Not sure which connection mode your agent needs? Check [agents and capabilities](agents.md) first.
+<a id="1-build"></a>
 
-## 1. Build
+## 1. Install
 
-Use a checked executable on macOS, or build this checkout with stable Rust and 2024 edition support.
+Use the installer from [GitHub Releases](https://github.com/lazy9sascha/pigeonmq/releases) when the release assets are available.
+It installs `pigeonmq` and `pigeonmq-dot-resolve` in `$HOME/.local/bin` by default. No Rust toolchain is needed.
 
 ```sh
-cargo build --locked --release
-install -d -m 700 "$HOME/.local/libexec/pigeonmq"
-export PIGEONMQ_BIN="$HOME/.local/libexec/pigeonmq/pigeonmq"
-install -m 700 target/release/pigeonmq "$PIGEONMQ_BIN"
+version=0.1.6
+curl -q --proto '=https' -fLsS -o pigeonmq-install.sh \
+  "https://github.com/lazy9sascha/pigeonmq/releases/download/$version/install.sh" &&
+sh ./pigeonmq-install.sh
+```
+
+If an archive is not available for your machine, build this checkout with stable Rust and 2024 edition support.
+
+```sh
+cargo build --locked --release --bin pigeonmq --bin pigeonmq-dot-resolve
+install -d -m 700 "$HOME/.local/bin"
+install -m 700 target/release/pigeonmq target/release/pigeonmq-dot-resolve "$HOME/.local/bin/"
+```
+
+After either install:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+export PIGEONMQ_BIN="$HOME/.local/bin/pigeonmq"
 "$PIGEONMQ_BIN" --version
 ```
 
-Keep the installed binary at this absolute path for managed service restarts.
-Version 0.1.0 built `pigeonmq-cloud`. Update scripts and service definitions to use the installed `pigeonmq` path.
+If you used another install directory, set `PIGEONMQ_BIN` to the absolute path of its `pigeonmq`.
+Use a stable absolute path for a managed service.
+For an existing 0.1.0 service, change the executable name from `pigeonmq-cloud` to `pigeonmq` when you upgrade.
 
-Pick a private runtime folder **outside the repository**. It holds the queue, policies, and tunnel keys.
+## 2. Try a local exchange
+
+You need Python 3 for this optional test. It does not require Rust or a source checkout.
+Set `version` to the installed version, without a leading `v`. Use its copy of the script from the source tag.
+
+```sh
+version=0.1.6
+curl -q --proto '=https' -fLsS -o pigeonmq-smoke.sh \
+  "https://raw.githubusercontent.com/lazy9sascha/pigeonmq/$version/scripts/smoke-release.sh" &&
+sh ./pigeonmq-smoke.sh --installed "$(dirname "$PIGEONMQ_BIN")" "$version"
+```
+
+In a checkout, use [`scripts/smoke-release.sh`](../scripts/smoke-release.sh) instead of downloading it.
+To check a downloaded archive before installing, pass its filename and version without `--installed`.
+
+The test checks both binaries, starts a private loopback hub, and exchanges one message using synthetic Bearer tokens.
+It stops and restarts the hub and checks that the same linked reply ID is still in the queue.
+It removes the temporary home. It does not reach a public endpoint, touch Keychain, or start a background service.
+
+## Prepare a real mailbox
+
+Use an owner-private runtime folder outside the repository.
+The home holds the queue and its policies. Use the same absolute `--home` each time.
+For an existing hub, keep its home and configuration. See [Older queue databases](troubleshooting.md#older-queue-databases) if needed.
+
+### Linux: foreground with a file credential
+
+This example creates a new Instinct home. It does not use Keychain or start a service.
+Use a new path. The commands stop if the folder already exists.
+
+```sh
+export CLOUD_HOME="$HOME/.pigeonmq-instinct"
+mkdir -m 700 "$CLOUD_HOME" &&
+(umask 077; printf '%s\n' '{"instinct":{"mailbox":"instinct","revoked":false}}' \
+  > "$CLOUD_HOME/pigeonmq-cloud-registration.json") &&
+"$PIGEONMQ_BIN" init --home "$CLOUD_HOME" &&
+"$PIGEONMQ_BIN" init instinct --home "$CLOUD_HOME" --operational &&
+"$PIGEONMQ_BIN" run --home "$CLOUD_HOME" --local-only
+```
+
+The running hub serves `http://127.0.0.1:54843/instinct/mcp`.
+Use the Bearer in the mode-600 file printed as `token_file`. The command does not print the token.
+Add active peers only as needed in the [registration file](configuration.md#registration-format).
+Keep this terminal open while you use the hub. Press Ctrl+C to stop it.
+On later starts, use only the `run` command with the same home.
+
+### macOS: managed Cue or Instinct
+
+Use one managed home for all profiles in the same macOS login.
+This example uses Instinct. Use `cue` instead to serve `/cue/mcp`.
 
 ```sh
 export CLOUD_HOME="$HOME/.pigeonmq-cloud"
 "$PIGEONMQ_BIN" init --home "$CLOUD_HOME"
+"$PIGEONMQ_BIN" init instinct --home "$CLOUD_HOME"
+"$PIGEONMQ_BIN" init instinct --home "$CLOUD_HOME" --apply
 ```
 
-Use the same explicit `--home` in later commands. `init` creates the queue if it is missing and writes connector drafts.
-It scans the system and user Applications folders for supported bundles.
-A discovered bundle is a candidate. App connection and Bearer verification are separate steps.
-If the home contains a queue from an older release, see [Older queue databases](troubleshooting.md#older-queue-databases).
-
-For **Dot**, use [the private Secure MCP Tunnel procedure](configuration.md#dot-through-a-private-secure-mcp-tunnel).
-This procedure keeps local Bearer authentication and checks access from the intended Dot.
-
-For **Codex Cloud**, use [Codex Cloud operation](configuration.md#codex-cloud-operation).
-Mailbox setup prepares the profile. The official Secure MCP Tunnel connects to its route on the hub.
-The steps below stay on loopback unless you set a public origin.
-Prefer a reverse tunnel on your own domain. See [Use your own HTTPS origin](tunnels.md#use-your-own-https-origin).
-If you have no domain, you can opt in to tunnl.gg for testing.
-
-### Stage and apply Cue or Instinct on macOS
-
-Use the private `CLOUD_HOME` initialized above and the installed binary.
-Use one managed home for all profiles in the same macOS login.
-
-```sh
-"$PIGEONMQ_BIN" init cue --home "$CLOUD_HOME"
-"$PIGEONMQ_BIN" init cue --home "$CLOUD_HOME" --apply
-```
-
-The first command stages the profile and Bearer file. The output gives the file path and the intended route.
-The second command registers and starts the managed loopback hub in your macOS login session.
-Repeat with `instinct` to add a second mailbox. Repeating the same active setup reuses the original Bearer.
-
-A local MCP client can check `tools/list` on `http://127.0.0.1:54843/cue/mcp`.
-Use the Bearer from the protected file printed by `init`.
-A remote client needs an approved tunnel and must be configured with its own route and Bearer.
-The hub does not install a remote app or start a model.
-
-See [managed profiles](configuration.md#manage-built-in-profiles) for existing profiles, optional email, and removal.
-
-## 2. Optional local verification
-
-This sends one message, reads it over HTTP like an agent would, replies, and checks the reply survives a restart. It uses a throwaway folder and a fake token. You need Python 3 and curl.
-
-```sh
-bin="$PIGEONMQ_BIN"
-export PIGEON_HOME="$(mktemp -d)"
-export PIGEON_PORT=54900          # any free loopback port
-export TEST_TOKEN=local-test-only-not-a-credential
-umask 077
-"$bin" init --home "$PIGEON_HOME"
-
-python3 - <<'PY'
-import hashlib, json, os
-from pathlib import Path
-home = Path(os.environ["PIGEON_HOME"]).resolve()
-registry = home / "pigeonmq-cloud-registration.json"
-registry.write_text(json.dumps({p: {"mailbox": p, "revoked": False} for p in ("a", "muse")}))
-(home / "fixture-sender-policy.json").write_text(json.dumps({"principals": [{
-    "id": "a", "token_sha256": hashlib.sha256(os.environ["TEST_TOKEN"].encode()).hexdigest(),
-    "operations": ["send"], "send_to": ["muse"], "mailboxes": [], "revoked": False,
-}]}))
-(home / "pigeonmq-cloud-muse-policy.json").write_text(json.dumps({
-    "principal": "muse", "mailbox": "muse",
-    "token_sha256": hashlib.sha256(os.environ["TEST_TOKEN"].encode()).hexdigest(),
-    "operations": ["read", "reply"],
-    "enabled": True, "expires_at_ms": 9999999999999,
-    "registration": str(registry),
-}))
-PY
-
-db="$PIGEON_HOME/pigeonmq-cloud-queue.sqlite3"
-policy="$PIGEON_HOME/pigeonmq-cloud-muse-policy.json"
-"$bin" muse-prepare --queue "$db" --auth-policy "$policy"   # prints muse_storage_prepared
-```
-
-Start the hub and talk to it:
-
-```sh
-"$bin" run --home "$PIGEON_HOME" --local-only --port "$PIGEON_PORT" \
-  --auth-policy "$PIGEON_HOME/fixture-sender-policy.json" &
-hub_pid=$!
-```
-
-Wait for `local_ready` in the runner output. Then send a test message:
-
-```sh
-id="$(curl -fsS "http://127.0.0.1:$PIGEON_PORT/messages/send" \
-  -H "Authorization: Bearer $TEST_TOKEN" -H 'Content-Type: application/json' \
-  --data '{"sender":"a","recipient":"muse","body":"hello"}' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["message"]["id"])')"
-
-mcp() {
-  curl -fsS "http://127.0.0.1:$PIGEON_PORT/muse/mcp" \
-    -H "Authorization: Bearer $TEST_TOKEN" \
-    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-    -H 'MCP-Protocol-Version: 2025-03-26' --data "$1"
-}
-read_msg() { mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"pigeonmq_read\",\"arguments\":{\"message_id\":\"$id\"}}}"; }
-
-read_msg                                   # state: pending
-mcp "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"pigeonmq_reply\",\"arguments\":{\"message_id\":\"$id\",\"body\":\"hello back\"}}}"
-read_msg                                   # state: replied, with reply_id
-```
-
-Restart check: run `kill $hub_pid; wait $hub_pid`. Start the hub again with the same command. Run `read_msg`. It is still `replied` with the same `reply_id`. Stop the hub when done.
+The first named command stages the policy and Bearer file. Use the file path it prints.
+The second registers and starts the managed loopback hub. Repeating an active setup keeps its Bearer.
+See [managed profiles](configuration.md#manage-built-in-profiles) for other profiles, email, and removal.
+Use the macOS procedures for [Dot](configuration.md#dot-through-a-private-secure-mcp-tunnel) and [Codex Cloud](configuration.md#codex-cloud-operation).
+A detected app is not a connected app.
 
 ## 3. Open a tunnel
 
-Public HTTPS connectors need a public URL.
-`run` has no default tunnel mode.
-You must set a mode, or pass `--local-only` for loopback testing.
+Skip this section for a client on the hub machine.
+A remote HTTPS connector needs a reachable origin. Private Dot and Codex Cloud tunnels use separate procedures.
+`run` has no default tunnel mode. Pass `--local-only` only for loopback.
+If a managed hub already serves the route, connect the tunnel to that listener. Do not start a second runner.
 Prefer a reverse tunnel on your own domain.
 See [Use your own HTTPS origin](tunnels.md#use-your-own-https-origin).
 The service that handles public TLS can read the Bearer token and message bodies.
 
-### Prepare the runtime folder
+### Prepare Muse on macOS
 
-For **Muse**, one command does everything (queue, registration, policy, Keychain token):
+For **Muse**, prepare the queue, registration, policy, and Keychain token:
 
 ```sh
 "$PIGEONMQ_BIN" setup-muse --home "$CLOUD_HOME" --peer my-peer
 ```
 
-`--peer` is the mailbox allowed to message Muse. Running it again is safe. It keeps existing policies and tells you which tunnel files are missing.
+`--peer` is the mailbox allowed to message Muse. Repeat setup to check what is missing without replacing existing policies.
 
 For **Grok Bot**, see [Grok Bot policy setup](configuration.md#grok-bot-policy-by-hand).
 
@@ -204,10 +177,47 @@ Only one `run` can own a folder. Use `--port` to change the loopback port (defau
 
 ## 4. Connect an app
 
-To connect through tunnl.gg, copy a connector prompt after the runner reports `connected`. For your own HTTPS origin, [configure the connector manually](tunnels.md#use-your-own-https-origin).
+Use Streamable HTTP with the full URL of the running mailbox route.
+For a client on the hub machine, use the loopback URL. A remote client needs a trusted HTTPS origin or its supported private tunnel.
+Use that mailbox's real Bearer in the client's secure credential field. A URL alone cannot authenticate.
+
+For example, add this entry to [Claude Code's `.mcp.json`](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json):
+
+```json
+{
+  "mcpServers": {
+    "pigeonmq": {
+      "type": "http",
+      "url": "http://127.0.0.1:54843/instinct/mcp",
+      "headers": {
+        "Authorization": "Bearer ${PIGEONMQ_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+For a different profile or a remote client, replace the URL with the exact route.
+Supply `PIGEONMQ_TOKEN` from your credential store or the protected token file in that client's environment.
+For a local Claude Code session, with shell tracing off, you can start it as follows:
 
 ```sh
-"$PIGEONMQ_BIN" handoff --home "$CLOUD_HOME" --app muse        # or grok-bot, dot
+PIGEONMQ_TOKEN="$(cat /absolute/path/to/protected-token-file)" claude
+```
+
+Do not paste the token into chat, source, config, or a command line.
+If the client cannot accept a secure Bearer value, stop. An OAuth-only connection cannot use this Bearer flow.
+This example configures the client only. It does not enable a hub route, grant mailbox access, or set up Events.
+Make a permitted read-only call such as `pigeonmq_inbox` to confirm access.
+To verify delivery, read a known test message sent by an authorized peer.
+
+### Muse or Grok Bot handoff on macOS
+
+For tunnl.gg, copy a connector prompt after the runner reports `connected`.
+For your own HTTPS origin, [configure the connector manually](tunnels.md#use-your-own-https-origin).
+
+```sh
+"$PIGEONMQ_BIN" handoff --home "$CLOUD_HOME" --app muse        # or grok-bot
 ```
 
 Paste it into the app's chat if it accepts setup by prompt. Then copy the token **separately** and paste it only into the app's secure credential field:

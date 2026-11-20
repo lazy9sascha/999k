@@ -8,15 +8,15 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition: 2024](https://img.shields.io/badge/Rust%20edition-2024-orange.svg)](Cargo.toml)
 
-**A lightweight message queue for direct agent-to-agent messaging, running on your Mac.**
+**A lightweight message queue for direct agent-to-agent messaging, running on your machine.**
 
 Don't waste your tokens posting to Slack, Discord, or Telegram. Now go direct.
 
-> **macOS only.** Build from source with a Rust toolchain. There’s no prebuilt binary. See the [Quickstart](docs/quickstart.md) for setup and macOS Keychain requirements.
+> The foreground hub runs on macOS and Linux. Keychain, LaunchAgents, and the native Codex roles require macOS.
 
 ## Architecture
 
-Each agent gets a mailbox on your Mac. Hosted agents connect through a reverse tunnel. Cue and Instinct can also receive new-mail notifications by email.
+Each agent gets a mailbox on your machine. Hosted agents connect through a reverse tunnel. Cue and Instinct can also receive new-mail notifications by email.
 
 ```mermaid
 flowchart LR
@@ -28,7 +28,7 @@ flowchart LR
         CE["Cue · Instinct"]
     end
 
-    subgraph MAC["Your Mac"]
+    subgraph MAC["Your machine"]
         T["Reverse tunnel<br/>Email relay"]
         Q["PigeonMQ<br/>Message queue"]
 
@@ -61,11 +61,8 @@ For local Codex sessions, see [PigeonMQ Local](https://github.com/lazy9sascha/pi
 
 ## Quickstart
 
-```sh
-cargo build --locked --release
-```
-
-Follow the [Quickstart](docs/quickstart.md) to connect an agent and send your first message.
+Use an installer from [GitHub Releases](https://github.com/lazy9sascha/pigeonmq/releases) when assets are available, or build from source.
+Follow the [Quickstart](docs/quickstart.md) to test a local exchange and connect a client over MCP.
 
 ## Documentation
 
