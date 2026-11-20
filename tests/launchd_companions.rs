@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -211,6 +211,47 @@ printf '%s %s\n' "$1" "$2" >> "$0.out"
         cmd
     }
 
+    fn direct_command(&self, port: u16) -> Command {
+        let mut cmd = Command::new(BIN);
+        cmd.arg("serve-hub")
+            .arg("--queue")
+            .arg(
+                self.home
+                    .join("..")
+                    .join(self.home.file_name().unwrap())
+                    .join(self.queue.file_name().unwrap()),
+            )
+            .args([
+                "--bundled-profiles",
+                "--port",
+                &port.to_string(),
+                "--seconds",
+                "1",
+            ]);
+        cmd
+    }
+
+    fn managed_command(&self, port: u16) -> Command {
+        let registry_dir = self.home.join(".pigeonmq-lifecycle");
+        if !registry_dir.exists() {
+            fs::create_dir(&registry_dir).unwrap();
+            fs::set_permissions(&registry_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        write(
+            &registry_dir.join("profiles.json"),
+            json!({
+                "port":port,
+                "registration":self.home.join("pigeonmq-cloud-registration.json"),
+                "relay_command":null,"profiles":{}
+            })
+            .to_string(),
+            0o600,
+        );
+        let mut cmd = Command::new(BIN);
+        cmd.args(["serve-managed", "--home"]).arg(&self.home);
+        cmd
+    }
+
     fn runner(&self) -> Runner {
         Runner(
             self.command()
@@ -300,6 +341,92 @@ printf '%s %s\n' "$1" "$2" >> "$0.out"
 
 fn listener() -> TcpListener {
     TcpListener::bind("127.0.0.1:0").unwrap()
+}
+
+fn rejected_owner(command: &mut Command) {
+    let mut child = Runner(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let result = wait("competing hub refusal", || child.0.try_wait().unwrap());
+    assert!(!result.success());
+    let mut error = String::new();
+    child
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut error)
+        .unwrap();
+    assert_eq!(error.trim(), "hub_queue_already_owned");
+}
+
+#[test]
+fn hub_modes_exclude_the_same_queue_on_other_ports_and_allow_distinct_queues() {
+    let fixture = Fixture::new(listener().local_addr().unwrap().port());
+    let mut primary = fixture.runner();
+    fixture.ready(|_| true);
+    let other_port = listener().local_addr().unwrap().port();
+    assert_ne!(other_port, fixture.port);
+    rejected_owner(&mut fixture.direct_command(other_port));
+    rejected_owner(&mut fixture.managed_command(other_port));
+    let independent = Fixture::new(other_port);
+    let mut other = independent.runner();
+    independent.ready(|_| true);
+    fixture.assert_marker();
+    independent.assert_marker();
+    other.stop(false);
+    primary.stop(false);
+    let lock = fixture.home.join("pigeonmq-cloud-queue.sqlite3.hub.lock");
+    let metadata = fs::metadata(&lock).unwrap();
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+
+    let mut managed = Runner(
+        fixture
+            .managed_command(other_port)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait("managed hub owns queue", || {
+        TcpStream::connect(("127.0.0.1", other_port)).ok()
+    });
+    rejected_owner(&mut fixture.direct_command(fixture.port));
+    managed.stop(true);
+    let direct = fixture.direct_command(fixture.port).output().unwrap();
+    assert!(
+        direct.status.success(),
+        "direct hub did not take the released lock"
+    );
+    assert_eq!(fs::metadata(lock).unwrap().ino(), metadata.ino());
+}
+
+#[test]
+fn unsafe_hub_lock_is_not_followed_or_replaced() {
+    let fixture = Fixture::new(listener().local_addr().unwrap().port());
+    let lock = fixture.home.join("pigeonmq-cloud-queue.sqlite3.hub.lock");
+    let victim = fixture.home.join("unrelated-file");
+    write(&victim, "keep this file", 0o600);
+    std::os::unix::fs::symlink(&victim, &lock).unwrap();
+    let output = fixture.direct_command(fixture.port).output().unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "hub_queue_lock_unavailable"
+    );
+    assert!(
+        fs::symlink_metadata(&lock)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read_to_string(victim).unwrap(), "keep this file");
 }
 
 #[test]

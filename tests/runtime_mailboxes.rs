@@ -668,3 +668,31 @@ fn cli_remove_stages_a_fresh_bearer_and_apply_preserves_its_bytes() {
         .unwrap();
     assert_eq!(stored, (old.envelope.body, old_claim.receipt));
 }
+
+#[test]
+fn isolated_hub_restarts_with_the_persistent_queue_lock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("sandbox");
+    init(&home, "isolated-fixture");
+    for _ in 0..2 {
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let output = Command::new(BIN)
+            .args(["serve-hub", "--mailbox-home"])
+            .arg(&home)
+            .args(["--port", &port.to_string(), "--seconds", "1"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output.stderr);
+        let ready: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(ready["local_mailbox_enabled"], true);
+        let lock = home.join("local-mailboxes/mailboxes.sqlite3.hub.lock");
+        assert_eq!(
+            fs::metadata(lock).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}

@@ -18,8 +18,13 @@ use pigeonmq::{
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
+    fs::{File, OpenOptions},
     io::{self, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, OpenOptionsExt},
+    },
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -1947,6 +1952,49 @@ pub(crate) fn serve_dot_on(
     )
 }
 
+pub(crate) fn hub_queue_lock_path(db: &Path) -> PathBuf {
+    let mut lock = db.as_os_str().to_owned();
+    lock.push(".hub.lock");
+    PathBuf::from(lock)
+}
+
+// Keep the sibling file. Unlinking a live lock lets another hub lock a new file.
+fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
+    use pigeonmq::private_file::open_private_file;
+    let private_db = |path: &Path| {
+        open_private_file(path).map_err(|_| io::Error::other("private database required"))
+    };
+    let before = private_db(db)?.metadata()?;
+    let db = db.canonicalize()?;
+    let lock = hub_queue_lock_path(&db);
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&lock)
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(io::Error::other("hub_queue_lock_unavailable")),
+    }
+    let owner =
+        open_private_file(&lock).map_err(|_| io::Error::other("hub_queue_lock_unavailable"))?;
+    // SAFETY: The descriptor holds the exclusive lock until the last owner drops it.
+    if unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let error = io::Error::last_os_error();
+        return Err(if error.kind() == io::ErrorKind::WouldBlock {
+            io::Error::new(error.kind(), "hub_queue_already_owned")
+        } else {
+            io::Error::other("hub_queue_lock_unavailable")
+        });
+    }
+    let current = private_db(&db)?.metadata()?;
+    if (current.dev(), current.ino()) != (before.dev(), before.ino()) {
+        return Err(io::Error::other("queue_identity_changed"));
+    }
+    Ok((owner, db))
+}
+
 fn serve_hub_on(
     db: PathBuf,
     generic_policy: Option<PathBuf>,
@@ -1985,7 +2033,8 @@ fn serve_hub_on(
             "a profile manifest cannot mount the generic API",
         ));
     }
-    auth::require_private_file(&db).map_err(|_| io::Error::other("private database required"))?;
+    let (queue_owner, db) = lock_hub_queue(&db)?;
+    let queue_owner = Arc::new(queue_owner);
     let prepared = muse_mailbox::is_prepared(&db)
         .map_err(|_| io::Error::other("existing queue unavailable"))?;
     let deadline = seconds.map(|value| Instant::now() + Duration::from_secs(value));
@@ -2134,7 +2183,10 @@ fn serve_hub_on(
         let queue = db.clone();
         config
             .map(|config| {
+                let owner = queue_owner.clone();
                 pigeonmq::grok_wake::spawn(config, deadline, move |id| {
+                    // The wake thread can outlive the listener.
+                    let _keep_queue_owner = &owner;
                     generation.as_ref()?.check(&queue).ok()?;
                     let scope = grok_bot::observation_scope(&policy).ok()?;
                     let (sender, conversation_id) =
