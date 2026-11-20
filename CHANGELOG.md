@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.1.4
+
+- Publish the first PigeonMQ release on GitHub Releases.
+- This release changes the version and release notes only. It adds no runtime changes after 0.1.3.
+
 ## 0.1.3
 
 - Dot Events notify the existing subscription about ordinary messages and linked terminal replies.
