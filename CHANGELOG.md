@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.1.6 (candidate)
+
+- Build native archives with both release executables and their checksums.
+- Generate direct, npm, and Homebrew installer candidates from the same pinned archives.
+- Add a loopback smoke test and an install-to-MCP Quickstart.
+- Native Linux and Intel Mac checks remain pending. Installer assets and wrappers are not published.
+
 ## 0.1.5
 
 - Run an existing private hub, its secure tunnels, and its email relay under [one macOS LaunchAgent](docs/launchd.md).
