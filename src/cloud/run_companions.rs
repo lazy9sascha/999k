@@ -466,7 +466,8 @@ fn lease_open(lease: &mut impl Read) -> bool {
             error.kind(),
             io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
         ),
-        Ok(_) => false,
+        Ok(0) => false, // The parent closed the pipe.
+        Ok(_) => false, // The lease does not carry data.
     }
 }
 
