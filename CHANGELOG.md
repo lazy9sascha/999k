@@ -2,9 +2,11 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.5
 
 - Run an existing private hub, its secure tunnels, and its email relay under [one macOS LaunchAgent](docs/launchd.md).
+- Reject a second hub for the same SQLite queue, even on a different port.
+- Reject invalid static relay mailbox lists before startup.
 
 ## 0.1.4
 
