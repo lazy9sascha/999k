@@ -14,6 +14,7 @@ pub(crate) const TUNNEL_MODE_REQUIRED: &str = "tunnel_mode_required. Set PIGEONM
 pub(crate) enum Transport {
     Managed(Provider),
     LocalOnly,
+    PrivateCompanions,
     External(String),
 }
 
@@ -96,6 +97,7 @@ impl Transport {
         match self {
             Self::Managed(_) => "ssh",
             Self::LocalOnly => "local_only",
+            Self::PrivateCompanions => "private_companions",
             Self::External(_) => "external",
         }
     }

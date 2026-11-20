@@ -1,6 +1,6 @@
 # OpenAI Secure MCP Tunnel for Dot or Codex Cloud
 
-Connect one loopback mailbox to an authorized private OpenAI app. This example does not create a public URL, change DNS, or use Cloudflare or tunnl.gg. Use the [official tunnel-client release](https://github.com/openai/tunnel-client/releases/latest) and run it separately from the hub.
+Connect one loopback mailbox to an authorized private OpenAI app. This example does not create a public URL, change DNS, or use Cloudflare or tunnl.gg. Use the [official tunnel-client release](https://github.com/openai/tunnel-client/releases/latest) and run it separately from the hub. For an existing private hub, you can also [run the clients under one LaunchAgent](../../docs/launchd.md).
 
 ## 1. Reuse or create a tunnel
 

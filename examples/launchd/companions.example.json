@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "queue_identity": {"device": 1, "inode": 1},
+  "dot_tunnel": {
+    "executable": "/absolute/path/to/installed/tunnel-client",
+    "working_directory": "/absolute/path/to/private/dot-work",
+    "home": "/absolute/path/to/private/dot-home",
+    "path": ["/usr/bin", "/bin"],
+    "args": [
+      "run",
+      "--control-plane.tunnel-id", "<existing-dot-tunnel-id>",
+      "--control-plane.api-key", "file:/absolute/path/to/private/dot-runtime-key",
+      "--mcp.server-url", "http://127.0.0.1:54843/dot/mcp",
+      "--mcp.extra-headers", "Authorization: file:/absolute/path/to/private/dot-header",
+      "--mcp.discovery-extra-headers", "Authorization: file:/absolute/path/to/private/dot-header",
+      "--mcp.oauth-discovery", "disabled",
+      "--health.listen-addr", "127.0.0.1:0",
+      "--health.url-file", "/absolute/path/to/private/dot-health.url"
+    ]
+  },
+  "codex_tunnel": {
+    "executable": "/absolute/path/to/installed/tunnel-client",
+    "working_directory": "/absolute/path/to/private/codex-work",
+    "home": "/absolute/path/to/private/codex-home",
+    "path": ["/usr/bin", "/bin"],
+    "args": [
+      "run",
+      "--control-plane.tunnel-id", "<existing-codex-tunnel-id>",
+      "--control-plane.api-key", "file:/absolute/path/to/private/codex-runtime-key",
+      "--mcp.server-url", "http://127.0.0.1:54843/codex/mcp",
+      "--mcp.extra-headers", "Authorization: file:/absolute/path/to/private/codex-header",
+      "--mcp.discovery-extra-headers", "Authorization: file:/absolute/path/to/private/codex-header",
+      "--mcp.oauth-discovery", "disabled",
+      "--health.listen-addr", "127.0.0.1:0",
+      "--health.url-file", "/absolute/path/to/private/codex-health.url"
+    ]
+  },
+  "email_relay": {
+    "registration": "/absolute/path/to/private/hub-home/pigeonmq-cloud-registration.json",
+    "state": "/absolute/path/to/private/arrival-cursor.json",
+    "command": "/absolute/path/to/installed/private-email-command",
+    "mailboxes": ["cue", "instinct"],
+    "interval_secs": 5
+  }
+}

@@ -182,7 +182,7 @@ Synthetic tests establish local behavior only. They do not establish a live Clou
 | **Hub** (`serve-hub`) | Loopback HTTP server. One route per agent profile, each with its own policy. Rejects non-POST, chunked bodies, and oversized requests. Shares up to 8 connection workers across all routes. | `src/local_http.rs` |
 | **Queue** | SQLite. Stores messages, leases, replies, ACKs. Created explicitly by `init`/`setup-muse`, never by the listener. | `src/lib.rs` |
 | **Agent adapters** | Per-agent MCP, native receiver, and Events bindings over the same queue. | `src/adapters/{codex,muse,grok_bot,dot}` |
-| **Runner** (`run`) | Supervises `serve-hub` and writes local recovery state. A tunnel mode is required. Set `PIGEONMQ_TUNNEL=external` with a public URL, or `PIGEONMQ_TUNNEL=tunnl` for testing. `--local-only` is for loopback testing only. | `src/cloud/cloud_service.rs` |
+| **Runner** (`run`) | Supervises `serve-hub` and writes local recovery state. A tunnel mode is required. Set `PIGEONMQ_TUNNEL=external` with a public URL, or `PIGEONMQ_TUNNEL=tunnl` for testing. For an existing private hub, see [one LaunchAgent](launchd.md). `--local-only` is for loopback testing only. | `src/cloud/cloud_service.rs` |
 | **Grok wake notifier** | Runs inside the hub with an active Grok policy and a selected wake credential source. Read-only on the queue. | `src/adapters/grok_bot/grok_wake.rs` |
 | **Email relay** (`notify-arrivals`) | Optional service on the Mac. Reads eligible arrivals and calls the configured provider command with a destination and message ID. | `src/arrival_notify.rs` |
 | **Common receiver API** | Authenticated claims, leases, admission, and atomic completion. | `src/receiver/receiver_api.rs`, `src/receiver/receiver_client.rs` |

@@ -70,6 +70,7 @@ Follow the [Quickstart](docs/quickstart.md) to connect an agent and send your fi
 ## Documentation
 
 - [Architecture](docs/architecture.md): how messages move through the hub.
+- [One LaunchAgent](docs/launchd.md): run an existing private hub with its tunnels and email relay.
 - [Agents and capabilities](docs/agents.md): connection and setup options by agent.
 - [Research log](docs/research.md): what we tested and what’s still unverified.
 

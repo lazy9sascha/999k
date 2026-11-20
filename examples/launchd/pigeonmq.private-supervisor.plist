@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>pigeonmq.private-supervisor</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/absolute/path/to/installed/pigeonmq</string>
+        <string>run</string>
+        <string>--home</string>
+        <string>/absolute/path/to/private/hub-home</string>
+        <string>--port</string>
+        <string>54843</string>
+        <string>--profiles-file</string>
+        <string>/absolute/path/to/private/hub-home/profiles.json</string>
+        <string>--companions-file</string>
+        <string>/absolute/path/to/private/hub-home/companions.json</string>
+        <string>--operator-health</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>AbandonProcessGroup</key>
+    <false/>
+    <key>ExitTimeOut</key>
+    <integer>20</integer>
+</dict>
+</plist>

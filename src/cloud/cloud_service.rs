@@ -8,8 +8,11 @@ use crate::{
 mod diagnostics;
 #[path = "operator_health.rs"]
 mod operator_health;
+#[path = "run_companions.rs"]
+mod run_companions;
 pub(crate) use diagnostics::health;
 use pigeonmq::mailbox_catalog as catalog;
+pub(crate) use run_companions::{guard as companion_guard, keep_hub_lease};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -43,6 +46,9 @@ pub(crate) struct RunOptions {
     /// Mount only the existing adapters listed in a private JSON profile manifest.
     #[arg(long, value_name = "PATH", conflicts_with = "auth_policy")]
     profiles_file: Option<PathBuf>,
+    /// Supervise private companions from this owner-private JSON file. macOS only.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["local_only", "env_file"])]
+    companions_file: Option<PathBuf>,
     /// For loopback testing only. Ignore tunnel variables and any env file.
     #[arg(long)]
     local_only: bool,
@@ -60,6 +66,7 @@ struct Args {
     port: u16,
     transport: Transport,
     manifest: Option<Manifest>,
+    companions: Option<run_companions::Manifest>,
     delivery_enabled: Value,
     watchdog_interval: Duration,
     operator_health: bool,
@@ -537,7 +544,7 @@ async fn run_with(
     mut tunnel_command: impl FnMut(&Args, Provider) -> Command,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> i32 {
-    let _lock = match runner_lock(&a.home) {
+    let lock = match runner_lock(&a.home) {
         Ok(file) => file,
         Err(error) => {
             process_io_failure("runner_lock", &error);
@@ -552,6 +559,10 @@ async fn run_with(
         &a,
         json!({"state":"starting","local_hub":"stopped","tunnel":"stopped","public_origin":null}),
     );
+    let mut roles = match a.companions.as_ref().map(|m| m.roles(&a)).transpose() {
+        Ok(roles) => roles.unwrap_or_default(),
+        Err(reason) => return finish(&a, reason, None, false),
+    };
     // Keep the operator socket in the supervisor, separate from the tunneled child.
     let _operator_health = if a.operator_health {
         match operator_health::Server::start(&a.home).await {
@@ -572,7 +583,10 @@ async fn run_with(
         .expect("signal registration");
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .expect("signal registration");
-    let mut expected_queue = None;
+    let mut expected_queue = a
+        .companions
+        .as_ref()
+        .map(run_companions::Manifest::queue_identity);
     let mut backoff = Duration::from_millis(250);
     let mut managed = ManagedTunnel::new();
     let mut watchdog = diagnostics::Watchdog::default();
@@ -600,8 +614,21 @@ async fn run_with(
                 Err(reason) => return finish(&a, reason, None, false),
             };
         }
-        let mut host = match host_command(&a)
-            .stdin(Stdio::null())
+        if a.companions.is_some() && queue_identity(&a).ok() != expected_queue {
+            return finish(&a, "queue_identity_changed_restart_required", None, false);
+        }
+        let mut command = host_command(&a);
+        if a.companions.is_some() {
+            let fd = lock.as_raw_fd();
+            run_companions::inherit_lock(&mut command, fd);
+            command
+                .arg("--run-lease-lock")
+                .arg(fd.to_string())
+                .stdin(Stdio::piped());
+        } else {
+            command.stdin(Stdio::null());
+        }
+        let mut host = match command
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
@@ -647,6 +674,11 @@ async fn run_with(
             let readiness: Value =
                 serde_json::from_str(&line).map_err(|_| "unexpected_host_profile")?;
             profile(&readiness, &a)?;
+            if a.companions.is_some() {
+                diagnostics::probe_owned_loopback(a.port, host.id())
+                    .await
+                    .map_err(|_| "transient_host_start")?;
+            }
             Ok(json!({
                 "grok_wake": readiness["grok_wake_enabled"].as_bool(),
                 "dot_events": readiness["dot_events_enabled"].as_bool(),
@@ -674,7 +706,7 @@ async fn run_with(
                 let supervise_ready_host = async {
                     match a.transport.managed_provider() {
                         None => {
-                            let value = json!({"state":"local_ready","local_hub":"running","tunnel":"externally_managed",
+                            let value = json!({"state":"local_ready","local_hub":"running","tunnel":if a.companions.is_some() {"private_companions"} else {"externally_managed"},
                     "public_origin":null,"host_pid":host.id(),"tunnel_pid":null,"supervisor_pid":std::process::id(),
                     "local_origin":format!("http://127.0.0.1:{}",a.port),"runtime_verified":false});
                             // Keep externally configured addresses out of supervisor stdout and logs.
@@ -685,11 +717,49 @@ async fn run_with(
                                 private_state["remote_verified"] = json!(false);
                                 add_public_endpoints(&mut private_state, &a, origin);
                             }
-                            status(&a, private_state);
+                            let role_state = |roles: &[run_companions::Role]| {
+                                Value::Object(
+                                    roles
+                                        .iter()
+                                        .map(|role| {
+                                            let (name, state) = role.status();
+                                            (name.into(), state)
+                                        })
+                                        .collect(),
+                                )
+                            };
+                            if a.companions.is_some() {
+                                private_state["companions"] = role_state(&roles);
+                            }
+                            status(&a, private_state.clone());
                             println!("{value}");
                             loop {
                                 if host_exited(&mut host, "host_wait") {
                                     break Err(("transient_host_exit", true));
+                                }
+                                if a.companions.is_some() {
+                                    let stopped = tokio::select! {
+                                        biased;
+                                        _=term.recv()=>true, _=interrupt.recv()=>true, _=&mut shutdown=>true,
+                                        _=std::future::ready(())=>false
+                                    };
+                                    if stopped {
+                                        break Ok("stopped".into());
+                                    }
+                                    if queue_identity(&a).ok() != expected_queue {
+                                        break Err((
+                                            "queue_identity_changed_restart_required",
+                                            false,
+                                        ));
+                                    }
+                                    for role in &mut roles {
+                                        role.tick(&a.binary, &lock).await;
+                                    }
+                                    let next = role_state(&roles);
+                                    if next != private_state["companions"] {
+                                        private_state["companions"] = next;
+                                        status(&a, private_state.clone());
+                                    }
                                 }
                                 let stopped = tokio::select! {
                                     _=term.recv()=>true, _=interrupt.recv()=>true, _=&mut shutdown=>true,
@@ -794,6 +864,15 @@ async fn run_with(
         if let Some(c) = tunnel.as_mut() {
             terminate(c).await
         }
+        if !roles.is_empty() {
+            status(
+                &a,
+                json!({"state":"stopping","local_hub":"stopping","tunnel":"stopped","public_origin":null}),
+            );
+            for role in &mut roles {
+                role.stop().await;
+            }
+        }
         terminate(&mut host).await;
         if let Err((
             reason @ ("transient_host_start" | "transient_host_exit" | "transient_host_unhealthy"),
@@ -841,8 +920,22 @@ fn finish(a: &Args, reason: &str, public_origin: Option<String>, retryable: bool
     i32::from(reason != "stopped")
 }
 pub(crate) fn start(options: &RunOptions) -> std::io::Result<()> {
-    let transport = Transport::select(options.local_only, options.env_file.as_deref())
-        .map_err(std::io::Error::other)?;
+    let companions = options
+        .companions_file
+        .as_deref()
+        .map(run_companions::Manifest::load)
+        .transpose()?;
+    let transport = if companions.is_some() {
+        if !cfg!(target_os = "macos") || !options.home.is_absolute() {
+            return Err(io::Error::other(
+                "private_companions_require_macos_and_absolute_home",
+            ));
+        }
+        Transport::PrivateCompanions
+    } else {
+        Transport::select(options.local_only, options.env_file.as_deref())
+            .map_err(io::Error::other)?
+    };
     let args = Args {
         home: options.home.clone(),
         binary: std::env::current_exe()?,
@@ -852,6 +945,7 @@ pub(crate) fn start(options: &RunOptions) -> std::io::Result<()> {
         delivery_enabled: Value::Null,
         watchdog_interval: diagnostics::WATCH_INTERVAL,
         operator_health: options.operator_health,
+        companions,
         manifest: options
             .profiles_file
             .as_deref()
@@ -903,6 +997,7 @@ mod tests {
             port: 54843,
             transport: Transport::Managed(Provider::named("tunnl").unwrap()),
             manifest: None,
+            companions: None,
             delivery_enabled: Value::Null,
             watchdog_interval: diagnostics::WATCH_INTERVAL,
             operator_health: false,

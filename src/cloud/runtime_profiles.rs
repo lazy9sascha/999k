@@ -262,11 +262,16 @@ pub(crate) fn load(home: &Path) -> io::Result<Mailboxes> {
     let queue = root.join(QUEUE);
     private(&queue)?;
     let generation_lock = generation::lock_path(&queue);
+    let hub_lock = crate::local_http::hub_queue_lock_path(&queue);
     let mut profiles = Vec::new();
     for entry in fs::read_dir(&root)? {
         let entry = entry?;
         let name = entry.file_name();
-        if name == QUEUE || name == LOCK || entry.path() == generation_lock {
+        if name == QUEUE
+            || name == LOCK
+            || entry.path() == generation_lock
+            || entry.path() == hub_lock
+        {
             continue;
         }
         if name == RETIRED {

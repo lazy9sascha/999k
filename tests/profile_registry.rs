@@ -232,18 +232,31 @@ fn renamed_policy_and_route_preserve_each_real_adapters_authority_and_tools() {
         .write_all(&[b' '; 8192])
         .unwrap();
     fs::set_permissions(&fixture.manifest, fs::Permissions::from_mode(0o400)).unwrap();
-    let stock = fixture.start(false);
-    let remapped = fixture.start(true);
     let tools = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}});
     let receiver = json!({"recipient":"codex-local","session_id":"fixture","profile_id":"fixture",
         "action":{"operation":"authorize","message_id":null}});
-    for (role, route, token) in &*ROLES {
-        let body = if role.adapter == catalog::Adapter::Receiver {
+    let body_for = |role: &catalog::HttpProfile| {
+        if role.adapter == catalog::Adapter::Receiver {
             &receiver
         } else {
             &tools
-        };
-        let old = stock.request(role.route, token, body);
+        }
+    };
+    let stock = fixture.start(false);
+    let stock_replies = ROLES
+        .iter()
+        .map(|(role, _, token)| {
+            let body = body_for(role);
+            (
+                stock.request(role.route, token, body),
+                stock.request(role.route, "test-foreign", body),
+            )
+        })
+        .collect::<Vec<_>>();
+    drop(stock);
+    let remapped = fixture.start(true);
+    for ((role, route, token), (old, old_denial)) in ROLES.iter().zip(stock_replies) {
+        let body = body_for(role);
         let new = remapped.request(route, token, body);
         assert_eq!(old.0, 200, "{}: {:?}", role.id, old);
         assert_eq!(old, new, "{}", role.id);
@@ -251,7 +264,6 @@ fn renamed_policy_and_route_preserve_each_real_adapters_authority_and_tools() {
             assert!(!old.1["result"]["tools"].as_array().unwrap().is_empty());
             assert_eq!(remapped.request(role.route, token, body).0, 404);
         }
-        let old_denial = stock.request(role.route, "test-foreign", body);
         let new_denial = remapped.request(route, "test-foreign", body);
         assert!(old_denial.0 >= 400 || old_denial.1.get("error").is_some());
         assert_eq!(old_denial, new_denial, "{}", role.id);
@@ -264,6 +276,8 @@ fn renamed_policy_and_route_preserve_each_real_adapters_authority_and_tools() {
         blocked,
         (503, json!({"error":{"code":"policy_unavailable"}}))
     );
+    drop(remapped);
+    let stock = fixture.start(false);
     assert_eq!(
         stock
             .request(
