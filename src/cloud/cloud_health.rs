@@ -105,6 +105,32 @@ async fn probe_loopback(port: u16) -> Result<(), &'static str> {
     }
 }
 
+// The profile handshake comes from the spawned child. The same child must
+// own the listener on both sides of the protocol probe.
+pub(super) async fn probe_owned_loopback(port: u16, pid: Option<u32>) -> Result<(), &'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        let pid = pid.filter(|pid| *pid > 0).ok_or("hub_listener_unowned")?;
+        for probe in [true, false] {
+            if !crate::lifecycle_service::owns_loopback(port, pid, LOCAL_BUDGET)
+                .await
+                .unwrap_or(false)
+            {
+                return Err("hub_listener_unowned");
+            }
+            if probe {
+                probe_loopback(port).await?;
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (port, pid);
+        Err("hub_listener_unowned")
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Watchdog {
     misses: u8,
@@ -264,6 +290,9 @@ async fn tunnel_health(
 ) -> Value {
     let mode = match state["tunnel_mode"].as_str() {
         Some("local_only") => return json!({"state":"skipped","public_reachability":"skipped"}),
+        Some("private_companions") => {
+            return json!({"state":"private_companions","public_reachability":"skipped"});
+        }
         Some(mode @ ("ssh" | "external")) => mode,
         _ => {
             return json!({"state":"unknown","public_reachability":"unknown","reason":"configuration_unavailable"});
@@ -318,7 +347,14 @@ pub(super) async fn report(home: &Path, probe_public: bool) -> (Value, bool) {
         .and_then(|port| u16::try_from(port).ok())
         .filter(|port| *port != 0)
     {
-        probe_loopback(port).await
+        if state["tunnel_mode"] == "private_companions" {
+            let pid = state["host_pid"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok());
+            probe_owned_loopback(port, pid).await
+        } else {
+            probe_loopback(port).await
+        }
     } else {
         Err("state_unavailable")
     };
@@ -340,7 +376,7 @@ pub(super) async fn report(home: &Path, probe_public: bool) -> (Value, bool) {
     } else {
         Value::Null
     };
-    let status = json!({
+    let mut status = json!({
         "local_ready":local_ready,
         "reason":reason,
         "remote_verified":false,
@@ -356,6 +392,13 @@ pub(super) async fn report(home: &Path, probe_public: bool) -> (Value, bool) {
             "codex_events":events_delivery(&state, "codex_events"),
         },
     });
+    if state["tunnel_mode"] == "private_companions" {
+        status["companions"] = if local_ready {
+            state["companions"].clone()
+        } else {
+            Value::Null
+        };
+    }
     (status, local_ready)
 }
 

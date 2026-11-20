@@ -379,7 +379,11 @@ async fn probe_mcp_route(port: u16, route: &str, timeout: std::time::Duration) -
 }
 
 #[cfg(target_os = "macos")]
-async fn owns_loopback(port: u16, pid: u32, timeout: std::time::Duration) -> io::Result<bool> {
+pub(crate) async fn owns_loopback(
+    port: u16,
+    pid: u32,
+    timeout: std::time::Duration,
+) -> io::Result<bool> {
     let selector = format!("-iTCP@127.0.0.1:{port}");
     let process = pid.to_string();
     let args = [

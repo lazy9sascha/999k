@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- Run an existing private hub, its secure tunnels, and its email relay under [one macOS LaunchAgent](docs/launchd.md).
+
 ## 0.1.4
 
 - Publish the first PigeonMQ release on GitHub Releases.

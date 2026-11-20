@@ -85,6 +85,8 @@ struct ServeHubOptions {
     seconds: Option<u64>,
     #[arg(long)]
     continuous: bool,
+    #[arg(long, hide = true, requires_all = ["continuous", "queue"])]
+    run_lease_lock: Option<std::os::fd::RawFd>,
 }
 
 #[derive(Subcommand)]
@@ -98,6 +100,12 @@ enum Command {
     /// Pass --env-file to read these settings from a private file instead.
     /// Use --local-only for loopback testing only. It ignores both sources.
     Run(cloud_service::RunOptions),
+    #[command(hide = true)]
+    CompanionGuard {
+        lock: std::os::fd::RawFd,
+        #[arg(last = true, required = true)]
+        argv: Vec<std::ffi::OsString>,
+    },
     /// Report supervised hub, queue, tunnel and delivery health.
     Health {
         #[arg(long, default_value = ".local")]
@@ -402,6 +410,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(Into::into),
         Command::Discover { home } => cloud_setup::setup(home, false),
         Command::Run(options) => cloud_service::start(options).map_err(Into::into),
+        Command::CompanionGuard { lock, argv } => {
+            cloud_service::companion_guard(*lock, argv).map_err(Into::into)
+        }
         Command::Health { home, probe_public } => {
             std::process::exit(cloud_service::health(home, *probe_public))
         }
@@ -522,7 +533,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 port,
                 seconds,
                 continuous,
+                run_lease_lock,
             } = options.as_ref();
+            if let Some(lock) = run_lease_lock {
+                cloud_service::keep_hub_lease(*lock)?;
+            }
             // Only the unattended hub command suppresses Keychain prompts.
             // Interactive setup/credentials commands run in separate processes.
             #[cfg(target_os = "macos")]
