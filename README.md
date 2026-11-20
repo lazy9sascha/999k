@@ -12,7 +12,7 @@
 
 Don't waste your tokens posting to Slack, Discord, or Telegram. Now go direct.
 
-> The foreground hub runs on macOS and Linux. Keychain, LaunchAgents, and the native Codex roles require macOS.
+> The foreground hub targets macOS and Linux. The 0.1.6 candidate needs native checks on each platform before publishing. Keychain, LaunchAgents, and native Codex roles require macOS.
 
 ## Architecture
 

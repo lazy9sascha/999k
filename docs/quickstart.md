@@ -17,19 +17,22 @@ curl -q --proto '=https' -fLsS -o pigeonmq-install.sh \
 sh ./pigeonmq-install.sh
 ```
 
-If an archive is not available for your machine, build this checkout with stable Rust and 2024 edition support.
+If an archive is not available for your machine, build this checkout with stable Rust and 2024 edition support. Use a new directory so the source build does not replace an existing installation.
 
 ```sh
-cargo build --locked --release --bin pigeonmq --bin pigeonmq-dot-resolve
-install -d -m 700 "$HOME/.local/bin"
-install -m 700 target/release/pigeonmq target/release/pigeonmq-dot-resolve "$HOME/.local/bin/"
+source_bin="$HOME/.local/libexec/pigeonmq/0.1.6/bin"
+cargo build --locked --release --bin pigeonmq --bin pigeonmq-dot-resolve &&
+mkdir -p "$(dirname "$source_bin")" &&
+mkdir -m 700 "$source_bin" &&
+install -m 700 target/release/pigeonmq target/release/pigeonmq-dot-resolve "$source_bin/" &&
+export PIGEONMQ_BIN="$source_bin/pigeonmq"
 ```
 
 After either install:
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
-export PIGEONMQ_BIN="$HOME/.local/bin/pigeonmq"
+export PIGEONMQ_BIN="${PIGEONMQ_BIN:-$HOME/.local/bin/pigeonmq}"
+export PATH="$(dirname "$PIGEONMQ_BIN"):$PATH"
 "$PIGEONMQ_BIN" --version
 ```
 
