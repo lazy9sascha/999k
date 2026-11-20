@@ -13,6 +13,9 @@ It generates three install paths for the same release:
 - `install.sh`: a release asset. It installs both binaries in `$HOME/.local/bin` by default.
   Use `--bin-dir /absolute/path` to choose another writable directory.
   It does not replace existing files that differ from the release binaries.
+  If another install holds the directory lock, try again after it stops.
+  After a forced stop, verify no installer is running before removing a stale
+  `.pigeonmq-install.lock` directory.
 - `npm/`: the unpublished npm package. It contains the exact generated script.
   The launcher verifies both files before each run. It keeps them in
   `$HOME/.local/share/pigeonmq/npm/<version>-<target>/bin`, not in the npm cache.

@@ -74,6 +74,9 @@ case $1 in
 esac
 printf '%s\\n' "${1##*/}" >> "$FIXTURE_DOWNLOADS"
 cp "$FIXTURE_RELEASE/${1##*/}" "$out"
+if [ -n "${FIXTURE_COMPETING_FILE:-}" ]; then
+    printf '%s\n' 'other release' > "$FIXTURE_COMPETING_FILE"
+fi
 """)
     downloads = root / "downloads"
     env = dict(os.environ, PATH=f"{scripts}:{os.environ['PATH']}", HOME=str(home), TMPDIR=str(temp),
@@ -111,6 +114,14 @@ cp "$FIXTURE_RELEASE/${1##*/}" "$out"
     failed = run("sh", installer, "--bin-dir", old, env=env, code=1)
     assert "Cannot replace non-regular file" in failed.stderr
     assert downloads.read_bytes() == fetched
+    raced = home / "competing install"
+    foreign = raced / "pigeonmq-dot-resolve"
+    failed = run("sh", installer, "--bin-dir", raced,
+                 env=dict(env, FIXTURE_COMPETING_FILE=str(foreign)), code=1)
+    assert "Existing file differs" in failed.stderr
+    assert foreign.read_bytes() == b"other release\n"
+    assert sorted(path.name for path in raced.iterdir()) == ["pigeonmq-dot-resolve"]
+
     fixture.write_bytes(good_archive + b"corrupt")
     bad = home / "bad download"
     failed = run("sh", installer, "--bin-dir", bad, env=env, code=1)

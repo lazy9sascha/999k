@@ -5,6 +5,7 @@ set -eu
 version='@VERSION@'
 release='https://github.com/lazy9sascha/pigeonmq/releases/download'
 tmp=
+lock=
 
 fail() {
     printf 'pigeonmq: %s\n' "$*" >&2
@@ -30,8 +31,7 @@ verified_pair() {
         matches "$1/pigeonmq-dot-resolve" "$resolver_sha"
 }
 
-install_pair() {
-    mkdir -p "$bin_dir"
+check_destinations() {
     for name in pigeonmq pigeonmq-dot-resolve; do
         path=$bin_dir/$name
         if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
@@ -43,9 +43,14 @@ install_pair() {
                 *) expected=$resolver_sha ;;
             esac
             matches "$path" "$expected" || fail "Existing file differs: $path. Choose a new --bin-dir."
+            [ -x "$path" ] || fail "Existing file is not executable: $path. Choose a new --bin-dir."
         fi
     done
+}
 
+install_pair() {
+    mkdir -p "$bin_dir"
+    check_destinations
     tmp=$(mktemp -d "$bin_dir/.pigeonmq.XXXXXXXX")
     archive=pigeonmq-$version-$target.tar.gz
     curl -q -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 \
@@ -56,10 +61,23 @@ install_pair() {
         fail "Could not extract $archive."
     verified_pair "$tmp" || fail "The release executables do not match their SHA-256 pins."
 
+    if [ -z "$run" ]; then
+        guard=$bin_dir/.pigeonmq-install.lock
+        mkdir "$guard" 2>/dev/null ||
+            fail "Cannot lock this --bin-dir. Try again after the other install stops, or choose a new directory."
+        lock=$guard
+        check_destinations
+    fi
     for name in pigeonmq pigeonmq-dot-resolve; do
         chmod 755 "$tmp/$name"
-        mv -f "$tmp/$name" "$bin_dir/$name"
+        if [ -n "$run" ]; then
+            mv -f "$tmp/$name" "$bin_dir/$name"
+        elif [ ! -f "$bin_dir/$name" ]; then
+            ln "$tmp/$name" "$bin_dir/" ||
+                fail "Cannot publish $name without replacing a file."
+        fi
     done
+    verified_pair "$bin_dir" || fail "The installed executables do not match their SHA-256 pins."
 }
 
 select_target() {
@@ -114,7 +132,8 @@ main() {
     esac
 
     umask 077
-    trap 'if [ -n "$tmp" ]; then rm -rf "$tmp"; fi' 0
+    trap 'if [ -n "$tmp" ]; then rm -rf "$tmp"; fi
+        if [ -n "$lock" ]; then rmdir "$lock"; fi' 0
     trap 'exit 1' HUP INT TERM
     if ! verified_pair "$bin_dir"; then
         install_pair
