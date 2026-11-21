@@ -79,6 +79,19 @@ pub fn load_connection(home: &Path) -> Result<Option<(String, String)>, String> 
     Ok(Some((origin, registration)))
 }
 
+/// Wire a ready registration into local config and launch the connector.
+pub fn finalize_hosted(
+    home: &Path,
+    public_url: &str,
+    installation_id: &str,
+    cloudflared: &Path,
+    token: &str,
+) -> Result<PathBuf, String> {
+    save_connection(home, public_url, installation_id)?;
+    let token_path = save_token(home, token)?;
+    let _child = launch(cloudflared, &token_path)?;
+    Ok(token_path)
+}
 pub fn launch(executable: &Path, token_file: &Path) -> Result<Child, String> {
     if !executable.is_absolute() {
         return Err("absolute cloudflared path required".into());
