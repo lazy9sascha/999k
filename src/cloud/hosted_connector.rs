@@ -124,16 +124,13 @@ fn probe_public(url: &str) -> bool {
 }
 /// Run the hosted registration flow using a mock/real operator base URL.
 pub fn hosted_flow(home: &Path, base_url: &str, cloudflared: &Path) -> Result<String, String> {
-    let exe = preflight(Some(cloudflared))?;
     let request_id = uuid::Uuid::new_v4().to_string();
-    // 32-byte proof from two UUIDs.
     let mut proof_bytes = [0u8; 32];
     let u1 = uuid::Uuid::new_v4();
     let u2 = uuid::Uuid::new_v4();
     proof_bytes[..16].copy_from_slice(u1.as_bytes());
     proof_bytes[16..].copy_from_slice(u2.as_bytes());
     let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(proof_bytes);
-    // 8-char uppercase code from UUID.
     let user_code = uuid::Uuid::new_v4()
         .simple()
         .to_string()
@@ -142,12 +139,28 @@ pub fn hosted_flow(home: &Path, base_url: &str, cloudflared: &Path) -> Result<St
         .take(8)
         .collect::<String>()
         .to_uppercase();
+    hosted_resume(home, base_url, cloudflared, &request_id, &user_code, &proof)
+}
 
-    let reg = crate::hosted_registration::begin(base_url, &request_id, &user_code, &proof)?;
-    // Poll status until ready/approved (mock returns ready immediately).
+/// Resume a hosted registration using an existing request ID and proof.
+pub fn hosted_resume(
+    home: &Path,
+    base_url: &str,
+    cloudflared: &Path,
+    _request_id: &str,
+    _user_code: &str,
+    proof: &str,
+) -> Result<String, String> {
+    let exe = preflight(Some(cloudflared))?;
+    // Re-begin (idempotent: same request_id returns existing reservation).
+    // For resume we still call begin; the operator returns the existing reservation.
+    // We don't have request_id/user_code stored, so begin is called by hosted_flow only.
+    // This function assumes the caller passes them; here we accept proof only for simplicity.
+    // In practice, hosted_flow generates them and calls this path.
+    let reg = crate::hosted_registration::begin(base_url, _request_id, _user_code, proof)?;
     let mut state = String::new();
     for _ in 0..10 {
-        state = crate::hosted_registration::status(base_url, &reg.installation_id, &proof)?;
+        state = crate::hosted_registration::status(base_url, &reg.installation_id, proof)?;
         if state == "ready" || state == "approved" {
             break;
         }
@@ -156,7 +169,7 @@ pub fn hosted_flow(home: &Path, base_url: &str, cloudflared: &Path) -> Result<St
     if state != "ready" && state != "approved" {
         return Err("registration_not_approved".to_string());
     }
-    let (public_url, token) = crate::hosted_registration::finish(base_url, &reg.installation_id, &proof)?;
+    let (public_url, token) = crate::hosted_registration::finish(base_url, &reg.installation_id, proof)?;
     finalize_hosted(home, &public_url, &reg.installation_id, &exe, &token)?;
     Ok(public_url)
 }
