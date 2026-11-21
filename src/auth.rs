@@ -116,7 +116,7 @@ impl Principal {
         }
     }
 }
-fn digest(text: &str) -> Option<[u8; 32]> {
+pub(crate) fn digest(text: &str) -> Option<[u8; 32]> {
     if text.len() != 64 || !text.is_ascii() {
         return None;
     }
@@ -125,6 +125,19 @@ fn digest(text: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
     }
     Some(out)
+}
+
+pub(crate) fn read_private_policy(path: &Path) -> Result<Vec<u8>, Fault> {
+    let fail = (503, "auth_unavailable");
+    let mut bytes = Vec::new();
+    open_private_file(path)?
+        .take(MAX_POLICY + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| fail)?;
+    if bytes.len() as u64 > MAX_POLICY {
+        return Err(fail);
+    }
+    Ok(bytes)
 }
 fn label(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 128
@@ -135,14 +148,7 @@ fn load_generic_policy(path: &Path) -> Result<Vec<(Entry, [u8; 32])>, Fault> {
 type LoadedPolicy = (Vec<(Entry, [u8; 32])>, Option<Events>);
 fn load_policy_file(path: &Path) -> Result<LoadedPolicy, Fault> {
     let fail = (503, "auth_unavailable");
-    let mut bytes = Vec::new();
-    open_private_file(path)?
-        .take(MAX_POLICY + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| fail)?;
-    if bytes.len() as u64 > MAX_POLICY {
-        return Err(fail);
-    }
+    let bytes = read_private_policy(path)?;
     let policy: Policy = serde_json::from_slice(&bytes).map_err(|_| fail)?;
     if policy.principals.is_empty() {
         return Err(fail);
@@ -354,14 +360,7 @@ pub fn require_private_file(path: &Path) -> Result<(), Fault> {
 
 fn load_muse(path: &Path) -> Result<(MusePrincipal, [u8; 32]), Fault> {
     let fail = (503, "auth_unavailable");
-    let mut bytes = Vec::new();
-    open_private_file(path)?
-        .take(MAX_POLICY + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| fail)?;
-    if bytes.len() as u64 > MAX_POLICY {
-        return Err(fail);
-    }
+    let bytes = read_private_policy(path)?;
     let policy: MusePolicy = serde_json::from_slice(&bytes).map_err(|_| fail)?;
     if policy.retired_senders {
         return Err((503, RETIRED_SENDERS_CODE));
