@@ -4,6 +4,8 @@ mod auth;
 mod cloud_credentials;
 #[path = "cloud/cloud_service.rs"]
 mod cloud_service;
+#[path = "cloud/hosted_connector.rs"]
+mod hosted_connector;
 #[path = "cloud/cloud_setup.rs"]
 mod cloud_setup;
 #[path = "cloud/cloud_transport.rs"]
