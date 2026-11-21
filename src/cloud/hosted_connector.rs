@@ -1,5 +1,6 @@
 //! Launch one cloudflared connector with a private token file.
 #![allow(dead_code)]
+use base64::Engine;
 use std::path::Path;
 use std::env;
 use std::path::PathBuf;
@@ -120,6 +121,44 @@ fn probe_public(url: &str) -> bool {
         .and_then(|c| c.get(url).send().ok())
         .map(|r| r.status().as_u16() < 500)
         .unwrap_or(false)
+}
+/// Run the hosted registration flow using a mock/real operator base URL.
+pub fn hosted_flow(home: &Path, base_url: &str, cloudflared: &Path) -> Result<String, String> {
+    let exe = preflight(Some(cloudflared))?;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    // 32-byte proof from two UUIDs.
+    let mut proof_bytes = [0u8; 32];
+    let u1 = uuid::Uuid::new_v4();
+    let u2 = uuid::Uuid::new_v4();
+    proof_bytes[..16].copy_from_slice(u1.as_bytes());
+    proof_bytes[16..].copy_from_slice(u2.as_bytes());
+    let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(proof_bytes);
+    // 8-char uppercase code from UUID.
+    let user_code = uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect::<String>()
+        .to_uppercase();
+
+    let reg = crate::hosted_registration::begin(base_url, &request_id, &user_code, &proof)?;
+    // Poll status until ready/approved (mock returns ready immediately).
+    let mut state = String::new();
+    for _ in 0..10 {
+        state = crate::hosted_registration::status(base_url, &reg.installation_id, &proof)?;
+        if state == "ready" || state == "approved" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    if state != "ready" && state != "approved" {
+        return Err("registration_not_approved".to_string());
+    }
+    let (public_url, token) = crate::hosted_registration::finish(base_url, &reg.installation_id, &proof)?;
+    finalize_hosted(home, &public_url, &reg.installation_id, &exe, &token)?;
+    Ok(public_url)
 }
 pub fn launch(executable: &Path, token_file: &Path) -> Result<Child, String> {
     if !executable.is_absolute() {
@@ -252,6 +291,54 @@ mod tests {
         assert_eq!(h["hosted"], "configured");
         assert_eq!(h["public_reachable"], true);
         assert_eq!(h["public_verified"], false);
+    }
+
+    #[test]
+    fn hosted_flow_completes_with_mock_operator() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{}", addr);
+        thread::spawn(move || {
+            for _ in 0..3 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 4096];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let first = req.lines().next().unwrap_or("");
+                    let resp = if first.starts_with("POST /v1/enrollments ") {
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"installation_id\":\"inst-1\",\"public_url\":\"https://u.example.com\",\"login_url\":\"https://login.example.com\",\"expires_at\":\"2030-01-01T00:15:00Z\"}"
+                    } else if first.starts_with("GET /v1/enrollments/") {
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u.example.com\"}"
+                    } else if first.starts_with("POST /v1/enrollments/") && first.contains("/finish") {
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u.example.com\",\"connector_token\":\"tok-xyz\"}"
+                    } else {
+                        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{\"error\":\"registration_not_found\"}"
+                    };
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                }
+            }
+        });
+
+        // Fake cloudflared executable.
+        let dir = tempdir().unwrap();
+        let fake_cf = dir.path().join("cloudflared");
+        let script = "#!/bin/sh\n# token-file arg present; exit 0\nexit 0\n";
+        std::fs::write(&fake_cf, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_cf, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let url = hosted_flow(&home, &base, &fake_cf).unwrap();
+        assert_eq!(url, "https://u.example.com");
+        // Config saved.
+        let conn = load_connection(&home).unwrap().unwrap();
+        assert_eq!(conn.0, "https://u.example.com");
+        assert!(home.join("hosted-connector.token").exists());
     }
 
     #[test]

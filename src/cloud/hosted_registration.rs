@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 use serde::Deserialize;
 use serde_json::json;
-use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct Registration {
