@@ -182,6 +182,34 @@ pub fn registration_action(state: &str) -> &'static str {
         _ => "unknown",
     }
 }
+/// Generate a launchd plist for the hosted cloudflared connector.
+pub fn launchd_plist(cloudflared: &Path, token_file: &Path) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pigeonmq.hosted-connector</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>tunnel</string>
+        <string>run</string>
+        <string>--token-file</string>
+        <string>{}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+"#,
+        cloudflared.display(),
+        token_file.display()
+    )
+}
 pub fn launch(executable: &Path, token_file: &Path) -> Result<Child, String> {
     if !executable.is_absolute() {
         return Err("absolute cloudflared path required".into());
@@ -381,6 +409,22 @@ mod tests {
         assert_eq!(registration_action("garbage"), "unknown");
     }
 
+    #[test]
+    fn launchd_plist_passes_plutil() {
+        let plist = launchd_plist(Path::new("/opt/homebrew/bin/cloudflared"), Path::new("/tmp/token"));
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("hosted.plist");
+        std::fs::write(&path, &plist).unwrap();
+        // plutil may not be available in all environments; skip if missing.
+        let plutil = std::process::Command::new("plutil")
+            .arg("-lint")
+            .arg(&path)
+            .output();
+        match plutil {
+            Ok(out) => assert!(out.status.success(), "plutil failed: {}", String::from_utf8_lossy(&out.stderr)),
+            Err(_) => {} // skip
+        }
+    }
     #[test]
     fn preflight_rejects_non_absolute() {
         let result = preflight(Some(Path::new("cloudflared")));
