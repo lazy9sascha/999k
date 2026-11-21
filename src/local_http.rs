@@ -28,6 +28,8 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+mod access;
+mod cloudflare_access;
 mod transport;
 #[cfg(test)]
 use std::io::Read;
@@ -1605,6 +1607,7 @@ struct HubRoute {
     body_limit: usize,
     handler: RouteHandler,
     generation: Option<BoundGeneration>,
+    access: Option<access::MailboxAccess>,
 }
 
 #[derive(Default)]
@@ -1630,6 +1633,7 @@ impl HubRoutes {
             body_limit,
             handler,
             generation,
+            access: None,
         });
         Ok(())
     }
@@ -1779,6 +1783,17 @@ fn dispatch_hub_request(
         Ok(route) => route,
         Err(error) => return (Err(error), 200).into(),
     };
+    let projected;
+    let authorization = match &route.access {
+        Some(access) if !input.access_assertions.is_empty() => {
+            projected = match access.authorization(&input.access_assertions) {
+                Ok(header) => [header],
+                Err(fault) => return (Err(fault), 200).into(),
+            };
+            &projected[..]
+        }
+        _ => &input.authorization,
+    };
     let now = Instant::now();
     // Dot and Codex Events apply the request deadline inside their wire handlers.
     let handles_deadline = match &route.handler {
@@ -1834,7 +1849,7 @@ fn dispatch_hub_request(
             };
         }
         RouteHandler::Dot(host) => {
-            return match dispatch_dot(host, authority, input, body, &context) {
+            return match dispatch_dot(host, authority, input, authorization, body, &context) {
                 Ok(response) => transport::WireResponse::Sdk(response),
                 Err(error) => (Err(error), 200).into(),
             };
@@ -1843,7 +1858,7 @@ fn dispatch_hub_request(
             return match profile.dispatch_streamable_http(
                 (authority, &input.path),
                 &input.sdk_headers,
-                &input.authorization,
+                authorization,
                 body,
                 events.as_deref(),
                 (route.body_limit, &context),
@@ -1860,10 +1875,11 @@ fn dispatch_dot(
     host: &pigeonmq::dot_profile::DotHost,
     authority: &str,
     input: &Input,
+    authorization: &[Vec<u8>],
     body: &[u8],
     context: &pigeonmq::mcp_request::Context<'_>,
 ) -> Result<http::Response<Vec<u8>>, Fault> {
-    let bearer = match input.authorization.as_slice() {
+    let bearer = match authorization {
         [value] => std::str::from_utf8(value)
             .ok()
             .and_then(|v| v.strip_prefix("Bearer ")),
@@ -2166,6 +2182,9 @@ fn serve_hub_on(
             RouteHandler::Mailbox(profile, None),
         )?;
     }
+    if !local_mailbox_enabled && prebound.is_none() {
+        access::mount(&db, &mut routes)?;
+    }
     let listener = match prebound {
         Some(listener) => listener,
         None => TcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
@@ -2341,6 +2360,69 @@ mod dot_wire {
         } else {
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
         }
+    }
+
+    #[test]
+    fn cloudflare_access_projects_only_the_configured_dot_mailbox() {
+        use super::cloudflare_access::tests::{signed, verifier_with_claims};
+        let (temp, _, mut state) = fixture();
+        let bearer_file = temp.path().join("dot-mailbox.key");
+        pigeonmq::private_file::replace_private(&bearer_file, TOKEN.as_bytes()).unwrap();
+        let (verifier, mut claims) = verifier_with_claims();
+        Arc::get_mut(&mut state)
+            .unwrap()
+            .routes
+            .0
+            .get_mut("/dot/mcp")
+            .unwrap()
+            .access = Some(access::MailboxAccess {
+            verifier,
+            bearer_file,
+        });
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pigeonmq_recipients","arguments":{}}}"#;
+        let authority = "127.0.0.1:1234";
+        let call = |token: &str, assertions: &[Vec<u8>]| {
+            let mut head = format!(
+                "POST /dot/mcp HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n",
+                body.len()
+            );
+            for assertion in assertions {
+                head.push_str(&format!(
+                    "Cf-Access-Jwt-Assertion: {}\r\n",
+                    std::str::from_utf8(assertion).unwrap()
+                ));
+            }
+            head.push_str("\r\n");
+            let input = transport::parse_head(head.as_bytes(), authority, |path| {
+                state.routes.get(path).map(|route| route.body_limit)
+            })
+            .unwrap();
+            dispatch_hub_request(&state, authority, &input, body, &|| false)
+        };
+        let valid = signed(&claims);
+        let WireResponse::Sdk(response) = call("opaque-fixture", std::slice::from_ref(&valid))
+        else {
+            panic!("expected authorized MCP response");
+        };
+        assert_eq!(
+            success((
+                response.status().as_u16(),
+                serde_json::from_slice(response.body()).unwrap()
+            ))["recipients"],
+            json!(["test-peer"])
+        );
+        assert!(matches!(
+            call(TOKEN, &[valid.clone(), valid]),
+            WireResponse::Json((Err((403, _)), _))
+        ));
+        claims["aud"] = json!(["unrelated-mailbox-fixture"]);
+        assert!(matches!(
+            call(TOKEN, &[signed(&claims)]),
+            WireResponse::Json((Err((403, _)), _))
+        ));
+        assert!(
+            matches!(call(TOKEN, &[]), WireResponse::Sdk(response) if response.status() == 200)
+        );
     }
 
     #[test]

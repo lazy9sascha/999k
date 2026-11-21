@@ -8,6 +8,7 @@ description = "A self-hosted MCP hub for agent-to-agent messaging. The queue run
 license = "MIT"
 
 [dependencies]
+jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
 bytes = "1"
 http = "1"
 http-body-util = "0.1"

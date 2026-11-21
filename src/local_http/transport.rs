@@ -25,6 +25,7 @@ pub(super) struct Input {
     pub(super) path: String,
     length: usize,
     pub(super) authorization: Vec<Vec<u8>>,
+    pub(super) access_assertions: Vec<Vec<u8>>,
     pub(super) sdk_headers: Vec<(String, Vec<u8>)>,
 }
 // FIXME(lib: hyper): hand-rolled HTTP/1.1 server on httparse+TcpStream; hyper is already in the lockfile via reqwest.
@@ -117,6 +118,10 @@ pub(super) fn parse_head(
         path: path.to_owned(),
         length,
         authorization: values("authorization")
+            .into_iter()
+            .map(|v| v.to_vec())
+            .collect(),
+        access_assertions: values("cf-access-jwt-assertion")
             .into_iter()
             .map(|v| v.to_vec())
             .collect(),

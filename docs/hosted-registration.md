@@ -40,6 +40,31 @@ The service creates `enrollments.sqlite3` in the private directory. It reserves 
 installation's connector token. A successful finish on an existing installation
 also reconciles its ingress with the current settings.
 
+### Connect Dot and Codex Cloud through Cloudflare
+
+Protect each MCP path with its own Cloudflare Access application. Enable Managed
+OAuth and allow only the intended account and the exact OpenAI redirect URI for
+that connection. Cloudflare handles the sign-in and sends a signed assertion to
+the hub. Use separate Access application audience tags for Dot and Codex Cloud.
+
+Add `cloudflare-access.json` to the private PigeonMQ hub home. Set the file mode
+to `0600`. Set only the bindings that you use.
+
+```json
+{
+  "issuer": "https://example-team.cloudflareaccess.com",
+  "email": "owner@example.com",
+  "dot": {"audience": "<dot-app-audience>", "bearer_file": "dot-mailbox.key"},
+  "codex": {"audience": "<codex-app-audience>", "bearer_file": "codex-mailbox.key"}
+}
+```
+
+Use the Access team issuer shown in the Cloudflare settings. Each bearer file is
+private and contains the existing bearer for that mailbox. The hub checks the
+signed assertion before applying the existing mailbox policy. Test each direct
+connection and its Events subscription on the target OpenAI surface before
+switching users. Cloudflare Access serves the discovery URLs from its challenge.
+
 ## Manage a registration
 
 Run these commands on the operator Mac with the same private home:
