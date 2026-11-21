@@ -4,6 +4,8 @@ mod enrollment_store;
 mod hosted_cloudflare;
 #[path = "../cloud/hosted_registration_http.rs"]
 mod hosted_registration_http;
+#[path = "../cloud/hosted_registration_lifecycle.rs"]
+mod hosted_registration_lifecycle;
 #[path = "../cloud/hosted_supabase.rs"]
 mod hosted_supabase;
 
@@ -39,8 +41,14 @@ use uuid::Uuid;
 struct Options {
     #[arg(long)]
     home: PathBuf,
-    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
-    port: u16,
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..), required_unless_present_any = ["revoke", "reissue"], conflicts_with_all = ["revoke", "reissue"])]
+    port: Option<u16>,
+    /// Revoke the public connection of one enrolled installation.
+    #[arg(long, conflicts_with = "reissue")]
+    revoke: Option<Uuid>,
+    /// Let a revoked installation resume with a new tunnel at its assigned URL.
+    #[arg(long)]
+    reissue: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -68,7 +76,9 @@ struct Operator {
     hub_port: u16,
     mcp_path: String,
     registry: Mutex<Registry>,
-    provisioning: tokio::sync::Mutex<()>,
+    home: PathBuf,
+    account_id: String,
+    zone_id: String,
 }
 
 fn unavailable() -> io::Error {
@@ -175,7 +185,9 @@ impl Operator {
             registry: Mutex::new(
                 Registry::open(&home.join("enrollments.sqlite3")).map_err(|_| unavailable())?,
             ),
-            provisioning: tokio::sync::Mutex::new(()),
+            home: home.to_path_buf(),
+            account_id: config.cloudflare_account_id,
+            zone_id: config.cloudflare_zone_id,
         })
     }
 
@@ -220,18 +232,18 @@ impl Operator {
         let now = epoch_seconds()?;
         let record = self.record(|reg| reg.get(id, &proof, now))?;
         require_approved(&record)?;
-        let _single_write = self.provisioning.lock().await;
+        let _single_write = self
+            .provider_guard()
+            .map_err(|_| HttpError::TemporarilyUnavailable)?;
         let now = epoch_seconds()?;
         let record = self.record(|reg| reg.get(id, &proof, now))?;
         require_approved(&record)?;
 
-        let mut resources = record
-            .resources
-            .as_deref()
-            .map(serde_json::from_slice::<CloudflareResources>)
-            .transpose()
-            .map_err(|_| HttpError::TemporarilyUnavailable)?
-            .unwrap_or_default();
+        self.check_finish_lifecycle(id)
+            .map_err(|_| HttpError::TemporarilyUnavailable)?;
+        let mut resources = self
+            .bound_resources(record.resources.as_deref())
+            .map_err(|_| HttpError::TemporarilyUnavailable)?;
         let provisioned = self
             .cloudflare
             .provision(
@@ -240,13 +252,7 @@ impl Operator {
                 self.hub_port,
                 &self.mcp_path,
                 &mut resources,
-                |resources| {
-                    let resources = serde_json::to_vec(resources).map_err(|_| unavailable())?;
-                    let now = epoch_seconds().map_err(|_| unavailable())?;
-                    self.record(|reg| reg.save_resources(id, &resources, now))
-                        .map(|_| ())
-                        .map_err(|_| unavailable())
-                },
+                |resources| self.persist_resources(id, resources),
             )
             .await
             .map_err(|_| HttpError::TemporarilyUnavailable)?;
@@ -369,10 +375,26 @@ fn require_approved(record: &Enrollment) -> Result<(), HttpError> {
 async fn main() -> io::Result<()> {
     let options = Options::parse();
     let home = options.home.canonicalize().map_err(|_| unavailable())?;
+    if let Some(id) = options.revoke.or(options.reissue) {
+        if !home.join("enrollments.sqlite3").is_file() {
+            return Err(unavailable());
+        }
+        let operator = Operator::from_home(&home)?;
+        if options.revoke.is_some() {
+            operator.revoke_installation(id).await?;
+            println!("revoked");
+        } else {
+            operator.reissue_installation(id)?;
+            println!("reissue_ready");
+        }
+        return Ok(());
+    }
     let _process_lock = arrival_notify::lock_state(&home.join("enrollments.sqlite3"))
         .map_err(|_| io::Error::other("registration home is in use or unavailable"))?;
     let operator = Arc::new(Operator::from_home(&home)?);
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, options.port)).await?;
+    let listener =
+        TcpListener::bind((Ipv4Addr::LOCALHOST, options.port.ok_or_else(unavailable)?)).await?;
+    tokio::spawn(Arc::clone(&operator).cleanup_loop());
     let connections = Arc::new(Semaphore::new(32));
     loop {
         let (stream, _) = listener.accept().await?;
@@ -466,6 +488,24 @@ mod tests {
         let (head, body) = response.into_parts();
         let body = body.collect().await.unwrap().to_bytes();
         (head.status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[test]
+    fn provider_writes_serialize_and_saved_resources_cannot_cross_zones() {
+        let (home, operator) = fixture();
+        let second = Operator::from_home(home.path()).unwrap();
+        let guard = operator.provider_guard().unwrap();
+        assert!(second.provider_guard().is_err());
+        drop(guard);
+        assert!(second.provider_guard().is_ok());
+
+        let wrong_zone = serde_json::to_vec(&json!({
+            "account_id": "a".repeat(32),
+            "zone_id": "c".repeat(32),
+            "resources": CloudflareResources::default(),
+        }))
+        .unwrap();
+        assert!(operator.bound_resources(Some(&wrong_zone)).is_err());
     }
 
     #[tokio::test]

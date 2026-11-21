@@ -34,4 +34,17 @@ cargo build --locked --bin pigeonmq-registration
 
 The service creates `enrollments.sqlite3` in the private directory. It reserves an address before sign-in. After browser approval, it publishes only the configured MCP path and returns the installation's connector token.
 
-This preview provides address reservation, browser approval, and tunnel provisioning. Check the Mac installer, tunnel lifecycle, and each real cloud client before starting a pilot.
+## Manage a registration
+
+Run these commands on the operator Mac with the same private home:
+
+```sh
+pigeonmq-registration --home /path/to/private-registration-home --revoke <installation-id>
+pigeonmq-registration --home /path/to/private-registration-home --reissue <installation-id>
+```
+
+Revoke removes the installation's Cloudflare route and tunnel. The command reports completion only after a Cloudflare read shows removal. If the operation stays pending, retry with the same installation ID. Reissue prepares the same address for a new tunnel. The original installer uses its existing installation proof to finish setup.
+
+The serving process checks for expired tunnels every 15 minutes. It starts removal at 12 hours after issue only if Cloudflare reports that the tunnel never connected. The service keeps installations with a recorded connection and skips unknown states. Cloudflare does not offer an atomic check for prior connection at deletion. The expiry path never forces a disconnect.
+
+Check the Mac installer, live provider behavior, and each real cloud client before starting hosted service.

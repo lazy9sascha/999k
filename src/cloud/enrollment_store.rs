@@ -14,9 +14,10 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 const APPLICATION_ID: i64 = 0x504D_5145; // PMQE
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const PENDING_SECONDS: i64 = 15 * 60;
 const BROWSER_SECONDS: i64 = 5 * 60;
+const UNOPENED_SECONDS: i64 = 12 * 60 * 60;
 const MAX_PENDING: i64 = 32;
 const MAX_GUESSES: i64 = 5;
 const MAX_RESOURCES: usize = 16 * 1024;
@@ -41,6 +42,16 @@ CREATE TABLE browser_attempts (
     verifier TEXT,
     expires_at INTEGER NOT NULL
 );
+";
+
+const ADD_LIFECYCLE: &str = "
+ALTER TABLE enrollments ADD COLUMN removal TEXT CHECK (
+    removal IS NULL OR (state = 'ready' AND removal = 'expiring')
+        OR (state = 'revoked' AND removal IN ('revoking', 'expired', 'revoked'))
+);
+ALTER TABLE enrollments ADD COLUMN ever_connected INTEGER NOT NULL DEFAULT 0
+    CHECK (ever_connected IN (0, 1));
+UPDATE enrollments SET removal = 'revoking' WHERE state = 'revoked';
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,12 +82,31 @@ pub(crate) enum EnrollmentState {
     Revoked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LifecyclePhase {
+    Pending,
+    Approved,
+    Ready,
+    Expiring,
+    Revoking,
+    Expired,
+    Revoked,
+}
+
+pub(crate) struct LifecycleRecord {
+    pub id: Uuid,
+    pub phase: LifecyclePhase,
+    pub resources: Option<Vec<u8>>,
+    pub ever_connected: bool,
+}
+
 pub(crate) struct Enrollment {
     pub id: Uuid,
     pub state: EnrollmentState,
     pub expires_at: i64,
     pub issued_at: Option<i64>,
     pub resources: Option<Vec<u8>>,
+    expiry_pending: bool,
 }
 
 pub(crate) struct LoginRecord {
@@ -137,7 +167,8 @@ impl Registry {
             file.read_exact(&mut header)
                 .map_err(|_| RegistryError::Unavailable)?;
             if &header[..16] != b"SQLite format 3\0"
-                || header[60..64] != (SCHEMA_VERSION as u32).to_be_bytes()
+                || (header[60..64] != 1_u32.to_be_bytes()
+                    && header[60..64] != (SCHEMA_VERSION as u32).to_be_bytes())
                 || header[68..72] != (APPLICATION_ID as u32).to_be_bytes()
             {
                 return Err(RegistryError::Unavailable);
@@ -150,23 +181,27 @@ impl Registry {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         connection.busy_timeout(Duration::from_secs(5))?;
-        if created {
-            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute_batch(SCHEMA)?;
-            tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            tx.commit()?;
-        } else {
-            let application: i64 =
-                connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
-            let version: i64 =
-                connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-            if application != APPLICATION_ID || version != SCHEMA_VERSION {
-                return Err(RegistryError::Unavailable);
-            }
-        }
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if created {
+            tx.execute_batch(SCHEMA)?;
+            tx.execute_batch(ADD_LIFECYCLE)?;
+            tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        } else {
+            let application: i64 =
+                tx.pragma_query_value(None, "application_id", |row| row.get(0))?;
+            let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if application != APPLICATION_ID || !matches!(version, 1 | SCHEMA_VERSION) {
+                return Err(RegistryError::Unavailable);
+            }
+            if version == 1 {
+                tx.execute_batch(ADD_LIFECYCLE)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+        }
+        tx.commit()?;
         Ok(Self { connection })
     }
 
@@ -228,6 +263,7 @@ impl Registry {
             expires_at,
             issued_at: None,
             resources: None,
+            expiry_pending: false,
         })
     }
 
@@ -446,6 +482,177 @@ impl Registry {
         tx.commit()?;
         Ok(enrollment)
     }
+
+    pub(crate) fn lifecycle(&self, id: Uuid) -> Result<LifecycleRecord> {
+        load_lifecycle(&self.connection, &id.to_string())
+    }
+
+    pub(crate) fn lifecycle_candidates(&self, now: i64) -> Result<Vec<LifecycleRecord>> {
+        let mut candidates = self.connection.prepare(
+            "SELECT id, state, removal, resources, ever_connected FROM enrollments
+             WHERE removal IN ('revoking', 'expiring')
+                OR (state = 'ready' AND ever_connected = 0 AND issued_at <= ?1)
+             ORDER BY issued_at, id",
+        )?;
+        let mut rows = candidates.query([now.checked_sub(UNOPENED_SECONDS)])?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next()? {
+            records.push(lifecycle_row(row)?);
+        }
+        Ok(records)
+    }
+
+    pub(crate) fn request_revoke(&mut self, id: Uuid) -> Result<LifecycleRecord> {
+        self.change_lifecycle(id, |tx, id, record| {
+            if !matches!(
+                record.phase,
+                LifecyclePhase::Revoking | LifecyclePhase::Expired | LifecyclePhase::Revoked
+            ) {
+                // Provisioning persists its first create attempt before changing the provider.
+                let removal = if matches!(
+                    record.phase,
+                    LifecyclePhase::Pending | LifecyclePhase::Approved
+                ) && record.resources.is_none()
+                {
+                    "revoked"
+                } else {
+                    "revoking"
+                };
+                tx.execute(
+                    "UPDATE enrollments SET state = 'revoked', removal = ?2 WHERE id = ?1",
+                    params![id, removal],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Call after a current provider check reports the tunnel has never connected.
+    pub(crate) fn request_expiry(&mut self, id: Uuid, now: i64) -> Result<LifecycleRecord> {
+        self.change_lifecycle(id, |tx, id, record| {
+            if record.phase == LifecyclePhase::Expiring {
+                return Ok(());
+            }
+            let changed = tx.execute(
+                "UPDATE enrollments SET removal = 'expiring'
+                 WHERE id = ?1 AND state = 'ready' AND resources IS NOT NULL
+                   AND ever_connected = 0 AND issued_at <= ?2",
+                params![id, now.checked_sub(UNOPENED_SECONDS)],
+            )?;
+            require_change(changed)
+        })
+    }
+
+    /// Call only when the provider confirms all resources for this installation are gone.
+    pub(crate) fn complete_removal(
+        &mut self,
+        id: Uuid,
+        expected: LifecyclePhase,
+    ) -> Result<LifecycleRecord> {
+        let removal = match expected {
+            LifecyclePhase::Expiring => "expired",
+            LifecyclePhase::Revoking => "revoked",
+            _ => return Err(RegistryError::InvalidRequest),
+        };
+        self.change_lifecycle(id, |tx, id, record| {
+            if record.phase != expected {
+                return Err(RegistryError::Unavailable);
+            }
+            tx.execute(
+                "UPDATE enrollments SET state = 'revoked', removal = ?2 WHERE id = ?1",
+                params![id, removal],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Also clears a pending expiry if the provider still reports a prior connection.
+    pub(crate) fn retain_connected(
+        &mut self,
+        id: Uuid,
+        expected: LifecyclePhase,
+    ) -> Result<LifecycleRecord> {
+        if !matches!(expected, LifecyclePhase::Ready | LifecyclePhase::Expiring) {
+            return Err(RegistryError::InvalidRequest);
+        }
+        self.change_lifecycle(id, |tx, id, record| {
+            if record.phase != expected {
+                return Err(RegistryError::Unavailable);
+            }
+            tx.execute(
+                "UPDATE enrollments SET state = 'ready', removal = NULL, ever_connected = 1
+                 WHERE id = ?1",
+                [id],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn request_reissue(&mut self, id: Uuid) -> Result<LifecycleRecord> {
+        self.change_lifecycle(id, |tx, id, _| {
+            let changed = tx.execute(
+                "UPDATE enrollments SET state = 'approved', removal = NULL,
+                     resources = NULL, issued_at = NULL
+                 WHERE id = ?1 AND account_id IS NOT NULL AND removal IN ('revoked', 'expired')",
+                [id],
+            )?;
+            require_change(changed)
+        })
+    }
+
+    fn change_lifecycle(
+        &mut self,
+        id: Uuid,
+        change: impl FnOnce(&Connection, &str, &LifecycleRecord) -> Result<()>,
+    ) -> Result<LifecycleRecord> {
+        let id = id.to_string();
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let old = load_lifecycle(&tx, &id)?;
+        change(&tx, &id, &old)?;
+        let new = load_lifecycle(&tx, &id)?;
+        tx.commit()?;
+        Ok(new)
+    }
+}
+
+fn require_change(changed: usize) -> Result<()> {
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(RegistryError::Unavailable)
+    }
+}
+
+fn load_lifecycle(connection: &Connection, id: &str) -> Result<LifecycleRecord> {
+    let mut statement = connection.prepare(
+        "SELECT id, state, removal, resources, ever_connected FROM enrollments WHERE id = ?1",
+    )?;
+    let mut rows = statement.query([id])?;
+    lifecycle_row(rows.next()?.ok_or(RegistryError::NotFound)?)
+}
+
+fn lifecycle_row(row: &rusqlite::Row<'_>) -> Result<LifecycleRecord> {
+    let id: String = row.get(0)?;
+    let state: String = row.get(1)?;
+    let removal: Option<String> = row.get(2)?;
+    let phase = match (state.as_str(), removal.as_deref()) {
+        ("pending", None) => LifecyclePhase::Pending,
+        ("approved", None) => LifecyclePhase::Approved,
+        ("ready", None) => LifecyclePhase::Ready,
+        ("ready", Some("expiring")) => LifecyclePhase::Expiring,
+        ("revoked", Some("revoking")) => LifecyclePhase::Revoking,
+        ("revoked", Some("expired")) => LifecyclePhase::Expired,
+        ("revoked", Some("revoked")) => LifecyclePhase::Revoked,
+        _ => return Err(RegistryError::Unavailable),
+    };
+    Ok(LifecycleRecord {
+        id: Uuid::parse_str(&id).map_err(|_| RegistryError::Unavailable)?,
+        phase,
+        resources: row.get(3)?,
+        ever_connected: row.get(4)?,
+    })
 }
 
 fn valid_code(code: &str) -> bool {
@@ -474,15 +681,29 @@ fn code_digest(id: Uuid, code: &str) -> [u8; 32] {
 }
 
 fn load(connection: &Connection, id: &str) -> Result<Enrollment> {
-    let (state, expires_at, issued_at, resources): (String, i64, Option<i64>, Option<Vec<u8>>) =
-        connection
-            .query_row(
-                "SELECT state, expires_at, issued_at, resources FROM enrollments WHERE id = ?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?
-            .ok_or(RegistryError::NotFound)?;
+    let (state, expires_at, issued_at, resources, expiry_pending): (
+        String,
+        i64,
+        Option<i64>,
+        Option<Vec<u8>>,
+        bool,
+    ) = connection
+        .query_row(
+            "SELECT state, expires_at, issued_at, resources, removal IS 'expiring'
+             FROM enrollments WHERE id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(RegistryError::NotFound)?;
     let state = match state.as_str() {
         "pending" => EnrollmentState::Pending,
         "approved" => EnrollmentState::Approved,
@@ -496,6 +717,7 @@ fn load(connection: &Connection, id: &str) -> Result<Enrollment> {
         expires_at,
         issued_at,
         resources,
+        expiry_pending,
     })
 }
 
@@ -516,6 +738,9 @@ fn pending(enrollment: Enrollment, now: i64) -> Result<Enrollment> {
 
 fn provisionable(enrollment: Enrollment, now: i64) -> Result<Enrollment> {
     let enrollment = unexpired(enrollment, now)?;
+    if enrollment.expiry_pending {
+        return Err(RegistryError::Unavailable);
+    }
     match enrollment.state {
         EnrollmentState::Pending => Err(RegistryError::Pending),
         EnrollmentState::Revoked => Err(RegistryError::Revoked),
@@ -538,6 +763,204 @@ mod tests {
 
     fn proof(byte: u8) -> String {
         URL_SAFE_NO_PAD.encode([byte; 32])
+    }
+
+    fn approved(registry: &mut Registry) -> Uuid {
+        let enrollment = registry.begin(Uuid::new_v4(), &proof(7), CODE, 0).unwrap();
+        let attempt = registry.start_browser(enrollment.id, CODE, 0).unwrap();
+        registry.take_browser(attempt.id, 1).unwrap();
+        let account = Uuid::new_v4();
+        registry
+            .approve(enrollment.id, account, &HashSet::from([account]), 1)
+            .unwrap();
+        enrollment.id
+    }
+
+    #[test]
+    fn expiry_uses_issue_cutoff_and_resumes_after_reopen() {
+        let home = private_home();
+        let path = home.path().join("enrollments.sqlite");
+        let mut registry = Registry::open(&path).unwrap();
+        let id = approved(&mut registry);
+        let retained = approved(&mut registry);
+        let unknown = approved(&mut registry);
+        let issued_at = 80;
+        for id in [id, retained, unknown] {
+            registry
+                .save_resources(id, b"synthetic", issued_at)
+                .unwrap();
+            registry.mark_ready(id, issued_at).unwrap();
+        }
+
+        let cutoff = issued_at + UNOPENED_SECONDS;
+        assert!(
+            registry
+                .lifecycle_candidates(cutoff - 1)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(registry.request_expiry(id, cutoff - 1).is_err());
+        assert_eq!(registry.lifecycle_candidates(cutoff).unwrap().len(), 3);
+        registry
+            .retain_connected(retained, LifecyclePhase::Ready)
+            .unwrap();
+        assert!(registry.request_expiry(retained, cutoff).is_err());
+        assert_eq!(
+            registry.request_expiry(id, cutoff).unwrap().phase,
+            LifecyclePhase::Expiring
+        );
+        assert_eq!(
+            registry.mark_ready(id, cutoff).err(),
+            Some(RegistryError::Unavailable)
+        );
+        assert_eq!(
+            registry.save_resources(id, b"changed", cutoff).err(),
+            Some(RegistryError::Unavailable)
+        );
+        assert_eq!(
+            registry.get(id, &proof(7), cutoff).unwrap().state,
+            EnrollmentState::Ready
+        );
+        drop(registry);
+
+        let mut registry = Registry::open(&path).unwrap();
+        let candidates = registry.lifecycle_candidates(cutoff).unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates
+                .iter()
+                .any(|r| r.id == id && r.phase == LifecyclePhase::Expiring)
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|r| r.id == unknown && r.phase == LifecyclePhase::Ready)
+        );
+        assert_eq!(
+            registry
+                .complete_removal(id, LifecyclePhase::Expiring)
+                .unwrap()
+                .phase,
+            LifecyclePhase::Expired
+        );
+        assert_eq!(
+            registry.lifecycle_candidates(cutoff).unwrap()[0].id,
+            unknown
+        );
+        assert!(registry.lifecycle(retained).unwrap().ever_connected);
+    }
+
+    #[test]
+    fn revoke_and_reissue_keep_identity_and_require_confirmed_removal() {
+        let home = private_home();
+        let path = home.path().join("enrollments.sqlite");
+        let mut registry = Registry::open(&path).unwrap();
+        let id = approved(&mut registry);
+        registry.save_resources(id, b"old resource", 80).unwrap();
+        registry.mark_ready(id, 80).unwrap();
+        registry
+            .retain_connected(id, LifecyclePhase::Ready)
+            .unwrap();
+        assert_eq!(
+            registry.request_revoke(id).unwrap().phase,
+            LifecyclePhase::Revoking
+        );
+        assert!(registry.request_reissue(id).is_err());
+        assert!(
+            registry
+                .complete_removal(id, LifecyclePhase::Expiring)
+                .is_err()
+        );
+        drop(registry);
+
+        let mut registry = Registry::open(&path).unwrap();
+        let revoking = registry.request_revoke(id).unwrap();
+        assert_eq!(revoking.phase, LifecyclePhase::Revoking);
+        assert_eq!(
+            revoking.resources.as_deref(),
+            Some(b"old resource".as_slice())
+        );
+        assert_eq!(
+            registry
+                .complete_removal(id, LifecyclePhase::Revoking)
+                .unwrap()
+                .phase,
+            LifecyclePhase::Revoked
+        );
+        let reissued = registry.request_reissue(id).unwrap();
+        assert_eq!(reissued.id, id);
+        assert_eq!(reissued.phase, LifecyclePhase::Approved);
+        assert!(reissued.resources.is_none());
+        assert!(reissued.ever_connected);
+        let enrollment = registry.get(id, &proof(7), 100).unwrap();
+        assert_eq!(enrollment.state, EnrollmentState::Approved);
+        assert_eq!(enrollment.issued_at, None);
+        registry.save_resources(id, b"new resource", 100).unwrap();
+        assert_eq!(registry.mark_ready(id, 100).unwrap().issued_at, Some(100));
+        assert!(
+            registry
+                .lifecycle_candidates(100 + UNOPENED_SECONDS)
+                .unwrap()
+                .is_empty()
+        );
+
+        let pending = registry
+            .begin(Uuid::new_v4(), &proof(7), CODE, 100)
+            .unwrap();
+        assert_eq!(
+            registry.request_revoke(pending.id).unwrap().phase,
+            LifecyclePhase::Revoked
+        );
+        assert!(registry.request_reissue(pending.id).is_err());
+        assert_eq!(
+            registry.login(pending.id, 100).err(),
+            Some(RegistryError::Revoked)
+        );
+    }
+
+    #[test]
+    fn migrates_version_one_enrollment_in_place() {
+        let home = private_home();
+        let path = home.path().join("enrollments.sqlite");
+        OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection
+            .pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        let id = Uuid::new_v4();
+        let digest = proof_digest(&proof(7)).unwrap();
+        connection.execute(
+            "INSERT INTO enrollments (id, request_id, proof_digest, state, expires_at, issued_at, resources)
+             VALUES (?1, ?2, ?3, 'ready', 60, 80, ?4)",
+            params![id.to_string(), Uuid::new_v4().to_string(), digest.as_slice(), b"synthetic"],
+        ).unwrap();
+        drop(connection);
+
+        let mut registry = Registry::open(&path).unwrap();
+        let enrollment = registry.get(id, &proof(7), 100).unwrap();
+        assert_eq!(enrollment.state, EnrollmentState::Ready);
+        assert_eq!(enrollment.issued_at, Some(80));
+        assert_eq!(
+            enrollment.resources.as_deref(),
+            Some(b"synthetic".as_slice())
+        );
+        assert_eq!(registry.lifecycle(id).unwrap().phase, LifecyclePhase::Ready);
+        assert_eq!(
+            registry
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        drop(registry);
+        assert_eq!(Registry::open(&path).unwrap().lifecycle(id).unwrap().id, id);
     }
 
     #[test]

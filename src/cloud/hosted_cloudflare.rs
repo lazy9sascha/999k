@@ -442,3 +442,6 @@ impl CloudflareProvisioner {
 #[cfg(test)]
 #[path = "hosted_cloudflare_tests.rs"]
 mod tests;
+
+#[path = "hosted_cloudflare_lifecycle.rs"]
+pub(crate) mod lifecycle;

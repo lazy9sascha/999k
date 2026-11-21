@@ -413,3 +413,6 @@ async fn completes_fresh_provisioning_and_persists_resource_ids_before_token_fet
     assert_eq!(result.into_connector_token(), CONNECTOR);
     server.await.unwrap();
 }
+
+#[path = "hosted_cloudflare_lifecycle_tests.rs"]
+mod lifecycle_tests;
