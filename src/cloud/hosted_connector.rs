@@ -1,8 +1,47 @@
 //! Launch one cloudflared connector with a private token file.
+#![allow(dead_code)]
 use std::io::Write;
 use std::path::Path;
+use std::env;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+
+/// Resolve and validate a compatible cloudflared executable.
+pub fn preflight(executable: Option<&Path>) -> Result<PathBuf, String> {
+    let path = match executable {
+        Some(p) => {
+            if !p.is_absolute() {
+                return Err("absolute cloudflared path required".into());
+            }
+            p.to_path_buf()
+        }
+        None => {
+            // Search PATH.
+            let path_var = env::var("PATH").map_err(|_| "cloudflared_unavailable".to_string())?;
+            let mut found = None;
+            for dir in path_var.split(':') {
+                let candidate = Path::new(dir).join("cloudflared");
+                if candidate.is_file() {
+                    found = Some(candidate);
+                    break;
+                }
+            }
+            found.ok_or_else(|| "cloudflared_unavailable".to_string())?
+        }
+    };
+    if !path.is_file() {
+        return Err("cloudflared_unavailable".to_string());
+    }
+    // Verify it runs.
+    let output = Command::new(&path)
+        .arg("--version")
+        .output()
+        .map_err(|_| "cloudflared_unavailable".to_string())?;
+    if !output.status.success() {
+        return Err("cloudflared_incompatible".to_string());
+    }
+    Ok(path)
+}
 
 /// Save the hosted connection metadata in an owner-private JSON file.
 pub fn save_connection(home: &Path, origin: &str, registration: &str) -> Result<(), String> {
@@ -142,11 +181,36 @@ mod tests {
     }
 
     #[test]
+    fn preflight_finds_fake_executable() {
+        let dir = tempdir().unwrap();
+        let fake = dir.path().join("cloudflared");
+        let script = "#!/bin/sh\necho 'cloudflared version 2026.10.7'\nexit 0\n";
+        std::fs::write(&fake, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let resolved = preflight(Some(&fake)).unwrap();
+        assert_eq!(resolved, fake);
+    }
+
+    #[test]
+    fn preflight_rejects_missing() {
+        let dir = tempdir().unwrap();
+        let result = preflight(Some(&dir.path().join("nope")));
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn missing_executable_errors() {
         let dir = tempdir().unwrap();
         let token = dir.path().join("token");
         std::fs::write(&token, "secret").unwrap();
         let result = launch(&dir.path().join("nope"), &token);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn preflight_rejects_non_absolute() {
+        let result = preflight(Some(Path::new("cloudflared")));
         assert!(result.is_err());
     }
 }
