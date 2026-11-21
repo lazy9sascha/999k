@@ -1,11 +1,10 @@
 //! Bearer and central registration checks for the isolated Cloud Grok Bot profile.
 use super::Fault;
-use crate::auth::{RETIRED_SENDERS_CODE, public_policy_fault, retired_senders_present};
+use crate::auth::{RETIRED_SENDERS_CODE, presented_token_digest, public_policy_fault, retired_senders_present};
 use pigeonmq::{
     grok_mailbox::GrokScope, private_file::open_private_file, registration::load_registrations,
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::{collections::HashSet, io::Read, path::Path};
 use subtle::ConstantTimeEq;
 
@@ -154,19 +153,9 @@ pub(super) fn authenticate_grok(
     authorization: &[Vec<u8>],
 ) -> Result<GrokPrincipal, Fault> {
     let (principal, hash) = load_grok(path).map_err(public_policy_fault)?;
-    let bad = (401, "unauthorized");
-    if authorization.len() != 1 {
-        return Err(bad);
-    }
-    let value = std::str::from_utf8(&authorization[0]).map_err(|_| bad)?;
-    let token = value.strip_prefix("Bearer ").ok_or(bad)?;
-    // FIXME(yagni): 256-byte/graphic bearer pre-check - the hash compare already rejects bad tokens
-    if token.is_empty() || token.len() > 256 || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(bad);
-    }
-    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    let presented = presented_token_digest(authorization)?;
     if hash.ct_eq(&presented).unwrap_u8() != 1 {
-        return Err(bad);
+        return Err((401, "unauthorized"));
     }
     Ok(principal)
 }

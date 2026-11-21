@@ -207,6 +207,20 @@ pub fn codex_events(
 pub fn validate_private(path: &Path) -> Result<(), Fault> {
     load_generic_policy(path).map(|_| ())
 }
+// AUTH-007: extract the presented bearer token digest.
+pub(crate) fn presented_token_digest(authorization: &[Vec<u8>]) -> Result<[u8; 32], Fault> {
+    let bad = (401, "unauthorized");
+    if authorization.len() != 1 {
+        return Err(bad);
+    }
+    let value = std::str::from_utf8(&authorization[0]).map_err(|_| bad)?;
+    let token = value.strip_prefix("Bearer ").ok_or(bad)?;
+    if token.is_empty() || token.len() > 256 || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(bad);
+    }
+    Ok(Sha256::digest(token.as_bytes()).into())
+}
+
 // AUTH-007: authenticate private callers.
 pub fn authenticate_private(path: &Path, authorization: &[Vec<u8>]) -> Result<Principal, Fault> {
     authenticate_generic(load_generic_policy(path)?, authorization)
@@ -216,16 +230,7 @@ fn authenticate_generic(
     authorization: &[Vec<u8>],
 ) -> Result<Principal, Fault> {
     let bad = (401, "unauthorized");
-    if authorization.len() != 1 {
-        return Err(bad);
-    }
-    let value = std::str::from_utf8(&authorization[0]).map_err(|_| bad)?;
-    let token = value.strip_prefix("Bearer ").ok_or(bad)?;
-    // FIXME(yagni): 256-byte/graphic bearer pre-check - the token is SHA-256 hashed and compared in constant time anyway
-    if token.is_empty() || token.len() > 256 || !token.bytes().all(|v| v.is_ascii_graphic()) {
-        return Err(bad);
-    }
-    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    let presented = presented_token_digest(authorization)?;
     // Compare every entry; never use normal string equality for bearer verification.
     let mut matched = None;
     for (index, (entry, hash)) in entries.iter().enumerate() {
@@ -390,19 +395,9 @@ pub fn validate_muse(path: &Path) -> Result<(), Fault> {
 
 pub fn authenticate_muse(path: &Path, authorization: &[Vec<u8>]) -> Result<MusePrincipal, Fault> {
     let (principal, hash) = load_muse(path).map_err(public_policy_fault)?;
-    let bad = (401, "unauthorized");
-    if authorization.len() != 1 {
-        return Err(bad);
-    }
-    let value = std::str::from_utf8(&authorization[0]).map_err(|_| bad)?;
-    let token = value.strip_prefix("Bearer ").ok_or(bad)?;
-    // FIXME(yagni): 256-byte/graphic bearer pre-check - the hash compare already rejects bad tokens
-    if token.is_empty() || token.len() > 256 || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(bad);
-    }
-    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    let presented = presented_token_digest(authorization)?;
     if hash.ct_eq(&presented).unwrap_u8() != 1 {
-        return Err(bad);
+        return Err((401, "unauthorized"));
     }
     Ok(principal)
 }
