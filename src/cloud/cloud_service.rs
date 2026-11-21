@@ -717,19 +717,8 @@ async fn run_with(
                                 private_state["remote_verified"] = json!(false);
                                 add_public_endpoints(&mut private_state, &a, origin);
                             }
-                            let role_state = |roles: &[run_companions::Role]| {
-                                Value::Object(
-                                    roles
-                                        .iter()
-                                        .map(|role| {
-                                            let (name, state) = role.status();
-                                            (name.into(), state)
-                                        })
-                                        .collect(),
-                                )
-                            };
                             if a.companions.is_some() {
-                                private_state["companions"] = role_state(&roles);
+                                private_state["companions"] = run_companions::status_snapshot(&roles);
                             }
                             status(&a, private_state.clone());
                             println!("{value}");
@@ -752,10 +741,7 @@ async fn run_with(
                                             false,
                                         ));
                                     }
-                                    for role in &mut roles {
-                                        role.tick(&a.binary, &lock).await;
-                                    }
-                                    let next = role_state(&roles);
+                                    let next = run_companions::tick_and_status(&mut roles, &a, &lock).await;
                                     if next != private_state["companions"] {
                                         private_state["companions"] = next;
                                         status(&a, private_state.clone());

@@ -488,3 +488,22 @@ fn leader_exited(pid: u32) -> bool {
     // SAFETY: waitid returns a SIGCHLD siginfo or leaves the zeroed pid.
     unsafe { info.si_pid() != 0 }
 }
+
+pub(super) fn status_snapshot(roles: &[Role]) -> Value {
+    Value::Object(
+        roles
+            .iter()
+            .map(|role| {
+                let (name, state) = role.status();
+                (name.into(), state)
+            })
+            .collect(),
+    )
+}
+
+pub(super) async fn tick_and_status(roles: &mut [Role], a: &Args, lock: &std::fs::File) -> Value {
+    for role in roles.iter_mut() {
+        role.tick(&a.binary, lock).await;
+    }
+    status_snapshot(roles)
+}
