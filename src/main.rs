@@ -166,7 +166,7 @@ enum Command {
         #[arg(long, requires = "email_recipient", conflicts_with = "operational")]
         relay_command: Option<PathBuf>,
         /// Reserve a hosted HTTPS address for this installation (experimental).
-        #[arg(long, hide = true)]
+        #[arg(long, hide = true, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
         reserve_address: bool,
         /// Set the managed hub's loopback port at first staging.
         #[arg(long, requires = "agent", conflicts_with = "operational", value_parser = clap::value_parser!(u16).range(1..))]
