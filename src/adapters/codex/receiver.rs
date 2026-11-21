@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::Read,
     os::unix::{
         fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
         io::AsRawFd,
@@ -118,25 +118,7 @@ fn write_pending(path: &Path, pending: &Pending) -> Result<()> {
     if bytes.len() > 1048576 {
         return Err("journal_too_large");
     }
-    let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|_| "journal_write_failed")?;
-    let result = (|| {
-        file.write_all(&bytes).map_err(|_| "journal_write_failed")?;
-        file.sync_all().map_err(|_| "journal_write_failed")?;
-        std::fs::rename(&tmp, path).map_err(|_| "journal_write_failed")?;
-        File::open(path.parent().ok_or("journal_write_failed")?)
-            .and_then(|d| d.sync_all())
-            .map_err(|_| "journal_write_failed")
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+    crate::private_file::replace_private(path, &bytes).map_err(|_| "journal_write_failed")
 }
 
 fn failure_body(reason: &str) -> String {
