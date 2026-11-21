@@ -92,6 +92,35 @@ pub fn finalize_hosted(
     let _child = launch(cloudflared, &token_path)?;
     Ok(token_path)
 }
+/// Report hosted connection health without claiming unverified public access.
+pub fn hosted_health(home: &Path) -> serde_json::Value {
+    let conn = match load_connection(home) {
+        Ok(Some(c)) => c,
+        _ => return serde_json::json!({ "hosted": "not_configured" }),
+    };
+    let token_path = home.join("hosted-connector.token");
+    let token_present = token_path.exists();
+    let public_reachable = probe_public(&conn.0);
+    serde_json::json!({
+        "hosted": "configured",
+        "public_url": conn.0,
+        "registration": conn.1,
+        "token_file": token_path,
+        "token_present": token_present,
+        "public_reachable": public_reachable,
+        "public_verified": false,
+    })
+}
+
+fn probe_public(url: &str) -> bool {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()
+        .and_then(|c| c.get(url).send().ok())
+        .map(|r| r.status().as_u16() < 500)
+        .unwrap_or(false)
+}
 pub fn launch(executable: &Path, token_file: &Path) -> Result<Child, String> {
     if !executable.is_absolute() {
         return Err("absolute cloudflared path required".into());
@@ -193,6 +222,36 @@ mod tests {
         let dir = tempdir().unwrap();
         let result = preflight(Some(&dir.path().join("nope")));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn hosted_health_reports_unconfigured() {
+        let dir = tempdir().unwrap();
+        let h = hosted_health(dir.path());
+        assert_eq!(h["hosted"], "not_configured");
+    }
+
+    #[test]
+    fn hosted_health_reports_configured_and_probe() {
+        // Start a mock HTTP server returning 200.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                let _ = s.flush();
+            }
+        });
+        let dir = tempdir().unwrap();
+        save_connection(dir.path(), &format!("http://{}", addr), "reg-1").unwrap();
+        save_token(dir.path(), "tok").unwrap();
+        let h = hosted_health(dir.path());
+        assert_eq!(h["hosted"], "configured");
+        assert_eq!(h["public_reachable"], true);
+        assert_eq!(h["public_verified"], false);
     }
 
     #[test]
