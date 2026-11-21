@@ -2367,7 +2367,11 @@ mod dot_wire {
         use super::cloudflare_access::tests::{signed, verifier_with_claims};
         let (temp, _, mut state) = fixture();
         let bearer_file = temp.path().join("dot-mailbox.key");
-        pigeonmq::private_file::replace_private(&bearer_file, TOKEN.as_bytes()).unwrap();
+        pigeonmq::private_file::replace_private(
+            &bearer_file,
+            format!("Bearer {TOKEN}\n").as_bytes(),
+        )
+        .unwrap();
         let (verifier, mut claims) = verifier_with_claims();
         Arc::get_mut(&mut state)
             .unwrap()

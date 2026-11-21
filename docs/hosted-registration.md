@@ -60,8 +60,8 @@ to `0600`. Set only the bindings that you use.
 ```
 
 Use the Access team issuer shown in the Cloudflare settings. Each bearer file is
-private and contains the existing bearer for that mailbox. The hub checks the
-signed assertion before applying the existing mailbox policy. Test each direct
+private and contains that mailbox token, with an optional `Bearer ` prefix. The
+hub checks the signed assertion before applying the existing mailbox policy. Test each direct
 connection and its Events subscription on the target OpenAI surface before
 switching users. Cloudflare Access serves the discovery URLs from its challenge.
 

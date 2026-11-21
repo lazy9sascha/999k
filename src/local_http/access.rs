@@ -78,8 +78,9 @@ impl MailboxAccess {
                 KEYS_UNAVAILABLE => (503, error),
                 _ => (403, error),
             })?;
-        let token = private_bytes(&self.bearer_file, 258)?;
+        let token = private_bytes(&self.bearer_file, 265)?;
         let token = token.trim_ascii_end();
+        let token = token.strip_prefix(b"Bearer ").unwrap_or(token);
         if token.is_empty()
             || token.len() > 256
             || token.iter().any(|byte| !byte.is_ascii_graphic())
