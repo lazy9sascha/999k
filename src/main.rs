@@ -163,6 +163,9 @@ enum Command {
         /// Select the owner-private executable that receives a destination and message ID.
         #[arg(long, requires = "email_recipient", conflicts_with = "operational")]
         relay_command: Option<PathBuf>,
+        /// Run the hosted registration flow (experimental).
+        #[arg(long, hide = true)]
+        hosted: bool,
         /// Set the managed hub's loopback port at first staging.
         #[arg(long, requires = "agent", conflicts_with = "operational", value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
@@ -346,8 +349,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             profiles_file,
             email_recipient,
             relay_command,
+            hosted,
             port,
         } => {
+            if *hosted {
+                return cloud_setup::hosted_init(home).map_err(Into::into);
+            }
             if *operational {
                 let mailbox = agent.as_deref().ok_or("mailbox name required")?;
                 lifecycle::check_manual_stage(home, mailbox)?;

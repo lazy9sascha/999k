@@ -1062,3 +1062,7 @@ mod tests {
         assert_eq!(fs::read(&registry).unwrap(), b"operator registry");
     }
 }
+
+pub(crate) fn hosted_init(_home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    Err("hosted registration is not implemented yet (0.2.0 scope)".into())
+}
