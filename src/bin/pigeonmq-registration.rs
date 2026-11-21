@@ -1,0 +1,544 @@
+#[path = "../cloud/enrollment_store.rs"]
+mod enrollment_store;
+#[path = "../cloud/hosted_cloudflare.rs"]
+mod hosted_cloudflare;
+#[path = "../cloud/hosted_registration_http.rs"]
+mod hosted_registration_http;
+#[path = "../cloud/hosted_supabase.rs"]
+mod hosted_supabase;
+
+use clap::Parser;
+use enrollment_store::{Enrollment, EnrollmentState, Registry, RegistryError};
+use hosted_cloudflare::{CloudflareProvisioner, CloudflareResources};
+use hosted_registration_http::{
+    RegistrationHttpError as HttpError, RegistrationResponse, RequestKind, approval_result,
+    auth_redirect, json_response, login_form, parse_request,
+};
+use hosted_supabase::SupabaseAuth;
+use http::{Method, Request, StatusCode, header};
+use hyper::{server::conn::http1, service::service_fn};
+use hyper_util::rt::{TokioIo, TokioTimer};
+use pigeonmq::{arrival_notify, mailbox_catalog, private_file};
+use reqwest::Url;
+use serde::Deserialize;
+use serde_json::json;
+use std::{
+    collections::HashSet,
+    convert::Infallible,
+    io::{self, Read},
+    net::Ipv4Addr,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use tokio::{net::TcpListener, sync::Semaphore};
+use uuid::Uuid;
+
+#[derive(Parser)]
+#[command(about = "Serve hosted PigeonMQ registration on loopback")]
+struct Options {
+    #[arg(long)]
+    home: PathBuf,
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    port: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    registration_origin: String,
+    supabase_url: String,
+    supabase_publishable_key: String,
+    login_provider: String,
+    invited_accounts: HashSet<String>,
+    cloudflare_account_id: String,
+    cloudflare_zone_id: String,
+    cloudflare_zone_name: String,
+    hub_port: u16,
+    mcp_path: String,
+}
+
+struct Operator {
+    origin: Url,
+    auth_origin: Url,
+    access: HashSet<Uuid>,
+    auth: SupabaseAuth,
+    cloudflare: CloudflareProvisioner,
+    zone: String,
+    hub_port: u16,
+    mcp_path: String,
+    registry: Mutex<Registry>,
+    provisioning: tokio::sync::Mutex<()>,
+}
+
+fn unavailable() -> io::Error {
+    io::Error::other("registration configuration or private state is unavailable")
+}
+
+fn read_private(path: &Path) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    private_file::open_private_file(path)
+        .map_err(|_| unavailable())?
+        .take(private_file::MAX_PRIVATE_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unavailable())?;
+    if bytes.len() as u64 > private_file::MAX_PRIVATE_CONFIG_BYTES {
+        return Err(unavailable());
+    }
+    Ok(bytes)
+}
+
+fn https_origin(value: &str) -> io::Result<Url> {
+    let url = Url::parse(value).map_err(|_| unavailable())?;
+    if url.scheme() != "https"
+        || url.domain().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(unavailable());
+    }
+    Ok(url)
+}
+
+fn epoch_seconds() -> Result<i64, HttpError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|time| i64::try_from(time.as_secs()).ok())
+        .ok_or(HttpError::TemporarilyUnavailable)
+}
+
+fn registry_error(error: RegistryError) -> HttpError {
+    match error {
+        RegistryError::InvalidRequest => HttpError::InvalidRequest,
+        RegistryError::NotFound | RegistryError::Forbidden => HttpError::RegistrationNotFound,
+        RegistryError::Expired => HttpError::RegistrationExpired,
+        RegistryError::Pending => HttpError::LoginPending,
+        RegistryError::Revoked => HttpError::RegistrationRevoked,
+        RegistryError::RateLimited => HttpError::RateLimited,
+        RegistryError::Unavailable => HttpError::TemporarilyUnavailable,
+    }
+}
+
+impl Operator {
+    fn from_home(home: &Path) -> io::Result<Self> {
+        let config: Config = serde_json::from_slice(&read_private(&home.join("settings.json"))?)
+            .map_err(|_| unavailable())?;
+        let origin = https_origin(&config.registration_origin)?;
+        let auth_origin = https_origin(&config.supabase_url)?;
+        let callback = origin.join("auth/callback").map_err(|_| unavailable())?;
+        let access = config
+            .invited_accounts
+            .iter()
+            .map(|value| {
+                Uuid::parse_str(value)
+                    .ok()
+                    .filter(|id| !id.is_nil())
+                    .ok_or_else(unavailable)
+            })
+            .collect::<io::Result<HashSet<_>>>()?;
+        if access.is_empty()
+            || config.hub_port == 0
+            || !mailbox_catalog::valid_mcp_route(&config.mcp_path)
+        {
+            return Err(unavailable());
+        }
+        let token = read_private(&home.join("cloudflare.key"))?;
+        let token = std::str::from_utf8(&token)
+            .map_err(|_| unavailable())?
+            .trim();
+        Ok(Self {
+            auth: SupabaseAuth::new(
+                auth_origin.as_str(),
+                &config.supabase_publishable_key,
+                &config.login_provider,
+                callback.as_str(),
+            )
+            .map_err(|_| unavailable())?,
+            cloudflare: CloudflareProvisioner::new(
+                &config.cloudflare_account_id,
+                &config.cloudflare_zone_id,
+                &config.cloudflare_zone_name,
+                token,
+            )
+            .map_err(|_| unavailable())?,
+            origin,
+            auth_origin,
+            access,
+            zone: config.cloudflare_zone_name,
+            hub_port: config.hub_port,
+            mcp_path: config.mcp_path,
+            registry: Mutex::new(
+                Registry::open(&home.join("enrollments.sqlite3")).map_err(|_| unavailable())?,
+            ),
+            provisioning: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    fn record<T>(
+        &self,
+        f: impl FnOnce(&mut Registry) -> Result<T, RegistryError>,
+    ) -> Result<T, HttpError> {
+        let mut store = self
+            .registry
+            .lock()
+            .map_err(|_| HttpError::TemporarilyUnavailable)?;
+        f(&mut store).map_err(registry_error)
+    }
+
+    fn hostname(&self, id: Uuid) -> String {
+        format!("u-{}.{}", id.simple(), self.zone)
+    }
+
+    fn public_url(&self, id: Uuid) -> String {
+        format!("https://{}", self.hostname(id))
+    }
+
+    fn trusted_request<B>(&self, request: &Request<B>) -> bool {
+        let host = request.headers().get_all(header::HOST);
+        let mut values = host.iter();
+        if values.next().and_then(|value| value.to_str().ok()) != self.origin.host_str()
+            || values.next().is_some()
+        {
+            return false;
+        }
+        if request.method() == Method::POST && request.uri().path().starts_with("/register/") {
+            let origin = request.headers().get_all(header::ORIGIN);
+            let mut values = origin.iter();
+            return values.next().and_then(|value| value.to_str().ok())
+                == Some(self.origin.as_str().trim_end_matches('/'))
+                && values.next().is_none();
+        }
+        true
+    }
+
+    async fn finish(&self, id: Uuid, proof: String) -> Result<RegistrationResponse, HttpError> {
+        let now = epoch_seconds()?;
+        let record = self.record(|reg| reg.get(id, &proof, now))?;
+        require_approved(&record)?;
+        let _single_write = self.provisioning.lock().await;
+        let now = epoch_seconds()?;
+        let record = self.record(|reg| reg.get(id, &proof, now))?;
+        require_approved(&record)?;
+
+        let mut resources = record
+            .resources
+            .as_deref()
+            .map(serde_json::from_slice::<CloudflareResources>)
+            .transpose()
+            .map_err(|_| HttpError::TemporarilyUnavailable)?
+            .unwrap_or_default();
+        let provisioned = self
+            .cloudflare
+            .provision(
+                id,
+                &self.hostname(id),
+                self.hub_port,
+                &self.mcp_path,
+                &mut resources,
+                |resources| {
+                    let resources = serde_json::to_vec(resources).map_err(|_| unavailable())?;
+                    let now = epoch_seconds().map_err(|_| unavailable())?;
+                    self.record(|reg| reg.save_resources(id, &resources, now))
+                        .map(|_| ())
+                        .map_err(|_| unavailable())
+                },
+            )
+            .await
+            .map_err(|_| HttpError::TemporarilyUnavailable)?;
+        let now = epoch_seconds()?;
+        self.record(|reg| reg.mark_ready(id, now))?;
+        let public_url = provisioned.origin.clone();
+        Ok(json_response(
+            StatusCode::OK,
+            json!({
+                "state": "ready", "public_url": public_url,
+                "connector_token": provisioned.into_connector_token()
+            }),
+        ))
+    }
+
+    async fn dispatch<B: hyper::body::Body<Data = bytes::Bytes>>(
+        &self,
+        req: Request<B>,
+    ) -> Result<RegistrationResponse, HttpError> {
+        if !self.trusted_request(&req) {
+            return Err(HttpError::RegistrationNotFound);
+        }
+        let request = parse_request(req).await?;
+        let now = epoch_seconds()?;
+        match request {
+            RequestKind::Begin {
+                request_id,
+                user_code,
+                proof,
+            } => {
+                let record = self.record(|reg| reg.begin(request_id, &proof, &user_code, now))?;
+                let login_url = self
+                    .origin
+                    .join(&format!("register/{}", record.id))
+                    .map_err(|_| HttpError::TemporarilyUnavailable)?;
+                let expires_at = chrono::DateTime::from_timestamp(record.expires_at, 0)
+                    .ok_or(HttpError::TemporarilyUnavailable)?
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({
+                        "installation_id": record.id.to_string(), "public_url": self.public_url(record.id),
+                        "login_url": login_url.as_str(), "expires_at": expires_at
+                    }),
+                ))
+            }
+            RequestKind::Status {
+                installation_id,
+                proof,
+            } => {
+                let record = self.record(|reg| reg.get(installation_id, &proof, now))?;
+                let state = match record.state {
+                    EnrollmentState::Pending => "pending",
+                    EnrollmentState::Approved => "approved",
+                    EnrollmentState::Ready => "ready",
+                    EnrollmentState::Revoked => "revoked",
+                };
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({
+                        "state": state, "public_url": self.public_url(record.id)
+                    }),
+                ))
+            }
+            RequestKind::Finish {
+                installation_id,
+                proof,
+            } => self.finish(installation_id, proof).await,
+            RequestKind::RegisterPage { installation_id } => {
+                let login = self.record(|reg| reg.login(installation_id, now))?;
+                if login.expires_at <= now {
+                    return Err(HttpError::RegistrationExpired);
+                }
+                login_form(login.id, &self.hostname(login.id))
+            }
+            RequestKind::RegisterSubmit {
+                installation_id,
+                user_code,
+            } => {
+                let attempt =
+                    self.record(|reg| reg.start_browser(installation_id, &user_code, now))?;
+                let redirect = self
+                    .auth
+                    .authorize_url(&attempt.verifier)
+                    .map_err(|_| HttpError::TemporarilyUnavailable)?;
+                auth_redirect(&redirect, &self.auth_origin, &attempt.id.to_string(), 300)
+            }
+            RequestKind::AuthCallback { code, attempt } => {
+                let attempt_id = Uuid::parse_str(&attempt)
+                    .ok()
+                    .filter(|id| id.to_string() == attempt)
+                    .ok_or(HttpError::RegistrationNotFound)?;
+                let attempt = self.record(|reg| reg.take_browser(attempt_id, now))?;
+                let account = self
+                    .auth
+                    .exchange_user(&code, &attempt.verifier)
+                    .await
+                    .map_err(|_| HttpError::RegistrationNotFound)?;
+                let now = epoch_seconds()?;
+                self.record(|reg| {
+                    reg.approve(attempt.installation_id, account, &self.access, now)
+                })?;
+                Ok(approval_result())
+            }
+        }
+    }
+}
+
+fn require_approved(record: &Enrollment) -> Result<(), HttpError> {
+    match record.state {
+        EnrollmentState::Approved => Ok(()),
+        EnrollmentState::Ready if record.issued_at.is_some() => Ok(()),
+        EnrollmentState::Ready => Err(HttpError::TemporarilyUnavailable),
+        EnrollmentState::Pending => Err(HttpError::LoginPending),
+        EnrollmentState::Revoked => Err(HttpError::RegistrationRevoked),
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> io::Result<()> {
+    let options = Options::parse();
+    let home = options.home.canonicalize().map_err(|_| unavailable())?;
+    let _process_lock = arrival_notify::lock_state(&home.join("enrollments.sqlite3"))
+        .map_err(|_| io::Error::other("registration home is in use or unavailable"))?;
+    let operator = Arc::new(Operator::from_home(&home)?);
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, options.port)).await?;
+    let connections = Arc::new(Semaphore::new(32));
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let Ok(permit) = connections.clone().try_acquire_owned() else {
+            continue;
+        };
+        let operator = operator.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let server = service_fn(move |request| {
+                let operator = operator.clone();
+                async move {
+                    let result = operator
+                        .dispatch(request)
+                        .await
+                        .unwrap_or_else(HttpError::response);
+                    Ok::<_, Infallible>(result)
+                }
+            });
+            let _ = http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(Duration::from_secs(5))
+                .keep_alive(false)
+                .serve_connection(TokioIo::new(stream), server)
+                .await;
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+    use serde_json::Value;
+
+    fn fixture() -> (tempfile::TempDir, Operator) {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(
+            home.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let settings = json!({
+            "registration_origin": "https://init.example.com",
+            "supabase_url": "https://identity.example.com",
+            "supabase_publishable_key": "sb_publishable_fixture",
+            "login_provider": "github",
+            "invited_accounts": ["11111111-1111-4111-8111-111111111111"],
+            "cloudflare_account_id": "a".repeat(32),
+            "cloudflare_zone_id": "b".repeat(32),
+            "cloudflare_zone_name": "example.com",
+            "hub_port": 54843,
+            "mcp_path": "/muse/mcp"
+        });
+        private_file::replace_private(
+            &home.path().join("settings.json"),
+            &serde_json::to_vec(&settings).unwrap(),
+        )
+        .unwrap();
+        private_file::replace_private(&home.path().join("cloudflare.key"), b"fixture").unwrap();
+        let operator = Operator::from_home(home.path()).unwrap();
+        (home, operator)
+    }
+
+    async fn call(
+        operator: &Operator,
+        method: Method,
+        path: &str,
+        proof: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, "init.example.com")
+            .header(header::AUTHORIZATION, format!("Bearer {proof}"));
+        let body = match body {
+            Some(body) => {
+                request = request.header(header::CONTENT_TYPE, "application/json");
+                body.to_string()
+            }
+            None => String::new(),
+        };
+        let response = operator
+            .dispatch(request.body(Full::new(Bytes::from(body))).unwrap())
+            .await
+            .unwrap_or_else(HttpError::response);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let (head, body) = response.into_parts();
+        let body = body.collect().await.unwrap().to_bytes();
+        (head.status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn installer_retry_keeps_its_address_and_cannot_finish_before_approval() {
+        let (_home, operator) = fixture();
+        let proof = URL_SAFE_NO_PAD.encode([1; 32]);
+        let other_proof = URL_SAFE_NO_PAD.encode([2; 32]);
+        let begin = json!({ "request_id": Uuid::new_v4().to_string(), "user_code": "A1B2C3D4" });
+        let (status, first) = call(
+            &operator,
+            Method::POST,
+            "/v1/enrollments",
+            &proof,
+            Some(begin.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, retry) = call(
+            &operator,
+            Method::POST,
+            "/v1/enrollments",
+            &proof,
+            Some(begin),
+        )
+        .await;
+        assert_eq!(first, retry);
+        let path = format!(
+            "/v1/enrollments/{}",
+            first["installation_id"].as_str().unwrap()
+        );
+        let (status, pending) = call(&operator, Method::GET, &path, &proof, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pending["state"], "pending");
+        assert_eq!(pending["public_url"], first["public_url"]);
+        let (status, _) = call(&operator, Method::GET, &path, &other_proof, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, body) = call(
+            &operator,
+            Method::POST,
+            &format!("{path}/finish"),
+            &proof,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body, json!({"error": "login_pending"}));
+
+        let install_id = first["installation_id"].as_str().unwrap();
+        let login_path = format!("/register/{install_id}");
+        let form = |origin: &'static str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri(&login_path)
+                .header(header::HOST, "init.example.com")
+                .header(header::ORIGIN, origin)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Full::new(Bytes::from_static(b"user_code=A1B2C3D4")))
+                .unwrap()
+        };
+        assert!(matches!(
+            operator.dispatch(form("https://other.example.com")).await,
+            Err(HttpError::RegistrationNotFound)
+        ));
+        let redirect = operator
+            .dispatch(form("https://init.example.com"))
+            .await
+            .unwrap();
+        assert_eq!(redirect.status(), StatusCode::SEE_OTHER);
+        assert!(
+            redirect.headers()[header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .starts_with("__Host-pigeonmq-registration=")
+        );
+    }
+}

@@ -11,6 +11,8 @@ license = "MIT"
 bytes = "1"
 http = "1"
 http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 futures-util = { version = "0.3", features = ["sink"] }
 plist = "1"
 rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
