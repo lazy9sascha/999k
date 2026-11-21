@@ -70,6 +70,10 @@ pub fn begin(base_url: &str, request_id: &str, user_code: &str, proof: &str) -> 
 }
 
 pub fn status(base_url: &str, installation_id: &str, proof: &str) -> Result<String, String> {
+    // Validate installation_id to prevent path injection.
+    if uuid::Uuid::parse_str(installation_id).is_err() {
+        return Err("invalid_installation_id".to_string());
+    }
     let url = format!(
         "{}/v1/enrollments/{}",
         base_url.trim_end_matches('/'),
@@ -90,6 +94,10 @@ pub fn status(base_url: &str, installation_id: &str, proof: &str) -> Result<Stri
 }
 
 pub fn finish(base_url: &str, installation_id: &str, proof: &str) -> Result<(String, String), String> {
+    // Validate installation_id to prevent path injection.
+    if uuid::Uuid::parse_str(installation_id).is_err() {
+        return Err("invalid_installation_id".to_string());
+    }
     let url = format!(
         "{}/v1/enrollments/{}/finish",
         base_url.trim_end_matches('/'),

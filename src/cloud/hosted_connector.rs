@@ -66,10 +66,23 @@ pub fn save_token(home: &Path, token: &str) -> Result<PathBuf, String> {
 /// Load the hosted connection metadata, if present.
 pub fn load_connection(home: &Path) -> Result<Option<(String, String)>, String> {
     let path = home.join("hosted-connection.json");
-    if !path.exists() {
-        return Ok(None);
+    let file = match pigeonmq::private_file::open_private_file(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            if !path.exists() {
+                return Ok(None);
+            }
+            return Err(format!("open_private_failed: {} {}", e.0, e.1));
+        }
+    };
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.take(pigeonmq::private_file::MAX_PRIVATE_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "hosted_config_unreadable".to_string())?;
+    if bytes.len() as u64 > pigeonmq::private_file::MAX_PRIVATE_CONFIG_BYTES {
+        return Err("hosted_config_too_large".to_string());
     }
-    let bytes = std::fs::read(&path).map_err(|_| "hosted_config_unreadable".to_string())?;
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| "hosted_config_invalid".to_string())?;
     let origin = value["origin"].as_str().ok_or("hosted_config_invalid")?.to_string();
@@ -100,13 +113,12 @@ pub fn hosted_health(home: &Path) -> serde_json::Value {
         _ => return serde_json::json!({ "hosted": "not_configured" }),
     };
     let token_path = home.join("hosted-connector.token");
-    let token_present = token_path.exists();
+    let token_present = pigeonmq::private_file::open_private_file(&token_path).is_ok();
     let public_reachable = probe_public(&conn.0);
     serde_json::json!({
         "hosted": "configured",
         "public_url": conn.0,
         "registration": conn.1,
-        "token_file": token_path,
         "token_present": token_present,
         "public_reachable": public_reachable,
         "public_verified": false,
@@ -184,6 +196,8 @@ pub fn registration_action(state: &str) -> &'static str {
 }
 /// Generate a launchd plist for the hosted cloudflared connector.
 pub fn launchd_plist(cloudflared: &Path, token_file: &Path) -> String {
+    let cf = xml_escape(&cloudflared.display().to_string());
+    let tf = xml_escape(&token_file.display().to_string());
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -206,9 +220,16 @@ pub fn launchd_plist(cloudflared: &Path, token_file: &Path) -> String {
 </dict>
 </plist>
 "#,
-        cloudflared.display(),
-        token_file.display()
+        cf, tf
     )
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 pub fn launch(executable: &Path, token_file: &Path) -> Result<Child, String> {
     if !executable.is_absolute() {
@@ -269,11 +290,12 @@ mod tests {
     #[test]
     fn saves_and_loads_private_connection() {
         let dir = tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         save_connection(dir.path(), "https://example.com", "reg-123").unwrap();
         let token_path = save_token(dir.path(), "secret-token").unwrap();
         assert_eq!(token_path.file_name().unwrap(), "hosted-connector.token");
         // file modes
-        use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(dir.path().join("hosted-connection.json"))
             .unwrap()
             .permissions()
@@ -314,6 +336,21 @@ mod tests {
     }
 
     #[test]
+    fn debug_open_private() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("hosted-connection.json");
+        pigeonmq::private_file::replace_private(&path, b"{}").unwrap();
+        let parent = path.parent().unwrap();
+        let pm = std::fs::metadata(parent).unwrap();
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        eprintln!("parent mode: {:o} uid: {}", pm.permissions().mode(), pm.uid());
+        let fm = std::fs::metadata(&path).unwrap();
+        eprintln!("file mode: {:o} uid: {} nlink: {}", fm.permissions().mode(), fm.uid(), fm.nlink());
+        let res = pigeonmq::private_file::open_private_file(&path);
+        eprintln!("open result: {:?}", res.map(|_| "ok"));
+    }
+
+    #[test]
     fn hosted_health_reports_unconfigured() {
         let dir = tempdir().unwrap();
         let h = hosted_health(dir.path());
@@ -335,6 +372,8 @@ mod tests {
             }
         });
         let dir = tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         save_connection(dir.path(), &format!("http://{}", addr), "reg-1").unwrap();
         save_token(dir.path(), "tok").unwrap();
         let h = hosted_health(dir.path());
@@ -359,7 +398,7 @@ mod tests {
                     let req = String::from_utf8_lossy(&buf[..n]);
                     let first = req.lines().next().unwrap_or("");
                     let resp = if first.starts_with("POST /v1/enrollments ") {
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"installation_id\":\"inst-1\",\"public_url\":\"https://u.example.com\",\"login_url\":\"https://login.example.com\",\"expires_at\":\"2030-01-01T00:15:00Z\"}"
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"installation_id\":\"11111111-1111-4111-8111-111111111111\",\"public_url\":\"https://u.example.com\",\"login_url\":\"https://login.example.com\",\"expires_at\":\"2030-01-01T00:15:00Z\"}"
                     } else if first.starts_with("GET /v1/enrollments/") {
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u.example.com\"}"
                     } else if first.starts_with("POST /v1/enrollments/") && first.contains("/finish") {
@@ -383,6 +422,10 @@ mod tests {
 
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let url = hosted_flow(&home, &base, &fake_cf).unwrap();
         assert_eq!(url, "https://u.example.com");
         // Config saved.
