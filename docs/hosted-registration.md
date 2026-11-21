@@ -25,14 +25,20 @@ The registration service manages the address and Cloudflare Tunnel for each invi
 }
 ```
 
-Use the loopback port and MCP path that the pilot installs on user Macs.
+Use the loopback port and MCP paths that the pilot installs on user Macs. Set
+`"mcp_paths": ["/dot/mcp", "/codex/mcp"]` to publish both paths on the same
+hostname. Use `mcp_path` for one path or include it alongside `mcp_paths` to
+retain an existing path. Dot and Codex also get their exact path-scoped OAuth
+resource metadata paths. Enable the matching profiles and auth on the hub.
 
 ```sh
 cargo build --locked --bin pigeonmq-registration
 ./target/debug/pigeonmq-registration --home /path/to/private-registration-home --port 54900
 ```
 
-The service creates `enrollments.sqlite3` in the private directory. It reserves an address before sign-in. After browser approval, it publishes only the configured MCP path and returns the installation's connector token.
+The service creates `enrollments.sqlite3` in the private directory. It reserves an address before sign-in. After browser approval, it publishes only the configured MCP and discovery paths and returns the
+installation's connector token. A successful finish on an existing installation
+also reconciles its ingress with the current settings.
 
 ## Manage a registration
 

@@ -221,7 +221,7 @@ async fn reconciles_definite_and_uncertain_dns_outcomes_without_duplicate_create
                 installation(),
                 HOST,
                 54843,
-                "/muse/mcp",
+                &["/muse/mcp"],
                 &mut state,
                 |_| Ok(())
             )
@@ -237,7 +237,7 @@ async fn reconciles_definite_and_uncertain_dns_outcomes_without_duplicate_create
                 installation(),
                 HOST,
                 54843,
-                "/muse/mcp",
+                &["/muse/mcp"],
                 &mut state,
                 |_| Ok(())
             )
@@ -248,9 +248,14 @@ async fn reconciles_definite_and_uncertain_dns_outcomes_without_duplicate_create
 
     for _ in 0..2 {
         let result = provider
-            .provision(installation(), HOST, 54843, "/muse/mcp", &mut state, |_| {
-                Ok(())
-            })
+            .provision(
+                installation(),
+                HOST,
+                54843,
+                &["/muse/mcp"],
+                &mut state,
+                |_| Ok(()),
+            )
             .await
             .unwrap();
         assert_eq!(state.dns_record, ResourceState::Known(DNS_ID.to_owned()));
@@ -270,7 +275,7 @@ async fn refuses_dns_owned_by_a_different_installation_before_any_write() {
                 installation(),
                 HOST,
                 54843,
-                "/muse/mcp",
+                &["/muse/mcp"],
                 &mut state,
                 |_| Ok(())
             )
@@ -298,7 +303,7 @@ async fn keeps_an_unknown_tunnel_create_pending_when_the_list_is_empty() {
                 installation(),
                 HOST,
                 54843,
-                "/muse/mcp",
+                &["/muse/mcp"],
                 &mut state,
                 |_| Ok(())
             )
@@ -312,7 +317,7 @@ async fn keeps_an_unknown_tunnel_create_pending_when_the_list_is_empty() {
                 installation(),
                 HOST,
                 54843,
-                "/muse/mcp",
+                &["/muse/mcp"],
                 &mut state,
                 |_| Ok(())
             )
@@ -333,7 +338,7 @@ async fn never_creates_a_tunnel_without_saving_the_attempt() {
                 installation(),
                 HOST,
                 54843,
-                "/muse/mcp",
+                &["/muse/mcp"],
                 &mut state,
                 |next| {
                     assert_eq!(next.tunnel, ResourceState::Attempted);
@@ -361,9 +366,14 @@ async fn invalid_addresses_or_non_mcp_paths_fail_before_provider_calls() {
         let mut resources = CloudflareResources::default();
         assert!(matches!(
             provider
-                .provision(installation(), host, 54843, route, &mut resources, |_| Ok(
-                    ()
-                ))
+                .provision(
+                    installation(),
+                    host,
+                    54843,
+                    &[route],
+                    &mut resources,
+                    |_| Ok(())
+                )
                 .await,
             Err(ProvisionError::Settings)
         ));
@@ -391,7 +401,7 @@ async fn completes_fresh_provisioning_and_persists_resource_ids_before_token_fet
             installation(),
             HOST,
             54843,
-            "/muse/mcp",
+            &["/muse/mcp"],
             &mut state,
             |next| {
                 persisted.push(next.clone());
@@ -416,3 +426,40 @@ async fn completes_fresh_provisioning_and_persists_resource_ids_before_token_fet
 
 #[path = "hosted_cloudflare_lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+#[tokio::test]
+async fn publishes_explicit_paths_on_one_tunnel_and_keeps_default_denial() {
+    let route = |path| {
+        json!({"hostname":HOST,"path":path,"service":"http://127.0.0.1:54843",
+               "originRequest":{"httpHostHeader":"127.0.0.1:54843"}})
+    };
+    let (provider, server) = fixture(vec![
+        lookup_dns(json!([])),
+        lookup_tunnel(json!([])),
+        create_tunnel(),
+        configure().body(json!({"config":{"ingress":[
+            route("^/dot/mcp$"),
+            route(r"^/\.well-known/oauth-protected-resource/dot/mcp$"),
+            route("^/codex/mcp$"),
+            route(r"^/\.well-known/oauth-protected-resource/codex/mcp$"),
+            {"service":"http_status:404"}
+        ]}})),
+        create_dns(),
+        get_token(),
+    ])
+    .await;
+
+    let result = provider
+        .provision(
+            installation(),
+            HOST,
+            54843,
+            &["/dot/mcp", "/codex/mcp"],
+            &mut CloudflareResources::default(),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.origin, format!("https://{HOST}"));
+    server.await.unwrap();
+}

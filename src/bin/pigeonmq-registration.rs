@@ -11,7 +11,7 @@ mod hosted_supabase;
 
 use clap::Parser;
 use enrollment_store::{Enrollment, EnrollmentState, Registry, RegistryError};
-use hosted_cloudflare::{CloudflareProvisioner, CloudflareResources};
+use hosted_cloudflare::{CloudflareProvisioner, CloudflareResources, valid_public_mcp_path};
 use hosted_registration_http::{
     RegistrationHttpError as HttpError, RegistrationResponse, RequestKind, approval_result,
     auth_redirect, json_response, login_form, parse_request,
@@ -20,7 +20,7 @@ use hosted_supabase::SupabaseAuth;
 use http::{Method, Request, StatusCode, header};
 use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
-use pigeonmq::{arrival_notify, mailbox_catalog, private_file};
+use pigeonmq::{arrival_notify, private_file};
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
@@ -63,7 +63,9 @@ struct Config {
     cloudflare_zone_id: String,
     cloudflare_zone_name: String,
     hub_port: u16,
-    mcp_path: String,
+    mcp_path: Option<String>,
+    #[serde(default)]
+    mcp_paths: Vec<String>,
 }
 
 struct Operator {
@@ -74,7 +76,7 @@ struct Operator {
     cloudflare: CloudflareProvisioner,
     zone: String,
     hub_port: u16,
-    mcp_path: String,
+    mcp_paths: Vec<String>,
     registry: Mutex<Registry>,
     home: PathBuf,
     account_id: String,
@@ -151,9 +153,16 @@ impl Operator {
                     .ok_or_else(unavailable)
             })
             .collect::<io::Result<HashSet<_>>>()?;
+        let mut mcp_paths = config.mcp_path.into_iter().collect::<Vec<_>>();
+        for path in config.mcp_paths {
+            if !mcp_paths.contains(&path) {
+                mcp_paths.push(path);
+            }
+        }
         if access.is_empty()
             || config.hub_port == 0
-            || !mailbox_catalog::valid_mcp_route(&config.mcp_path)
+            || mcp_paths.is_empty()
+            || !mcp_paths.iter().all(|path| valid_public_mcp_path(path))
         {
             return Err(unavailable());
         }
@@ -181,7 +190,7 @@ impl Operator {
             access,
             zone: config.cloudflare_zone_name,
             hub_port: config.hub_port,
-            mcp_path: config.mcp_path,
+            mcp_paths,
             registry: Mutex::new(
                 Registry::open(&home.join("enrollments.sqlite3")).map_err(|_| unavailable())?,
             ),
@@ -250,7 +259,7 @@ impl Operator {
                 id,
                 &self.hostname(id),
                 self.hub_port,
-                &self.mcp_path,
+                &self.mcp_paths,
                 &mut resources,
                 |resources| self.persist_resources(id, resources),
             )

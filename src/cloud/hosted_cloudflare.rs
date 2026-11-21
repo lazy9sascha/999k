@@ -111,6 +111,11 @@ impl DnsRecord {
     }
 }
 
+pub(crate) fn valid_public_mcp_path(path: &str) -> bool {
+    pigeonmq::mailbox_catalog::valid_mcp_route(path)
+        && !matches!(path, "/receiver/mcp" | "/admin/mcp" | "/rpc/mcp")
+}
+
 fn valid_provider_id(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|c| c.is_ascii_hexdigit())
 }
@@ -323,13 +328,13 @@ impl CloudflareProvisioner {
     }
 
     /// The operator must hold the installation lock through this request and its state writes.
-    /// The host, port, and MCP path come from the operator, and the installation UUID is server-issued.
+    /// The host, port, and MCP paths come from the operator, and the installation UUID is server-issued.
     pub(crate) async fn provision(
         &self,
         installation_id: Uuid,
         hostname: &str,
         loopback_port: u16,
-        approved_mcp_path: &str,
+        approved_mcp_paths: &[impl AsRef<str>],
         resources: &mut CloudflareResources,
         mut persist: impl FnMut(&CloudflareResources) -> io::Result<()>,
     ) -> Result<ProvisionedTunnel, ProvisionError> {
@@ -339,11 +344,10 @@ impl CloudflareProvisioner {
         if installation_id.is_nil()
             || !first_label.is_some_and(valid_label)
             || loopback_port == 0
-            || !crate::mailbox_catalog::valid_mcp_route(approved_mcp_path)
-            || matches!(
-                approved_mcp_path,
-                "/receiver/mcp" | "/admin/mcp" | "/rpc/mcp"
-            )
+            || approved_mcp_paths.is_empty()
+            || !approved_mcp_paths
+                .iter()
+                .all(|path| valid_public_mcp_path(path.as_ref()))
         {
             return Err(ProvisionError::Settings);
         }
@@ -384,16 +388,26 @@ impl CloudflareProvisioner {
         }
 
         let origin_host = format!("127.0.0.1:{loopback_port}");
-        // valid_mcp_route restricts the path to literal regex characters.
+        let mut ingress = Vec::new();
+        // The route validator limits MCP paths to literal regex characters.
+        let route = |path| {
+            json!({"hostname": hostname, "path": path, "service": format!("http://{origin_host}"),
+                   "originRequest": {"httpHostHeader": origin_host}})
+        };
+        for path in approved_mcp_paths {
+            let path = path.as_ref();
+            ingress.push(route(format!("^{path}$")));
+            if matches!(path, "/dot/mcp" | "/codex/mcp") {
+                ingress.push(route(format!(
+                    r"^/\.well-known/oauth-protected-resource{path}$"
+                )));
+            }
+        }
+        ingress.push(json!({"service":"http_status:404"}));
         self.write::<serde_json::Value>(
             Method::PUT,
             &format!("{collection}/{tunnel}/configurations"),
-            json!({"config":{"ingress":[
-                {"hostname": hostname, "path": format!("^{approved_mcp_path}$"),
-                 "service": format!("http://{origin_host}"),
-                 "originRequest":{"httpHostHeader": origin_host}},
-                {"service":"http_status:404"}
-            ]}}),
+            json!({"config":{"ingress": ingress}}),
         )
         .await?;
 
