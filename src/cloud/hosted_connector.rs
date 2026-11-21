@@ -1,6 +1,5 @@
 //! Launch one cloudflared connector with a private token file.
 #![allow(dead_code)]
-use std::io::Write;
 use std::path::Path;
 use std::env;
 use std::path::PathBuf;
@@ -51,13 +50,15 @@ pub fn save_connection(home: &Path, origin: &str, registration: &str) -> Result<
         "registration": registration,
     }))
     .map_err(|_| "hosted_config_invalid".to_string())?;
-    write_private(&path, &bytes)
+    pigeonmq::private_file::replace_private(&path, &bytes)
+        .map_err(|_| "hosted_config_write_failed".to_string())
 }
 
 /// Save the connector token in a separate owner-only file.
 pub fn save_token(home: &Path, token: &str) -> Result<PathBuf, String> {
     let path = home.join("hosted-connector.token");
-    write_private(&path, token.as_bytes())?;
+    pigeonmq::private_file::replace_private(&path, token.as_bytes())
+        .map_err(|_| "hosted_config_write_failed".to_string())?;
     Ok(path)
 }
 
@@ -76,24 +77,6 @@ pub fn load_connection(home: &Path) -> Result<Option<(String, String)>, String> 
         .ok_or("hosted_config_invalid")?
         .to_string();
     Ok(Some((origin, registration)))
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let tmp = path.with_extension("tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&tmp)
-        .map_err(|_| "hosted_config_write_failed".to_string())?;
-    file.write_all(bytes)
-        .map_err(|_| "hosted_config_write_failed".to_string())?;
-    file.sync_all()
-        .map_err(|_| "hosted_config_write_failed".to_string())?;
-    std::fs::rename(&tmp, path).map_err(|_| "hosted_config_write_failed".to_string())?;
-    Ok(())
 }
 
 pub fn launch(executable: &Path, token_file: &Path) -> Result<Child, String> {
