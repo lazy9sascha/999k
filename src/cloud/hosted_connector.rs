@@ -173,6 +173,15 @@ pub fn hosted_resume(
     finalize_hosted(home, &public_url, &reg.installation_id, &exe, &token)?;
     Ok(public_url)
 }
+/// Map a registration status to a local action.
+pub fn registration_action(state: &str) -> &'static str {
+    match state {
+        "expired" => "begin_new",
+        "revoked" => "close_connector",
+        "pending" | "approved" | "ready" => "continue",
+        _ => "unknown",
+    }
+}
 pub fn launch(executable: &Path, token_file: &Path) -> Result<Child, String> {
     if !executable.is_absolute() {
         return Err("absolute cloudflared path required".into());
@@ -361,6 +370,15 @@ mod tests {
         std::fs::write(&token, "secret").unwrap();
         let result = launch(&dir.path().join("nope"), &token);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn registration_action_maps_states() {
+        assert_eq!(registration_action("expired"), "begin_new");
+        assert_eq!(registration_action("revoked"), "close_connector");
+        assert_eq!(registration_action("pending"), "continue");
+        assert_eq!(registration_action("ready"), "continue");
+        assert_eq!(registration_action("garbage"), "unknown");
     }
 
     #[test]
