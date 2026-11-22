@@ -435,12 +435,95 @@ mod tests {
     }
 
     #[test]
-    fn missing_executable_errors() {
+    fn hosted_flow_fails_on_begin_error() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{}", addr);
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let resp = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"error\":\"invalid_request\"}";
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
         let dir = tempdir().unwrap();
-        let token = dir.path().join("token");
-        std::fs::write(&token, "secret").unwrap();
-        let result = launch(&dir.path().join("nope"), &token);
+        let fake_cf = dir.path().join("cloudflared");
+        let script = "#!/bin/sh\nexit 0\n";
+        std::fs::write(&fake_cf, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_cf, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let result = hosted_flow(&home, &base, &fake_cf);
         assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid_request");
+    }
+
+    #[test]
+    fn hosted_resume_retry_no_duplicate() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{}", addr);
+        thread::spawn(move || {
+            for _ in 0..6 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 4096];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let first = req.lines().next().unwrap_or("");
+                    let resp = if first.starts_with("POST /v1/enrollments ") {
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"installation_id\":\"11111111-1111-4111-8111-111111111111\",\"public_url\":\"https://u.example.com\",\"login_url\":\"https://login.example.com\",\"expires_at\":\"2030-01-01T00:15:00Z\"}"
+                    } else if first.starts_with("GET /v1/enrollments/") {
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u.example.com\"}"
+                    } else if first.starts_with("POST /v1/enrollments/") && first.contains("/finish") {
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u.example.com\",\"connector_token\":\"tok-xyz\"}"
+                    } else {
+                        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{\"error\":\"registration_not_found\"}"
+                    };
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                }
+            }
+        });
+
+        let dir = tempdir().unwrap();
+        let fake_cf = dir.path().join("cloudflared");
+        let script = "#!/bin/sh\nexit 0\n";
+        std::fs::write(&fake_cf, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_cf, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let req_id = "22222222-2222-4222-8222-222222222222";
+        let proof = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        let code = "FR6K3P8X";
+
+        // First attempt.
+        let url1 = hosted_resume(&home, &base, &fake_cf, req_id, code, proof).unwrap();
+        // Second attempt (retry) — same request_id/proof, no duplicate.
+        let url2 = hosted_resume(&home, &base, &fake_cf, req_id, code, proof).unwrap();
+        assert_eq!(url1, url2);
+        assert_eq!(url1, "https://u.example.com");
     }
 
     #[test]
@@ -468,6 +551,15 @@ mod tests {
             Err(_) => {} // skip
         }
     }
+    #[test]
+    fn missing_executable_errors() {
+        let dir = tempdir().unwrap();
+        let token = dir.path().join("token");
+        std::fs::write(&token, "secret").unwrap();
+        let result = launch(&dir.path().join("nope"), &token);
+        assert!(result.is_err());
+    }
+
     #[test]
     fn preflight_rejects_non_absolute() {
         let result = preflight(Some(Path::new("cloudflared")));
