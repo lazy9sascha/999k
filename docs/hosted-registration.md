@@ -39,10 +39,13 @@ The service creates `enrollments.sqlite3` in the private directory. It reserves 
 installation's connector token. A successful finish on an existing installation
 also reconciles its ingress with the current settings.
 
+Open the private installation link from PigeonMQ. Enter the invited email address and the numeric email code. Do not enter a code from the Mac.
+The link expires with the reservation. Open it only in the intended browser. Do not share or log the full link.
+Opening the link does not send an email. The browser removes the private fragment and submits it only when you request the email code.
 Supabase issues the numeric OTP for an email address, not an installation.
 PigeonMQ applies approval only to the installation bound to the browser attempt.
 The request page does not show whether it sent an email. Response times can differ.
-If a check fails or the attempt was already used, wait up to five minutes before you request a new code.
+If an attempt fails, wait up to five minutes, then reopen registration from PigeonMQ. Use the same pending installation until its reservation expires.
 
 ### Connect Dot and Codex Cloud through Cloudflare
 

@@ -306,12 +306,86 @@ impl Registry {
         Ok(attempt)
     }
 
+    #[cfg(test)]
     pub(crate) fn start_email_attempt(
         &mut self,
         id: Uuid,
         user_code: &str,
         email: &str,
         now: i64,
+    ) -> Result<BrowserAttempt> {
+        self.start_attempt(id, user_code, email, now, false)
+    }
+
+    /// An authenticated installer retry can reopen only its own inactive pending enrollment.
+    pub(crate) fn handoff_url_secret(
+        &mut self,
+        id: Uuid,
+        proof: &str,
+        now: i64,
+    ) -> Result<Option<String>> {
+        let digest = proof_digest(proof).ok_or(RegistryError::NotFound)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let text = id.to_string();
+        let (expected, generation): (Vec<u8>, Option<Vec<u8>>) = tx
+            .query_row(
+                "SELECT proof_digest, code_digest FROM enrollments WHERE id = ?1",
+                [&text],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or(RegistryError::NotFound)?;
+        if !bool::from(expected.as_slice().ct_eq(&digest)) {
+            return Err(RegistryError::NotFound);
+        }
+        let record = unexpired(load(&tx, &text)?, now)?;
+        if record.state != EnrollmentState::Pending {
+            return Ok(None);
+        }
+        let generation = match generation {
+            Some(value) => value,
+            None => {
+                let active: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM browser_attempts WHERE installation_id = ?1 AND expires_at > ?2)",
+                    params![text, now],
+                    |row| row.get(0),
+                )?;
+                if active {
+                    return Ok(None);
+                }
+                let value = Uuid::new_v4().as_bytes().to_vec();
+                tx.execute(
+                    "UPDATE enrollments SET code_digest = ?2 WHERE id = ?1",
+                    params![text, value],
+                )?;
+                value
+            }
+        };
+        let handoff =
+            browser_handoff(id, &digest, &generation).ok_or(RegistryError::Unavailable)?;
+        tx.commit()?;
+        Ok(Some(handoff))
+    }
+
+    pub(crate) fn start_handoff_attempt(
+        &mut self,
+        id: Uuid,
+        handoff: &str,
+        email: &str,
+        now: i64,
+    ) -> Result<BrowserAttempt> {
+        self.start_attempt(id, handoff, email, now, true)
+    }
+
+    fn start_attempt(
+        &mut self,
+        id: Uuid,
+        credential: &str,
+        email: &str,
+        now: i64,
+        link: bool,
     ) -> Result<BrowserAttempt> {
         let tx = self
             .connection
@@ -324,17 +398,27 @@ impl Registry {
             params![id_text, now, email],
             |row| row.get(0),
         )?;
-        let (expected, failures): (Vec<u8>, i64) = tx.query_row(
-            "SELECT code_digest, failed_guesses FROM enrollments WHERE id = ?1",
+        let (expected, digest, failures): (Option<Vec<u8>>, Vec<u8>, i64) = tx.query_row(
+            "SELECT code_digest, proof_digest, failed_guesses FROM enrollments WHERE id = ?1",
             [&id_text],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        if failures >= MAX_GUESSES {
+        let expected = expected.ok_or(RegistryError::NotFound)?;
+        if !link && failures >= MAX_GUESSES {
             return Err(RegistryError::RateLimited);
         }
-        if !valid_code(user_code)
-            || !bool::from(expected.as_slice().ct_eq(&code_digest(id, user_code)))
-        {
+        let valid = if link {
+            browser_handoff(id, &digest, &expected).is_some_and(|expected| {
+                bool::from(expected.as_bytes().ct_eq(credential.as_bytes()))
+            })
+        } else {
+            valid_code(credential)
+                && bool::from(expected.as_slice().ct_eq(&code_digest(id, credential)))
+        };
+        if !valid {
+            if link {
+                return Err(RegistryError::NotFound);
+            }
             tx.execute(
                 "UPDATE enrollments SET failed_guesses = failed_guesses + 1 WHERE id = ?1",
                 [&id_text],
@@ -365,6 +449,12 @@ impl Registry {
                     .min(now.saturating_add(BROWSER_SECONDS))
             ],
         )?;
+        if link {
+            tx.execute(
+                "UPDATE enrollments SET code_digest = NULL WHERE id = ?1",
+                [&id_text],
+            )?;
+        }
         tx.commit()?;
         Ok(BrowserAttempt {
             id: attempt_id,
@@ -738,6 +828,16 @@ fn proof_digest(proof: &str) -> Option<[u8; 32]> {
     Some(Sha256::digest(decoded).into())
 }
 
+// Domain separation keeps this capability distinct from the installer proof.
+fn browser_handoff(id: Uuid, digest: &[u8], generation: &[u8]) -> Option<String> {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac = Hmac::<Sha256>::new_from_slice(digest).ok()?;
+    mac.update(b"pigeonmq/install-browser-handoff/v1");
+    mac.update(id.as_bytes());
+    mac.update(generation);
+    Some(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
 fn code_digest(id: Uuid, code: &str) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(id.as_bytes());
@@ -1060,6 +1160,76 @@ mod tests {
         assert_eq!(
             registry.start_browser(original.id, "ABCD5678", 2).err(),
             Some(RegistryError::Forbidden)
+        );
+    }
+
+    #[test]
+    fn browser_handoff_is_idempotent_bound_single_use_and_rotatable() {
+        let home = private_home();
+        let mut registry = Registry::open(&home.path().join("enrollments.sqlite")).unwrap();
+        let a = registry
+            .begin(Uuid::new_v4(), &proof(1), CODE, 0)
+            .unwrap()
+            .id;
+        let b = registry
+            .begin(Uuid::new_v4(), &proof(2), CODE, 0)
+            .unwrap()
+            .id;
+        let key = registry
+            .handoff_url_secret(a, &proof(1), 0)
+            .unwrap()
+            .unwrap();
+        assert_ne!(key, proof(1));
+        assert_eq!(
+            registry
+                .handoff_url_secret(a, &proof(1), 1)
+                .unwrap()
+                .as_deref(),
+            Some(key.as_str())
+        );
+        assert_eq!(
+            registry.handoff_url_secret(a, &proof(2), 1).err(),
+            Some(RegistryError::NotFound)
+        );
+        let email = "pilot@example.test";
+        let mut tampered = key.as_bytes().to_vec();
+        tampered[0] = if tampered[0] == b'A' { b'B' } else { b'A' };
+        assert_eq!(
+            registry
+                .start_handoff_attempt(a, std::str::from_utf8(&tampered).unwrap(), email, 1)
+                .err(),
+            Some(RegistryError::NotFound)
+        );
+        assert_eq!(
+            registry.start_handoff_attempt(b, &key, email, 1).err(),
+            Some(RegistryError::NotFound)
+        );
+        registry.start_handoff_attempt(a, &key, email, 1).unwrap();
+        assert_eq!(
+            registry.start_handoff_attempt(a, &key, email, 2).err(),
+            Some(RegistryError::NotFound)
+        );
+        assert!(
+            registry
+                .handoff_url_secret(a, &proof(1), 2)
+                .unwrap()
+                .is_none()
+        );
+        let time = 1 + BROWSER_SECONDS;
+        let new_key = registry
+            .handoff_url_secret(a, &proof(1), time)
+            .unwrap()
+            .unwrap();
+        assert_ne!(new_key, key);
+        assert_eq!(
+            registry.start_handoff_attempt(a, &key, email, time).err(),
+            Some(RegistryError::NotFound)
+        );
+        assert_eq!(
+            registry
+                .start_handoff_attempt(a, &new_key, email, PENDING_SECONDS)
+                .err(),
+            Some(RegistryError::Expired)
         );
     }
 

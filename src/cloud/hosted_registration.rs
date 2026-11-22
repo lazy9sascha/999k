@@ -3,12 +3,22 @@
 use serde::Deserialize;
 use serde_json::json;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Registration {
     pub installation_id: String,
     pub public_url: String,
     pub login_url: String,
     pub expires_at: String,
+}
+
+impl std::fmt::Debug for Registration {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("Registration")
+            .field("installation_id", &self.installation_id)
+            .field("login_url", &"[private handoff]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -47,7 +57,12 @@ fn map_error(status: reqwest::StatusCode, body: &str) -> String {
     format!("http_{}", status.as_u16())
 }
 
-pub fn begin(base_url: &str, request_id: &str, user_code: &str, proof: &str) -> Result<Registration, String> {
+pub fn begin(
+    base_url: &str,
+    request_id: &str,
+    user_code: &str,
+    proof: &str,
+) -> Result<Registration, String> {
     let url = format!("{}/v1/enrollments", base_url.trim_end_matches('/'));
     let resp = client()
         .post(&url)
@@ -93,7 +108,11 @@ pub fn status(base_url: &str, installation_id: &str, proof: &str) -> Result<Stri
     Ok(parsed.state)
 }
 
-pub fn finish(base_url: &str, installation_id: &str, proof: &str) -> Result<(String, String), String> {
+pub fn finish(
+    base_url: &str,
+    installation_id: &str,
+    proof: &str,
+) -> Result<(String, String), String> {
     // Validate installation_id to prevent path injection.
     if uuid::Uuid::parse_str(installation_id).is_err() {
         return Err("invalid_installation_id".to_string());

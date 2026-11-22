@@ -282,10 +282,15 @@ impl Operator {
                 proof,
             } => {
                 let record = self.record(|reg| reg.begin(request_id, &proof, &user_code, now))?;
-                let login_url = self
+                let mut login_url = self
                     .origin
                     .join(&format!("register/{}", record.id))
                     .map_err(|_| HttpError::TemporarilyUnavailable)?;
+                if let Some(handoff) =
+                    self.record(|reg| reg.handoff_url_secret(record.id, &proof, now))?
+                {
+                    login_url.set_fragment(Some(&handoff));
+                }
                 let expires_at = chrono::DateTime::from_timestamp(record.expires_at, 0)
                     .ok_or(HttpError::TemporarilyUnavailable)?
                     .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -328,11 +333,11 @@ impl Operator {
             }
             RequestKind::RegisterSubmit {
                 installation_id,
-                user_code,
+                handoff,
                 email,
             } => {
                 let attempt = self.record(|reg| {
-                    reg.start_email_attempt(installation_id, &user_code, &email, now)
+                    reg.start_handoff_attempt(installation_id, &handoff, &email, now)
                 })?;
                 // Do not reveal whether the address is invited or whether mail was sent.
                 if self.access.contains_key(&attempt.email)
@@ -571,6 +576,8 @@ mod tests {
 
         let install_id = first["installation_id"].as_str().unwrap();
         let login_path = format!("/register/{install_id}");
+        let link = Url::parse(first["login_url"].as_str().unwrap()).unwrap();
+        let handoff = link.fragment().unwrap();
         let form = |origin: &'static str| {
             Request::builder()
                 .method(Method::POST)
@@ -578,9 +585,9 @@ mod tests {
                 .header(header::HOST, "init.example.com")
                 .header(header::ORIGIN, origin)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Full::new(Bytes::from_static(
-                    b"user_code=A1B2C3D4&email=not-invited%40example.test",
-                )))
+                .body(Full::new(Bytes::from(format!(
+                    "handoff={handoff}&email=not-invited%40example.test"
+                ))))
                 .unwrap()
         };
         assert!(matches!(
@@ -677,7 +684,7 @@ mod tests {
         let b = operator
             .record(|reg| reg.begin(Uuid::new_v4(), &proof_b, "A1B2C3D4", now))
             .unwrap();
-        let browser = |path: String, cookie: Option<String>, body: &'static str| {
+        let browser = |path: String, cookie: Option<String>, body: &str| {
             let mut req = Request::builder()
                 .method(Method::POST)
                 .uri(path)
@@ -687,14 +694,18 @@ mod tests {
             if let Some(cookie) = cookie {
                 req = req.header(header::COOKIE, cookie);
             }
-            req.body(Full::new(Bytes::from_static(body.as_bytes())))
+            req.body(Full::new(Bytes::copy_from_slice(body.as_bytes())))
                 .unwrap()
         };
-        let request_otp = |id| {
+        let request_otp = |id, proof: &str| {
+            let handoff = operator
+                .record(|reg| reg.handoff_url_secret(id, proof, now))
+                .unwrap()
+                .unwrap();
             browser(
                 format!("/register/{id}"),
                 None,
-                "user_code=A1B2C3D4&email=invited%40example.test",
+                &format!("handoff={handoff}&email=invited%40example.test"),
             )
         };
         let submit = |id, cookie, otp| browser(format!("/register/{id}/verify"), Some(cookie), otp);
@@ -708,10 +719,15 @@ mod tests {
                 .to_owned()
         };
 
-        let cookie = read_cookie(operator.dispatch(request_otp(a.id)).await.unwrap());
+        let cookie = read_cookie(
+            operator
+                .dispatch(request_otp(a.id, &proof_a))
+                .await
+                .unwrap(),
+        );
         assert_eq!(emails.load(SeqCst), 1);
         assert!(matches!(
-            operator.dispatch(request_otp(b.id)).await,
+            operator.dispatch(request_otp(b.id, &proof_b)).await,
             Err(HttpError::RateLimited)
         ));
         assert!(matches!(
@@ -747,7 +763,12 @@ mod tests {
             EnrollmentState::Pending
         );
 
-        let cookie = read_cookie(operator.dispatch(request_otp(b.id)).await.unwrap());
+        let cookie = read_cookie(
+            operator
+                .dispatch(request_otp(b.id, &proof_b))
+                .await
+                .unwrap(),
+        );
         assert!(matches!(
             operator
                 .dispatch(submit(b.id, cookie.clone(), "otp=654321"))

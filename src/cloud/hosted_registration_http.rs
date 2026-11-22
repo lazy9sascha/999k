@@ -1,13 +1,17 @@
 use std::time::Duration;
 
 use super::hosted_supabase::{normalized_email, valid_otp};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Body;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const BODY_LIMIT: usize = 4096;
@@ -36,7 +40,7 @@ pub(crate) enum RequestKind {
     },
     RegisterSubmit {
         installation_id: Uuid,
-        user_code: String,
+        handoff: String,
         email: String,
     },
     VerifyEmail {
@@ -138,12 +142,18 @@ where
             let installation_id = path_uuid(installation_id)?;
             require_form(&parts.headers)?;
             let input = bounded_body(body).await?;
-            let mut user_code = None;
+            let mut handoff = None;
             let mut email = None;
             for (key, value) in url::form_urlencoded::parse(&input) {
                 match key.as_ref() {
-                    "user_code" if user_code.is_none() => {
-                        user_code = Some(valid_user_code(value.into_owned())?)
+                    "handoff" if handoff.is_none() => {
+                        let bytes = URL_SAFE_NO_PAD
+                            .decode(&*value)
+                            .map_err(|_| InvalidRequest)?;
+                        if bytes.len() != 32 || URL_SAFE_NO_PAD.encode(&bytes) != value {
+                            return Err(InvalidRequest);
+                        }
+                        handoff = Some(value.into_owned());
                     }
                     "email" if email.is_none() => {
                         email = Some(normalized_email(&value).ok_or(InvalidRequest)?)
@@ -153,7 +163,7 @@ where
             }
             Ok(RequestKind::RegisterSubmit {
                 installation_id,
-                user_code: user_code.ok_or(InvalidRequest)?,
+                handoff: handoff.ok_or(InvalidRequest)?,
                 email: email.ok_or(InvalidRequest)?,
             })
         }
@@ -313,6 +323,17 @@ fn html_response(body: String) -> RegistrationResponse {
     response
 }
 
+// The fragment stays in the browser. Only the user's form submission sends it.
+const HANDOFF_SCRIPT: &str = r#"(() => {
+const value = location.hash.slice(1);
+if (location.hash) history.replaceState(null, "", location.pathname);
+if (!/^[A-Za-z0-9_-]{43}$/.test(value)) return;
+const form = document.getElementById("request");
+form.addEventListener("submit", () => { document.getElementById("handoff").value = value; });
+document.getElementById("send").disabled = false;
+document.getElementById("missing").hidden = true;
+})();"#;
+
 pub(crate) fn login_form(
     installation_id: Uuid,
     hostname: &str,
@@ -332,15 +353,20 @@ pub(crate) fn login_form(
 <title>Register PigeonMQ</title>
 <h1>Register PigeonMQ</h1>
 <p>Proposed hostname: <strong>{hostname}</strong></p>
-<form method="post" action="/register/{installation_id}">
-<label for="user_code">Code displayed on your Mac</label>
-<input id="user_code" name="user_code" type="text" pattern="[A-Z0-9]{{8}}" minlength="8" maxlength="8" required>
+<p id="missing">Open the installation link from PigeonMQ on your Mac.</p>
+<form id="request" method="post" action="/register/{installation_id}">
+<input id="handoff" name="handoff" type="hidden" value="">
 <label for="email">Invited email address</label>
 <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
-<button type="submit">Send email code</button>
+<button id="send" type="submit" disabled>Send email code</button>
 </form>
+<script>{HANDOFF_SCRIPT}</script>
 </html>"#
     ));
+    let hash = STANDARD.encode(Sha256::digest(HANDOFF_SCRIPT.as_bytes()));
+    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(
+        &format!("default-src 'none'; script-src 'sha256-{hash}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+    ).map_err(|_| TemporarilyUnavailable)?);
     // Same-origin form navigation must send its Origin for the CSRF check.
     response.headers_mut().insert(
         header::REFERRER_POLICY,
@@ -491,6 +517,8 @@ mod tests {
         let html = std::str::from_utf8(&html).unwrap();
         assert!(html.contains(hostname) && html.contains(ID));
         assert!(!html.contains(USER_CODE));
+        assert!(!html.contains("name=\"user_code\""));
+        assert!(html.contains("history.replaceState"));
         assert!(login_form(id, "<script>").is_err());
 
         let request = Request::builder()
@@ -498,13 +526,13 @@ mod tests {
             .uri(format!("/register/{ID}"))
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Full::new(Bytes::from(format!(
-                "user_code={USER_CODE}&email=Pilot%40example.test"
+                "handoff={PROOF}&email=Pilot%40example.test"
             ))))
             .unwrap();
         assert!(matches!(
             parse_request(request).await,
-            Ok(RequestKind::RegisterSubmit { installation_id, user_code, email })
-                if installation_id == id && user_code == USER_CODE && email == "pilot@example.test"
+            Ok(RequestKind::RegisterSubmit { installation_id, handoff, email })
+                if installation_id == id && handoff == PROOF && email == "pilot@example.test"
         ));
 
         let verify = otp_form(id, id);
