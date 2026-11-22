@@ -1063,6 +1063,13 @@ mod tests {
     }
 }
 
-pub(crate) fn reserve_address(_home: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    Err("hosted registration is not implemented yet (0.2.0 scope)".into())
+pub(crate) fn reserve_address(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let base_url = std::env::var("PIGEONMQ_REGISTRATION_URL")
+        .map_err(|_| "registration_url_required".to_string())?;
+    let cloudflared = crate::hosted_connector::preflight(None)
+        .map_err(|e| e.to_string())?;
+    let url = crate::hosted_connector::hosted_flow(home, &base_url, &cloudflared)
+        .map_err(|e| e.to_string())?;
+    println!("reserved_address={}", url);
+    Ok(())
 }
