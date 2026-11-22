@@ -4,34 +4,24 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 const PROJECT: &str = "https://project.example.test";
-const CALLBACK: &str = "https://operator.example.test/auth/callback";
 const KEY: &str = "sb_publishable_fixture";
-const CODE: &str = "fixture-authorization-code";
-const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const CODE: &str = "123456";
+const EMAIL: &str = "invited@example.test";
 const USER_ID: &str = "fa8554e2-d187-4b31-b6f5-976ccb92a198";
 
 fn auth() -> SupabaseAuth {
-    SupabaseAuth::new(PROJECT, KEY, "github", CALLBACK).unwrap()
+    SupabaseAuth::new(PROJECT, KEY).unwrap()
 }
 
 #[test]
-fn authorize_url_uses_fixed_callback_and_sha256_challenge() {
-    let url = auth().authorize_url(VERIFIER).unwrap();
-    let pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
-    assert_eq!(url.host_str(), Some("project.example.test"));
-    assert_eq!(url.path(), "/auth/v1/authorize");
-    assert_eq!(pairs.len(), 4);
-    assert_eq!(pairs["provider"], "github");
-    assert_eq!(pairs["redirect_to"], CALLBACK);
-    assert_eq!(pairs["code_challenge_method"], "s256");
+fn validates_email_and_numeric_code() {
     assert_eq!(
-        pairs["code_challenge"],
-        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        normalized_email(" Invited@EXAMPLE.test ").as_deref(),
+        Some(EMAIL)
     );
-    assert_eq!(
-        auth().authorize_url("invalid verifier"),
-        Err(SupabaseAuthError::InvalidInput)
-    );
+    assert!(normalized_email("two@@example.test").is_none());
+    assert!(valid_otp(CODE));
+    assert!(!valid_otp("123a56"));
 }
 
 #[test]
@@ -43,21 +33,12 @@ fn reject_insecure_or_ambiguous_configuration() {
         "https://project.example.test?x=1",
     ] {
         assert!(matches!(
-            SupabaseAuth::new(base, KEY, "github", CALLBACK),
+            SupabaseAuth::new(base, KEY),
             Err(SupabaseAuthError::Settings)
         ));
     }
     assert!(matches!(
-        SupabaseAuth::new(PROJECT, "sb_secret_fixture", "github", CALLBACK),
-        Err(SupabaseAuthError::Settings)
-    ));
-    assert!(matches!(
-        SupabaseAuth::new(
-            PROJECT,
-            KEY,
-            "github",
-            "https://operator.example.test/#fragment"
-        ),
+        SupabaseAuth::new(PROJECT, "sb_secret_fixture"),
         Err(SupabaseAuthError::Settings)
     ));
 }
@@ -109,13 +90,13 @@ async fn exchange(
     auth.project = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
     let server = tokio::spawn(async move {
         let (stream, start, headers, body) = request(&listener).await;
-        assert_eq!(start, "POST /auth/v1/token?grant_type=pkce HTTP/1.1");
+        assert_eq!(start, "POST /auth/v1/verify HTTP/1.1");
         assert_eq!(headers["apikey"], KEY);
         assert!(!headers.contains_key("authorization"));
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
             payload,
-            serde_json::json!({ "auth_code": CODE, "code_verifier": VERIFIER })
+            serde_json::json!({ "email": EMAIL, "token": CODE, "type": "email" })
         );
         respond(
             stream,
@@ -138,7 +119,7 @@ async fn exchange(
             );
         }
     });
-    let result = auth.exchange_user(CODE, VERIFIER).await;
+    let result = auth.verify_otp(EMAIL, CODE).await;
     server.await.unwrap();
     result
 }
@@ -170,4 +151,24 @@ async fn upstream_rejection_and_redirect_fail_closed() {
         exchange("302 Found", "Location: /untrusted\r\n", String::new()).await,
         Err(SupabaseAuthError::Unavailable)
     );
+}
+
+#[tokio::test]
+async fn otp_request_disables_user_creation_and_uses_no_redirect() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut auth = auth();
+    auth.project = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, start, headers, body) = request(&listener).await;
+        assert_eq!(start, "POST /auth/v1/otp HTTP/1.1");
+        assert_eq!(headers["apikey"], KEY);
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"email": EMAIL, "create_user": false})
+        );
+        respond(stream, "200 OK", "", "{}").await;
+    });
+    assert_eq!(auth.request_otp(EMAIL).await, Ok(()));
+    server.await.unwrap();
 }

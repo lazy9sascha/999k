@@ -1,12 +1,10 @@
-//! Supabase browser sign-in for the operator registration service.
+//! Supabase email OTP for the operator registration service.
 
 use std::time::Duration;
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, RequestBuilder, Url};
 use serde::{Deserialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const RESPONSE_LIMIT: usize = 256 * 1024;
@@ -15,7 +13,7 @@ const RESPONSE_LIMIT: usize = 256 * 1024;
 pub(crate) enum SupabaseAuthError {
     #[error("invalid Supabase Auth settings")]
     Settings,
-    #[error("invalid sign-in callback")]
+    #[error("invalid email OTP")]
     InvalidInput,
     #[error("Supabase Auth rejected sign-in")]
     Rejected,
@@ -26,8 +24,6 @@ pub(crate) enum SupabaseAuthError {
 pub(crate) struct SupabaseAuth {
     client: Client,
     project: Url,
-    provider: String,
-    callback: Url,
 }
 
 #[derive(Deserialize)]
@@ -43,28 +39,15 @@ struct User {
 }
 
 impl SupabaseAuth {
-    pub(crate) fn new(
-        project_url: &str,
-        publishable_key: &str,
-        provider: &str,
-        callback_url: &str,
-    ) -> Result<Self, SupabaseAuthError> {
+    pub(crate) fn new(project_url: &str, publishable_key: &str) -> Result<Self, SupabaseAuthError> {
         let project = https_url(project_url)?;
-        let callback = https_url(callback_url)?;
         let key = publishable_key
             .strip_prefix("sb_publishable_")
             .filter(|key| !key.is_empty() && unreserved(key))
             .ok_or(SupabaseAuthError::Settings)?;
-        if project.path() != "/"
-            || !(1..=64).contains(&provider.len())
-            || !provider.bytes().all(|byte| {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_:-".contains(&byte)
-            })
-            || key.len() > 256
-        {
+        if project.path() != "/" || key.len() > 256 {
             return Err(SupabaseAuthError::Settings);
         }
-
         let mut headers = HeaderMap::new();
         let mut api_key =
             HeaderValue::from_str(publishable_key).map_err(|_| SupabaseAuthError::Settings)?;
@@ -79,46 +62,37 @@ impl SupabaseAuth {
             .default_headers(headers)
             .build()
             .map_err(|_| SupabaseAuthError::Settings)?;
-        Ok(Self {
-            client,
-            project,
-            provider: provider.to_owned(),
-            callback,
-        })
+        Ok(Self { client, project })
     }
 
-    pub(crate) fn authorize_url(&self, code_verifier: &str) -> Result<Url, SupabaseAuthError> {
-        validate_verifier(code_verifier)?;
-        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
-        let mut url = self.endpoint("auth/v1/authorize")?;
-        url.query_pairs_mut().extend_pairs([
-            ("provider", self.provider.as_str()),
-            ("redirect_to", self.callback.as_str()),
-            ("code_challenge", challenge.as_str()),
-            ("code_challenge_method", "s256"),
-        ]);
-        Ok(url)
+    #[cfg(test)]
+    pub(crate) fn use_loopback_fixture(&mut self, port: u16) {
+        self.project = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
     }
 
-    /// Call only after consuming the matching browser attempt and its stored verifier.
-    pub(crate) async fn exchange_user(
+    pub(crate) async fn request_otp(&self, email: &str) -> Result<(), SupabaseAuthError> {
+        let request = self
+            .client
+            .post(self.endpoint("auth/v1/otp")?)
+            .header(CONTENT_TYPE, "application/json")
+            .body(serde_json::json!({"email": email, "create_user": false}).to_string());
+        let _: serde_json::Value = json_response(request).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn verify_otp(
         &self,
-        code: &str,
-        code_verifier: &str,
+        email: &str,
+        otp: &str,
     ) -> Result<Uuid, SupabaseAuthError> {
-        validate_verifier(code_verifier)?;
-        if !(1..=512).contains(&code.len()) || !unreserved(code) {
+        if !valid_otp(otp) {
             return Err(SupabaseAuthError::InvalidInput);
         }
-
         let exchange = self
             .client
-            .post(self.endpoint("auth/v1/token?grant_type=pkce")?)
+            .post(self.endpoint("auth/v1/verify")?)
             .header(CONTENT_TYPE, "application/json")
-            .body(
-                serde_json::json!({ "auth_code": code, "code_verifier": code_verifier })
-                    .to_string(),
-            );
+            .body(serde_json::json!({"email": email, "token": otp, "type": "email"}).to_string());
         let access: Access = json_response(exchange).await?;
 
         let mut bearer = HeaderValue::from_str(&format!("Bearer {}", access.access_token))
@@ -166,11 +140,27 @@ fn unreserved(value: &str) -> bool {
         .all(|byte| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte))
 }
 
-fn validate_verifier(value: &str) -> Result<(), SupabaseAuthError> {
-    if !(43..=128).contains(&value.len()) || !unreserved(value) {
-        return Err(SupabaseAuthError::InvalidInput);
+pub(crate) fn valid_otp(value: &str) -> bool {
+    (6..=8).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+pub(crate) fn normalized_email(value: &str) -> Option<String> {
+    let value = value.trim();
+    let (local, domain) = value.split_once('@')?;
+    if value.len() > 254
+        || local.is_empty()
+        || domain.is_empty()
+        || !domain.contains('.')
+        || !local
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".!#$%&*+-/=?^_`{|}~".contains(&b))
+        || !domain
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+    {
+        return None;
     }
-    Ok(())
+    Some(value.to_ascii_lowercase())
 }
 
 async fn json_response<T: DeserializeOwned>(

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::hosted_supabase::{normalized_email, valid_otp};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, header};
@@ -7,13 +8,11 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Body;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use url::Url;
 use uuid::Uuid;
 
 const BODY_LIMIT: usize = 4096;
 const BODY_DEADLINE: Duration = Duration::from_secs(5);
 const ATTEMPT_COOKIE: &str = "__Host-pigeonmq-registration";
-const CALLBACK_PATH: &str = "/auth/callback";
 
 pub(crate) type RegistrationResponse = Response<Full<Bytes>>;
 
@@ -38,10 +37,12 @@ pub(crate) enum RequestKind {
     RegisterSubmit {
         installation_id: Uuid,
         user_code: String,
+        email: String,
     },
-    AuthCallback {
-        code: String,
-        attempt: String,
+    VerifyEmail {
+        installation_id: Uuid,
+        otp: String,
+        attempt: Uuid,
     },
 }
 
@@ -91,15 +92,6 @@ where
     let (parts, body) = request.into_parts();
     let path = parts.uri.path();
     let query = parts.uri.query();
-    if path == CALLBACK_PATH && parts.method == Method::GET {
-        let code = single_url_field(query.ok_or(InvalidRequest)?.as_bytes(), "code")?;
-        if code.is_empty() || code.len() > 1024 || !code.bytes().all(|b| b.is_ascii_graphic()) {
-            return Err(InvalidRequest);
-        }
-        let attempt = browser_attempt(&parts.headers)?;
-        require_empty_body(body).await?;
-        return Ok(RequestKind::AuthCallback { code, attempt });
-    }
     if query.is_some() {
         return Err(InvalidRequest);
     }
@@ -144,20 +136,53 @@ where
         }
         (Method::POST, ["", "register", installation_id]) => {
             let installation_id = path_uuid(installation_id)?;
-            let content_type = single_header(&parts.headers, header::CONTENT_TYPE)
-                .and_then(|value| value.split(';').next())
-                .ok_or(InvalidRequest)?;
-            if !content_type.eq_ignore_ascii_case("application/x-www-form-urlencoded") {
-                return Err(InvalidRequest);
+            require_form(&parts.headers)?;
+            let input = bounded_body(body).await?;
+            let mut user_code = None;
+            let mut email = None;
+            for (key, value) in url::form_urlencoded::parse(&input) {
+                match key.as_ref() {
+                    "user_code" if user_code.is_none() => {
+                        user_code = Some(valid_user_code(value.into_owned())?)
+                    }
+                    "email" if email.is_none() => {
+                        email = Some(normalized_email(&value).ok_or(InvalidRequest)?)
+                    }
+                    _ => return Err(InvalidRequest),
+                }
             }
-            let user_code = single_url_field(&bounded_body(body).await?, "user_code")?;
-            let user_code = valid_user_code(user_code)?;
             Ok(RequestKind::RegisterSubmit {
                 installation_id,
-                user_code,
+                user_code: user_code.ok_or(InvalidRequest)?,
+                email: email.ok_or(InvalidRequest)?,
+            })
+        }
+        (Method::POST, ["", "register", installation_id, "verify"]) => {
+            require_form(&parts.headers)?;
+            let installation_id = path_uuid(installation_id)?;
+            let attempt = path_uuid(&browser_attempt(&parts.headers)?)?;
+            let otp = single_url_field(&bounded_body(body).await?, "otp")?;
+            if !valid_otp(&otp) {
+                return Err(InvalidRequest);
+            }
+            Ok(RequestKind::VerifyEmail {
+                installation_id,
+                otp,
+                attempt,
             })
         }
         _ => Err(RegistrationNotFound),
+    }
+}
+
+fn require_form(headers: &HeaderMap) -> Result<(), RegistrationHttpError> {
+    if single_header(headers, header::CONTENT_TYPE)
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.eq_ignore_ascii_case("application/x-www-form-urlencoded"))
+    {
+        Ok(())
+    } else {
+        Err(InvalidRequest)
     }
 }
 
@@ -310,7 +335,9 @@ pub(crate) fn login_form(
 <form method="post" action="/register/{installation_id}">
 <label for="user_code">Code displayed on your Mac</label>
 <input id="user_code" name="user_code" type="text" pattern="[A-Z0-9]{{8}}" minlength="8" maxlength="8" required>
-<button type="submit">Continue to sign in</button>
+<label for="email">Invited email address</label>
+<input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+<button type="submit">Send email code</button>
 </form>
 </html>"#
     ));
@@ -322,33 +349,22 @@ pub(crate) fn login_form(
     Ok(response)
 }
 
-pub(crate) fn auth_redirect(
-    location: &Url,
-    allowed_origin: &Url,
-    attempt: &str,
-    ttl_seconds: u64,
-) -> Result<RegistrationResponse, RegistrationHttpError> {
-    if location.scheme() != "https"
-        || location.origin() != allowed_origin.origin()
-        || !location.username().is_empty()
-        || location.password().is_some()
-        || location.fragment().is_some()
-        || !valid_attempt_cookie(attempt)
-        || ttl_seconds == 0
-    {
-        return Err(TemporarilyUnavailable);
-    }
-    let mut response = response(
-        StatusCode::SEE_OTHER,
-        "text/plain; charset=utf-8",
-        String::new(),
-    );
+pub(crate) fn otp_form(installation_id: Uuid, attempt: Uuid) -> RegistrationResponse {
+    let mut response = html_response(format!(
+        r#"<!doctype html><html lang="en"><meta charset="utf-8">
+<title>Verify PigeonMQ registration</title><h1>Verify PigeonMQ registration</h1>
+<p>If the address is invited, check its inbox for a code.</p>
+<form method="post" action="/register/{installation_id}/verify">
+<label for="otp">Email code</label>
+<input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{{6,8}}" maxlength="8" required>
+<button type="submit">Verify email code</button></form></html>"#
+    ));
     response.headers_mut().insert(
-        header::LOCATION,
-        HeaderValue::from_str(location.as_str()).map_err(|_| TemporarilyUnavailable)?,
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
     );
-    set_attempt_cookie(&mut response, attempt, ttl_seconds);
-    Ok(response)
+    set_attempt_cookie(&mut response, &attempt.to_string(), 300);
+    response
 }
 
 pub(crate) fn approval_result() -> RegistrationResponse {
@@ -363,9 +379,8 @@ pub(crate) fn approval_result() -> RegistrationResponse {
 }
 
 fn set_attempt_cookie(response: &mut RegistrationResponse, value: &str, ttl_seconds: u64) {
-    // The callback is a top-level GET navigation from the identity provider.
     let mut cookie = HeaderValue::from_str(&format!(
-        "{ATTEMPT_COOKIE}={value}; Path=/; Max-Age={ttl_seconds}; Secure; HttpOnly; SameSite=Lax"
+        "{ATTEMPT_COOKIE}={value}; Path=/; Max-Age={ttl_seconds}; Secure; HttpOnly; SameSite=Strict"
     ))
     .expect("validated registration cookie");
     cookie.set_sensitive(true);
@@ -482,53 +497,45 @@ mod tests {
             .method(Method::POST)
             .uri(format!("/register/{ID}"))
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(Full::new(Bytes::from(format!("user_code={USER_CODE}"))))
+            .body(Full::new(Bytes::from(format!(
+                "user_code={USER_CODE}&email=Pilot%40example.test"
+            ))))
             .unwrap();
         assert!(matches!(
             parse_request(request).await,
-            Ok(RequestKind::RegisterSubmit { installation_id, user_code })
-                if installation_id == id && user_code == USER_CODE
+            Ok(RequestKind::RegisterSubmit { installation_id, user_code, email })
+                if installation_id == id && user_code == USER_CODE && email == "pilot@example.test"
         ));
 
-        let provider = Url::parse("https://identity.example.com").unwrap();
-        let authorize = provider.join("/authorize").unwrap();
-        let redirect = auth_redirect(&authorize, &provider, ID, 90).unwrap();
-        let cookie = &redirect.headers()[header::SET_COOKIE];
+        let verify = otp_form(id, id);
+        let cookie = &verify.headers()[header::SET_COOKIE];
         assert!(cookie.is_sensitive());
         let cookie = cookie.to_str().unwrap();
-        assert!(cookie.ends_with("; Secure; HttpOnly; SameSite=Lax"));
-        assert!(cookie.contains("Path=/; Max-Age=90"));
-        assert!(
-            auth_redirect(
-                &Url::parse("https://elsewhere.example.com/authorize").unwrap(),
-                &provider,
-                ID,
-                90,
-            )
-            .is_err()
-        );
-
+        assert!(cookie.ends_with("; Secure; HttpOnly; SameSite=Strict"));
+        assert!(verify.headers().get(header::LOCATION).is_none());
         let cookie_pair = cookie.split(';').next().unwrap();
-        let callback = |cookie: &str, uri: &str| {
+        let submit = |cookie: &str, body: &str| {
             Request::builder()
-                .uri(uri)
+                .method(Method::POST)
+                .uri(format!("/register/{ID}/verify"))
                 .header(header::COOKIE, cookie)
-                .body(Full::new(Bytes::new()))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Full::new(Bytes::copy_from_slice(body.as_bytes())))
                 .unwrap()
         };
-        let path = "/auth/callback?code=synthetic-callback";
         assert!(matches!(
-            parse_request(callback(cookie_pair, path)).await,
-            Ok(RequestKind::AuthCallback { code, attempt })
-                if code == "synthetic-callback" && attempt == ID
+            parse_request(submit(cookie_pair, "otp=123456")).await,
+            Ok(RequestKind::VerifyEmail { installation_id, otp, attempt })
+                if installation_id == id && otp == "123456" && attempt == id
         ));
+        for body in ["otp=abcdef", "otp=123456&email=other%40example.test"] {
+            assert!(matches!(
+                parse_request(submit(cookie_pair, body)).await,
+                Err(InvalidRequest)
+            ));
+        }
         assert!(matches!(
-            parse_request(callback("", path)).await,
-            Err(InvalidRequest)
-        ));
-        let duplicate = format!("{cookie_pair}; {cookie_pair}");
-        assert!(matches!(
-            parse_request(callback(&duplicate, path)).await,
+            parse_request(submit("", "otp=123456")).await,
             Err(InvalidRequest)
         ));
 

@@ -14,9 +14,9 @@ use enrollment_store::{Enrollment, EnrollmentState, Registry, RegistryError};
 use hosted_cloudflare::{CloudflareProvisioner, CloudflareResources, valid_public_mcp_path};
 use hosted_registration_http::{
     RegistrationHttpError as HttpError, RegistrationResponse, RequestKind, approval_result,
-    auth_redirect, json_response, login_form, parse_request,
+    json_response, login_form, otp_form, parse_request,
 };
-use hosted_supabase::SupabaseAuth;
+use hosted_supabase::{SupabaseAuth, normalized_email};
 use http::{Method, Request, StatusCode, header};
 use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -25,7 +25,7 @@ use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     convert::Infallible,
     io::{self, Read},
     net::Ipv4Addr,
@@ -57,8 +57,7 @@ struct Config {
     registration_origin: String,
     supabase_url: String,
     supabase_publishable_key: String,
-    login_provider: String,
-    invited_accounts: HashSet<String>,
+    invited_accounts: HashMap<String, String>,
     cloudflare_account_id: String,
     cloudflare_zone_id: String,
     cloudflare_zone_name: String,
@@ -70,8 +69,7 @@ struct Config {
 
 struct Operator {
     origin: Url,
-    auth_origin: Url,
-    access: HashSet<Uuid>,
+    access: HashMap<String, Uuid>,
     auth: SupabaseAuth,
     cloudflare: CloudflareProvisioner,
     zone: String,
@@ -142,17 +140,14 @@ impl Operator {
             .map_err(|_| unavailable())?;
         let origin = https_origin(&config.registration_origin)?;
         let auth_origin = https_origin(&config.supabase_url)?;
-        let callback = origin.join("auth/callback").map_err(|_| unavailable())?;
-        let access = config
-            .invited_accounts
-            .iter()
-            .map(|value| {
-                Uuid::parse_str(value)
-                    .ok()
-                    .filter(|id| !id.is_nil())
-                    .ok_or_else(unavailable)
-            })
-            .collect::<io::Result<HashSet<_>>>()?;
+        let mut access = HashMap::new();
+        for (email, id) in config.invited_accounts {
+            let email = normalized_email(&email).ok_or_else(unavailable)?;
+            let id = Uuid::parse_str(&id).map_err(|_| unavailable())?;
+            if id.is_nil() || access.insert(email, id).is_some() {
+                return Err(unavailable());
+            }
+        }
         let mut mcp_paths = config.mcp_path.into_iter().collect::<Vec<_>>();
         for path in config.mcp_paths {
             if !mcp_paths.contains(&path) {
@@ -171,13 +166,8 @@ impl Operator {
             .map_err(|_| unavailable())?
             .trim();
         Ok(Self {
-            auth: SupabaseAuth::new(
-                auth_origin.as_str(),
-                &config.supabase_publishable_key,
-                &config.login_provider,
-                callback.as_str(),
-            )
-            .map_err(|_| unavailable())?,
+            auth: SupabaseAuth::new(auth_origin.as_str(), &config.supabase_publishable_key)
+                .map_err(|_| unavailable())?,
             cloudflare: CloudflareProvisioner::new(
                 &config.cloudflare_account_id,
                 &config.cloudflare_zone_id,
@@ -186,7 +176,6 @@ impl Operator {
             )
             .map_err(|_| unavailable())?,
             origin,
-            auth_origin,
             access,
             zone: config.cloudflare_zone_name,
             hub_port: config.hub_port,
@@ -340,29 +329,48 @@ impl Operator {
             RequestKind::RegisterSubmit {
                 installation_id,
                 user_code,
+                email,
+            } => {
+                let attempt = self.record(|reg| {
+                    reg.start_email_attempt(installation_id, &user_code, &email, now)
+                })?;
+                // Do not reveal whether the address is invited or whether mail was sent.
+                if self.access.contains_key(&attempt.email)
+                    && self.auth.request_otp(&attempt.email).await.is_ok()
+                {
+                    let now = epoch_seconds()?;
+                    self.record(|reg| reg.mark_email_sent(attempt.id, installation_id, now))?;
+                }
+                Ok(otp_form(installation_id, attempt.id))
+            }
+            RequestKind::VerifyEmail {
+                installation_id,
+                otp,
+                attempt,
             } => {
                 let attempt =
-                    self.record(|reg| reg.start_browser(installation_id, &user_code, now))?;
-                let redirect = self
-                    .auth
-                    .authorize_url(&attempt.verifier)
-                    .map_err(|_| HttpError::TemporarilyUnavailable)?;
-                auth_redirect(&redirect, &self.auth_origin, &attempt.id.to_string(), 300)
-            }
-            RequestKind::AuthCallback { code, attempt } => {
-                let attempt_id = Uuid::parse_str(&attempt)
-                    .ok()
-                    .filter(|id| id.to_string() == attempt)
+                    self.record(|reg| reg.take_email_attempt(attempt, Some(installation_id), now))?;
+                let expected = self
+                    .access
+                    .get(&attempt.email)
                     .ok_or(HttpError::RegistrationNotFound)?;
-                let attempt = self.record(|reg| reg.take_browser(attempt_id, now))?;
                 let account = self
                     .auth
-                    .exchange_user(&code, &attempt.verifier)
+                    .verify_otp(&attempt.email, &otp)
                     .await
                     .map_err(|_| HttpError::RegistrationNotFound)?;
+                if account != *expected {
+                    return Err(HttpError::RegistrationNotFound);
+                }
                 let now = epoch_seconds()?;
                 self.record(|reg| {
-                    reg.approve(attempt.installation_id, account, &self.access, now)
+                    reg.approve_email_attempt(
+                        installation_id,
+                        Some(attempt.id),
+                        account,
+                        &HashSet::from([*expected]),
+                        now,
+                    )
                 })?;
                 Ok(approval_result())
             }
@@ -452,8 +460,7 @@ mod tests {
             "registration_origin": "https://init.example.com",
             "supabase_url": "https://identity.example.com",
             "supabase_publishable_key": "sb_publishable_fixture",
-            "login_provider": "github",
-            "invited_accounts": ["11111111-1111-4111-8111-111111111111"],
+            "invited_accounts": {"invited@example.test": "11111111-1111-4111-8111-111111111111"},
             "cloudflare_account_id": "a".repeat(32),
             "cloudflare_zone_id": "b".repeat(32),
             "cloudflare_zone_name": "example.com",
@@ -571,23 +578,198 @@ mod tests {
                 .header(header::HOST, "init.example.com")
                 .header(header::ORIGIN, origin)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Full::new(Bytes::from_static(b"user_code=A1B2C3D4")))
+                .body(Full::new(Bytes::from_static(
+                    b"user_code=A1B2C3D4&email=not-invited%40example.test",
+                )))
                 .unwrap()
         };
         assert!(matches!(
             operator.dispatch(form("https://other.example.com")).await,
             Err(HttpError::RegistrationNotFound)
         ));
-        let redirect = operator
+        let otp = operator
             .dispatch(form("https://init.example.com"))
             .await
             .unwrap();
-        assert_eq!(redirect.status(), StatusCode::SEE_OTHER);
+        assert_eq!(otp.status(), StatusCode::OK);
         assert!(
-            redirect.headers()[header::SET_COOKIE]
+            otp.headers()[header::SET_COOKIE]
                 .to_str()
                 .unwrap()
                 .starts_with("__Host-pigeonmq-registration=")
         );
+    }
+
+    #[tokio::test]
+    async fn email_otp_is_bound_to_one_installation_and_one_attempt() {
+        let (_home, mut operator) = fixture();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        operator
+            .auth
+            .use_loopback_fixture(listener.local_addr().unwrap().port());
+        let emails = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let verifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        use std::sync::atomic::Ordering::SeqCst;
+        let fixture_emails = emails.clone();
+        let fixture_verifications = verifications.clone();
+        let upstream = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let fixture_emails = fixture_emails.clone();
+                let fixture_verifications = fixture_verifications.clone();
+                tokio::spawn(async move {
+                    let handler = service_fn(move |req: Request<hyper::body::Incoming>| {
+                        let fixture_emails = fixture_emails.clone();
+                        let fixture_verifications = fixture_verifications.clone();
+                        async move {
+                            let path = req.uri().path().to_owned();
+                            let bytes = req.into_body().collect().await.unwrap().to_bytes();
+                            let response = match path.as_str() {
+                                "/auth/v1/otp" => {
+                                    fixture_emails.fetch_add(1, SeqCst);
+                                    let body: Value = serde_json::from_slice(&bytes).unwrap();
+                                    assert_eq!(
+                                        body,
+                                        json!({"email":"invited@example.test","create_user":false})
+                                    );
+                                    json_response(StatusCode::OK, json!({}))
+                                }
+                                "/auth/v1/verify" => {
+                                    fixture_verifications.fetch_add(1, SeqCst);
+                                    let body: Value = serde_json::from_slice(&bytes).unwrap();
+                                    assert_eq!(body["email"], "invited@example.test");
+                                    assert_eq!(body["type"], "email");
+                                    if body["token"] == "123456" {
+                                        json_response(
+                                            StatusCode::OK,
+                                            json!({"access_token":"fixture-access"}),
+                                        )
+                                    } else {
+                                        json_response(StatusCode::BAD_REQUEST, json!({}))
+                                    }
+                                }
+                                "/auth/v1/user" => json_response(
+                                    StatusCode::OK,
+                                    json!({
+                                        "id":"11111111-1111-4111-8111-111111111111",
+                                        "role":"authenticated","is_anonymous":false
+                                    }),
+                                ),
+                                _ => panic!("unexpected auth request"),
+                            };
+                            Ok::<_, Infallible>(response)
+                        }
+                    });
+                    let _ = http1::Builder::new()
+                        .keep_alive(false)
+                        .serve_connection(TokioIo::new(stream), handler)
+                        .await;
+                });
+            }
+        });
+
+        let now = epoch_seconds().unwrap();
+        let proof_a = URL_SAFE_NO_PAD.encode([1; 32]);
+        let proof_b = URL_SAFE_NO_PAD.encode([2; 32]);
+        let a = operator
+            .record(|reg| reg.begin(Uuid::new_v4(), &proof_a, "A1B2C3D4", now))
+            .unwrap();
+        let b = operator
+            .record(|reg| reg.begin(Uuid::new_v4(), &proof_b, "A1B2C3D4", now))
+            .unwrap();
+        let browser = |path: String, cookie: Option<String>, body: &'static str| {
+            let mut req = Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header(header::HOST, "init.example.com")
+                .header(header::ORIGIN, "https://init.example.com")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+            if let Some(cookie) = cookie {
+                req = req.header(header::COOKIE, cookie);
+            }
+            req.body(Full::new(Bytes::from_static(body.as_bytes())))
+                .unwrap()
+        };
+        let request_otp = |id| {
+            browser(
+                format!("/register/{id}"),
+                None,
+                "user_code=A1B2C3D4&email=invited%40example.test",
+            )
+        };
+        let submit = |id, cookie, otp| browser(format!("/register/{id}/verify"), Some(cookie), otp);
+        let read_cookie = |response: RegistrationResponse| {
+            response.headers()[header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned()
+        };
+
+        let cookie = read_cookie(operator.dispatch(request_otp(a.id)).await.unwrap());
+        assert_eq!(emails.load(SeqCst), 1);
+        assert!(matches!(
+            operator.dispatch(request_otp(b.id)).await,
+            Err(HttpError::RateLimited)
+        ));
+        assert!(matches!(
+            operator
+                .dispatch(submit(b.id, cookie.clone(), "otp=123456"))
+                .await,
+            Err(HttpError::RegistrationNotFound)
+        ));
+        assert_eq!(verifications.load(SeqCst), 0);
+        assert!(
+            operator
+                .dispatch(submit(a.id, cookie.clone(), "otp=123456"))
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            operator.dispatch(submit(a.id, cookie, "otp=123456")).await,
+            Err(HttpError::RegistrationNotFound)
+        ));
+        assert_eq!(verifications.load(SeqCst), 1);
+        assert_eq!(
+            operator
+                .record(|reg| reg.get(a.id, &proof_a, now))
+                .unwrap()
+                .state,
+            EnrollmentState::Approved
+        );
+        assert_eq!(
+            operator
+                .record(|reg| reg.get(b.id, &proof_b, now))
+                .unwrap()
+                .state,
+            EnrollmentState::Pending
+        );
+
+        let cookie = read_cookie(operator.dispatch(request_otp(b.id)).await.unwrap());
+        assert!(matches!(
+            operator
+                .dispatch(submit(b.id, cookie.clone(), "otp=654321"))
+                .await,
+            Err(HttpError::RegistrationNotFound)
+        ));
+        assert!(matches!(
+            operator.dispatch(submit(b.id, cookie, "otp=123456")).await,
+            Err(HttpError::RegistrationNotFound)
+        ));
+        assert_eq!(verifications.load(SeqCst), 2);
+        assert_eq!(
+            operator
+                .record(|reg| reg.get(b.id, &proof_b, now))
+                .unwrap()
+                .state,
+            EnrollmentState::Pending
+        );
+        assert!(matches!(
+            operator.finish(b.id, proof_b).await,
+            Err(HttpError::LoginPending)
+        ));
+        upstream.abort();
     }
 }

@@ -117,7 +117,7 @@ pub(crate) struct LoginRecord {
 pub(crate) struct BrowserAttempt {
     pub id: Uuid,
     pub installation_id: Uuid,
-    pub verifier: String,
+    pub email: String,
 }
 
 pub(crate) struct Registry {
@@ -294,10 +294,23 @@ impl Registry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn start_browser(
         &mut self,
         id: Uuid,
         user_code: &str,
+        now: i64,
+    ) -> Result<BrowserAttempt> {
+        let attempt = self.start_email_attempt(id, user_code, "fixture@example.test", now)?;
+        self.mark_email_sent(attempt.id, id, now)?;
+        Ok(attempt)
+    }
+
+    pub(crate) fn start_email_attempt(
+        &mut self,
+        id: Uuid,
+        user_code: &str,
+        email: &str,
         now: i64,
     ) -> Result<BrowserAttempt> {
         let tx = self
@@ -307,8 +320,8 @@ impl Registry {
         let enrollment = pending(load(&tx, &id_text)?, now)?;
         let active: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM browser_attempts
-                            WHERE installation_id = ?1 AND expires_at > ?2)",
-            params![id_text, now],
+                            WHERE (installation_id = ?1 OR verifier IN ('wait:' || ?3, 'email:' || ?3, 'used:' || ?3)) AND expires_at > ?2)",
+            params![id_text, now, email],
             |row| row.get(0),
         )?;
         let (expected, failures): (Vec<u8>, i64) = tx.query_row(
@@ -316,7 +329,7 @@ impl Registry {
             [&id_text],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if active || failures >= MAX_GUESSES {
+        if failures >= MAX_GUESSES {
             return Err(RegistryError::RateLimited);
         }
         if !valid_code(user_code)
@@ -334,19 +347,19 @@ impl Registry {
             });
         }
 
+        if active {
+            return Err(RegistryError::RateLimited);
+        }
+
         let attempt_id = Uuid::new_v4();
-        let mut random = [0; 32];
-        random[..16].copy_from_slice(Uuid::new_v4().as_bytes());
-        random[16..].copy_from_slice(Uuid::new_v4().as_bytes());
-        let verifier = URL_SAFE_NO_PAD.encode(random);
         tx.execute("DELETE FROM browser_attempts WHERE expires_at <= ?1", [now])?;
         tx.execute(
             "INSERT INTO browser_attempts (id, installation_id, verifier, expires_at)
-             VALUES (?1, ?2, ?3, ?4)",
+             VALUES (?1, ?2, 'wait:' || ?3, ?4)",
             params![
                 attempt_id.to_string(),
                 id_text,
-                verifier,
+                email,
                 enrollment
                     .expires_at
                     .min(now.saturating_add(BROWSER_SECONDS))
@@ -356,12 +369,43 @@ impl Registry {
         Ok(BrowserAttempt {
             id: attempt_id,
             installation_id: id,
-            verifier,
+            email: email.to_owned(),
         })
     }
 
-    /// Atomically consume the verifier before attempting the provider exchange.
+    /// Enable verification only after Supabase accepts the request for this attempt.
+    pub(crate) fn mark_email_sent(
+        &mut self,
+        attempt: Uuid,
+        installation: Uuid,
+        now: i64,
+    ) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE browser_attempts SET verifier = 'email:' || substr(verifier, 6)
+             WHERE id = ?1 AND installation_id = ?2 AND expires_at > ?3
+               AND substr(verifier, 1, 5) = 'wait:'",
+            params![attempt.to_string(), installation.to_string(), now],
+        )?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(RegistryError::NotFound)
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn take_browser(&mut self, attempt_id: Uuid, now: i64) -> Result<BrowserAttempt> {
+        self.take_email_attempt(attempt_id, None, now)
+    }
+
+    /// Consume only the attempt bound to this installation and email.
+    /// Old OAuth verifier values have no email tag and cannot be consumed here.
+    pub(crate) fn take_email_attempt(
+        &mut self,
+        attempt_id: Uuid,
+        expected_id: Option<Uuid>,
+        now: i64,
+    ) -> Result<BrowserAttempt> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -378,24 +422,44 @@ impl Registry {
             return Err(RegistryError::Expired);
         }
         pending(load(&tx, &id)?, now)?;
-        let verifier = verifier.ok_or(RegistryError::NotFound)?;
+        let email = verifier
+            .as_deref()
+            .and_then(|value| value.strip_prefix("email:"))
+            .ok_or(RegistryError::NotFound)?
+            .to_owned();
         let installation_id = Uuid::parse_str(&id).map_err(|_| RegistryError::Unavailable)?;
+        if expected_id.is_some_and(|expected| expected != installation_id) {
+            return Err(RegistryError::NotFound);
+        }
+
         tx.execute(
-            "UPDATE browser_attempts SET verifier = NULL WHERE id = ?1",
+            "UPDATE browser_attempts SET verifier = 'used:' || substr(verifier, 7) WHERE id = ?1",
             [&attempt_text],
         )?;
         tx.commit()?;
         Ok(BrowserAttempt {
             id: attempt_id,
             installation_id,
-            verifier,
+            email,
         })
     }
 
-    /// The caller verifies the Supabase identity before passing its account ID.
+    #[cfg(test)]
     pub(crate) fn approve(
         &mut self,
         id: Uuid,
+        verified_account: Uuid,
+        allowed_accounts: &HashSet<Uuid>,
+        now: i64,
+    ) -> Result<Enrollment> {
+        self.approve_email_attempt(id, None, verified_account, allowed_accounts, now)
+    }
+
+    /// Approve only the pending installation bound to the exact consumed attempt.
+    pub(crate) fn approve_email_attempt(
+        &mut self,
+        id: Uuid,
+        attempt: Option<Uuid>,
         verified_account: Uuid,
         allowed_accounts: &HashSet<Uuid>,
         now: i64,
@@ -410,8 +474,9 @@ impl Registry {
         pending(load(&tx, &id)?, now)?;
         let consumed: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM browser_attempts
-                            WHERE installation_id = ?1 AND verifier IS NULL AND expires_at > ?2)",
-            params![id, now],
+                            WHERE installation_id = ?1 AND substr(verifier, 1, 5) = 'used:' AND expires_at > ?2
+                              AND (?3 IS NULL OR id = ?3))",
+            params![id, now, attempt.map(|id| id.to_string())],
             |row| row.get(0),
         )?;
         if !consumed {
@@ -999,6 +1064,42 @@ mod tests {
     }
 
     #[test]
+    fn email_attempt_requires_issuance_and_refuses_expired_approval() {
+        let home = private_home();
+        let path = home.path().join("enrollments.sqlite");
+        let mut registry = Registry::open(&path).unwrap();
+        let enrollment = registry.begin(Uuid::new_v4(), &proof(7), CODE, 0).unwrap();
+        let attempt = registry
+            .start_email_attempt(enrollment.id, CODE, "pilot@example.test", 0)
+            .unwrap();
+        assert_eq!(
+            registry
+                .take_email_attempt(attempt.id, Some(enrollment.id), 1)
+                .err(),
+            Some(RegistryError::NotFound)
+        );
+        registry
+            .mark_email_sent(attempt.id, enrollment.id, 1)
+            .unwrap();
+        registry
+            .take_email_attempt(attempt.id, Some(enrollment.id), 1)
+            .unwrap();
+        let account = Uuid::new_v4();
+        assert_eq!(
+            registry
+                .approve_email_attempt(
+                    enrollment.id,
+                    Some(attempt.id),
+                    account,
+                    &HashSet::from([account]),
+                    BROWSER_SECONDS
+                )
+                .err(),
+            Some(RegistryError::Forbidden)
+        );
+    }
+
+    #[test]
     fn browser_attempt_is_single_use_and_limited_by_code_and_time() {
         let home = private_home();
         let path = home.path().join("enrollments.sqlite");
@@ -1021,7 +1122,7 @@ mod tests {
             .unwrap();
         let taken = registry.take_browser(attempt.id, BROWSER_SECONDS).unwrap();
         assert_eq!(taken.installation_id, record.id);
-        assert!(taken.verifier == attempt.verifier);
+        assert!(taken.email == attempt.email);
         assert_eq!(
             registry.take_browser(attempt.id, BROWSER_SECONDS).err(),
             Some(RegistryError::NotFound)
