@@ -271,7 +271,7 @@ impl Receiver {
                 lease_seconds: self.lease.as_secs(),
             })
             .map_err(|_| "lease_expired_requires_reconciliation")?;
-        self.pending.as_mut().unwrap().delivery.lease_until_ms = until;
+        self.pending.as_mut().ok_or("no_pending")?.delivery.lease_until_ms = until;
         self.save()
     }
     /// (message_id, sender) of the pending message, for logs.
@@ -336,7 +336,7 @@ impl Receiver {
             return Err(reason);
         }
         self.authorize()?;
-        let p = self.pending.as_ref().unwrap();
+        let p = self.pending.as_ref().ok_or("no_pending")?;
         let _: crate::runtime_admission::Record = self
             .call(Action::Begin {
                 message_id: p.delivery.message.id.clone(),
@@ -367,7 +367,7 @@ impl Receiver {
         }
         p.admission = Some(id.into());
         self.save()?;
-        let p = self.pending.as_ref().unwrap();
+        let p = self.pending.as_ref().ok_or("no_pending")?;
         let mut r: crate::runtime_admission::Record = self
             .call(Action::Load {
                 message_id: p.delivery.message.id.clone(),
@@ -447,7 +447,7 @@ impl Receiver {
             }
             return Ok(false);
         }
-        let p = self.pending.as_ref().unwrap();
+        let p = self.pending.as_ref().ok_or("no_pending")?;
         if matching {
             if turn.is_some_and(|t| p.foreign_input_turns.iter().any(|old| old == t)) {
                 return self.block("mixed_user_input");
@@ -458,9 +458,9 @@ impl Receiver {
             if p.turn.as_deref().is_some_and(|id| Some(id) != turn) {
                 return self.block("multiple_matching_turns");
             }
-            self.pending.as_mut().unwrap().turn = turn.map(str::to_owned);
+            self.pending.as_mut().ok_or("no_pending")?.turn = turn.map(str::to_owned);
         }
-        let p = self.pending.as_mut().unwrap();
+        let p = self.pending.as_mut().ok_or("no_pending")?;
         if p.turn.is_none() || p.turn.as_deref() != turn {
             return Ok(false);
         }
@@ -513,8 +513,8 @@ impl Receiver {
             p.completed = true;
         }
         self.save()?;
-        if self.pending.as_ref().unwrap().completed {
-            let p = self.pending.as_ref().unwrap();
+        if self.pending.as_ref().ok_or("no_pending")?.completed {
+            let p = self.pending.as_ref().ok_or("no_pending")?;
             let mut r: crate::runtime_admission::Record = self
                 .call(Action::Load {
                     message_id: p.delivery.message.id.clone(),
@@ -541,7 +541,7 @@ impl Receiver {
                 message_id = p.delivery.message.id.as_str()
             );
         }
-        Ok(self.pending.as_ref().unwrap().completed)
+        Ok(self.pending.as_ref().ok_or("no_pending")?.completed)
     }
     /// Unknown native outcome: never ACK, never resubmit. The journal is kept
     /// (renamed to `.unresolved-<message>-<attempt>`) for reconciliation by
@@ -558,7 +558,7 @@ impl Receiver {
                 lease_seconds: 7 * 86400,
             })
             .ok();
-        let p = self.pending.as_mut().unwrap();
+        let p = self.pending.as_mut().ok_or("no_pending")?;
         p.blocked = Some(reason.into());
         if let Some(until) = parked {
             p.delivery.lease_until_ms = until;
