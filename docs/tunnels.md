@@ -41,7 +41,9 @@ If your checkout itself is owner-only, you can instead use `(umask 077; cp .env.
 This is the recommended way to publish a public URL.
 If you control a domain, choose a hostname such as `pigeon.example.com`.
 Use any reverse tunnel or HTTPS proxy that can forward to the hub on the same machine.
-When TLS ends on your proxy, the tunnel provider does not see Bearer tokens or message bodies.
+The service that terminates public TLS can read request headers, including Bearer tokens, and message bodies.
+For a public Cloudflare Tunnel, Cloudflare terminates public TLS. TLS to the origin does not hide this data from Cloudflare.
+A pass-through provider cannot read this data if TLS ends at an endpoint you control and no intermediary decrypts the traffic.
 A domain by itself does not create a route.
 Configure DNS and TLS with your provider, and manage the proxy or tunnel separately from PigeonMQ.
 
