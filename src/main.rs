@@ -114,7 +114,7 @@ enum Command {
     Health {
         #[arg(long, default_value = ".local")]
         home: PathBuf,
-        /// Check the configured public HTTPS endpoint without credentials.
+        /// Check configured public HTTPS routes without credentials.
         #[arg(long)]
         probe_public: bool,
     },
