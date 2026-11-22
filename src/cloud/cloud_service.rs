@@ -654,7 +654,17 @@ async fn run_with(
         };
         tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
         stage = "host", outcome = "spawned");
-        let mut host_output = BufReader::new(host.stdout.take().unwrap());
+        let stdout = match host.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                    stage = "host_ready", outcome = "missing_stdout");
+                let _ = host.kill().await;
+                backoff = (backoff * 2).min(Duration::from_secs(5));
+                continue;
+            }
+        };
+        let mut host_output = BufReader::new(stdout);
         let startup = async {
             let mut line = String::new();
             if (&mut host_output)
@@ -793,9 +803,13 @@ async fn run_with(
                                     }
                                     Ok(child) => {
                                         tunnel = Some(child);
-                                        tokio::select! {
-                                            result=supervise(&a, provider, &mut host, tunnel.as_mut().unwrap(), &mut managed, &mut term, &mut interrupt)=>result,
-                                            _=&mut shutdown=>Ok("stopped".into())
+                                        if let Some(tunnel) = tunnel.as_mut() {
+                                            tokio::select! {
+                                                result=supervise(&a, provider, &mut host, tunnel, &mut managed, &mut term, &mut interrupt)=>result,
+                                                _=&mut shutdown=>Ok("stopped".into())
+                                            }
+                                        } else {
+                                            Ok("stopped".into())
                                         }
                                     }
                                 };
