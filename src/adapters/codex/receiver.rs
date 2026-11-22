@@ -150,6 +150,7 @@ pub struct Receiver {
 }
 impl Drop for Receiver {
     fn drop(&mut self) {
+        // SAFETY: lock descriptor is owned by this Receiver and valid until drop.
         unsafe {
             libc::flock(self.lock.as_raw_fd(), libc::LOCK_UN);
         }
@@ -166,6 +167,7 @@ impl Receiver {
         let metadata =
             std::fs::symlink_metadata(state).map_err(|_| "receiver_state_unavailable")?;
         if !metadata.is_dir()
+            // SAFETY: geteuid has no preconditions.
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.mode() & 0o077 != 0
         {
@@ -185,11 +187,13 @@ impl Receiver {
         // FIXME(yagni): nlink/uid/0600 checks on an empty receiver lock - flock alone is enough
         if !lm.is_file()
             || lm.nlink() != 1
+            // SAFETY: geteuid has no preconditions.
             || lm.uid() != unsafe { libc::geteuid() }
             || lm.mode() & 0o077 != 0
         {
             return Err("unsafe_receiver_lock");
         }
+        // SAFETY: lock descriptor is owned by this process and valid until close.
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err("codex_receiver_already_running");
         }

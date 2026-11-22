@@ -320,6 +320,7 @@ pub fn peer_closed(stream: &TcpStream) -> bool {
     use std::os::fd::AsRawFd;
     let mut byte = 0u8;
     // MSG_DONTWAIT avoids changing the shared descriptor's blocking mode.
+    // SAFETY: stream.as_raw_fd() is a valid open descriptor for the duration of this call; recv reads into a live 1-byte buffer.
     let n = unsafe {
         libc::recv(
             stream.as_raw_fd(),

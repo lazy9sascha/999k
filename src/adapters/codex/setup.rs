@@ -52,6 +52,7 @@ fn validate(options: &SetupOptions) -> io::Result<()> {
             || !metadata.is_file()
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.mode() & 0o022 != 0
+            // SAFETY: name is a live NUL-terminated path string.
             || unsafe { libc::access(name.as_ptr(), libc::X_OK) } != 0
         {
             return Err(io::Error::other(

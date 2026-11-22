@@ -73,6 +73,7 @@ impl NativeTransport {
         let metadata = std::fs::metadata(&endpoint).map_err(io)?;
         // The resolved target must be the current user's socket.
         // FIXME(yagni): socket owner check after canonicalize - the endpoint comes from the owner's private binding
+        // SAFETY: getuid has no preconditions.
         if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::getuid() } {
             return Err(TransportError::EndpointUntrusted);
         }
@@ -324,15 +325,17 @@ fn check_peer(stream: &UnixStream) -> Result<()> {
     {
         let mut uid = 0;
         let mut gid = 0;
+        // SAFETY: stream descriptor is valid for this call; getpeereid writes into provided out-params.
         let result = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
-        if result != 0 || uid != unsafe { libc::getuid() } {
+        if result != 0 || uid != unsafe { libc::getuid() } { // SAFETY: getuid has no preconditions.
             return Err(TransportError::EndpointUntrusted);
         }
     }
     #[cfg(target_os = "linux")]
     {
-        let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut credentials: libc::ucred = unsafe { std::mem::zeroed() }; // SAFETY: zeroed is valid for POD ucred.
         let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: stream descriptor valid; getsockopt writes into provided buffer.
         let result = unsafe {
             libc::getsockopt(
                 stream.as_raw_fd(),
@@ -342,7 +345,7 @@ fn check_peer(stream: &UnixStream) -> Result<()> {
                 &mut length,
             )
         };
-        if result != 0 || credentials.uid != unsafe { libc::getuid() } {
+        if result != 0 || credentials.uid != unsafe { libc::getuid() } { // SAFETY: getuid has no preconditions.
             return Err(TransportError::EndpointUntrusted);
         }
     }
