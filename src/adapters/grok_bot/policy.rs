@@ -1,9 +1,9 @@
 //! Bearer and central registration checks for the isolated Cloud Grok Bot profile.
 use super::Fault;
-use crate::auth::{RETIRED_SENDERS_CODE, presented_token_digest, public_policy_fault, retired_senders_present};
-use pigeonmq::{
-    grok_mailbox::GrokScope, registration::load_registrations,
+use crate::auth::{
+    RETIRED_SENDERS_CODE, presented_token_digest, public_policy_fault, retired_senders_present,
 };
+use pigeonmq::{grok_mailbox::GrokScope, registration::load_registrations};
 use serde::Deserialize;
 use std::{collections::HashSet, path::Path};
 use subtle::ConstantTimeEq;

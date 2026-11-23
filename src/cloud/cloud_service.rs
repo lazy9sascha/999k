@@ -197,7 +197,11 @@ fn profile(v: &Value, a: &Args) -> Result<(), &'static str> {
 fn add_public_endpoints(value: &mut Value, paths: &Value, origin: &str) {
     for profile in catalog::http_profiles() {
         if let Some(key) = profile.endpoint_key {
-            value[key] = json!(paths[profile.id].as_str().map(|path| format!("{origin}{path}")));
+            value[key] = json!(
+                paths[profile.id]
+                    .as_str()
+                    .map(|path| format!("{origin}{path}"))
+            );
         }
     }
 }
@@ -749,10 +753,15 @@ async fn run_with(
                                 private_state["public_origin"] = json!(origin);
                                 private_state["public_origin_source"] = json!("configured");
                                 private_state["remote_verified"] = json!(false);
-                                add_public_endpoints(&mut private_state, &a.health_public_paths, origin);
+                                add_public_endpoints(
+                                    &mut private_state,
+                                    &a.health_public_paths,
+                                    origin,
+                                );
                             }
                             if a.companions.is_some() {
-                                private_state["companions"] = run_companions::status_snapshot(&roles);
+                                private_state["companions"] =
+                                    run_companions::status_snapshot(&roles);
                             }
                             status(&a, private_state.clone());
                             println!("{value}");
@@ -775,7 +784,9 @@ async fn run_with(
                                             false,
                                         ));
                                     }
-                                    let next = run_companions::tick_and_status(&mut roles, &a, &lock).await;
+                                    let next =
+                                        run_companions::tick_and_status(&mut roles, &a, &lock)
+                                            .await;
                                     if next != private_state["companions"] {
                                         private_state["companions"] = next;
                                         status(&a, private_state.clone());
@@ -1180,7 +1191,10 @@ mod tests {
             "grok_enabled":false,"dot_enabled":false,
             "codex_enabled":true,"receiver_enabled":true,"instinct_enabled":false,"cue_enabled":false,"codex_events_enabled":false});
         assert_eq!(profile(&ready, &a), Ok(()));
-        assert_eq!(public_health_paths(&a, &ready), json!({"codex-cloud":"/codex/mcp"}));
+        assert_eq!(
+            public_health_paths(&a, &ready),
+            json!({"codex-cloud":"/codex/mcp"})
+        );
         for key in ["codex_enabled", "receiver_enabled", "codex_events_enabled"] {
             let mut wrong = ready.clone();
             wrong[key] = json!(!ready[key].as_bool().unwrap());

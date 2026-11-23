@@ -271,7 +271,11 @@ impl Receiver {
                 lease_seconds: self.lease.as_secs(),
             })
             .map_err(|_| "lease_expired_requires_reconciliation")?;
-        self.pending.as_mut().ok_or("no_pending")?.delivery.lease_until_ms = until;
+        self.pending
+            .as_mut()
+            .ok_or("no_pending")?
+            .delivery
+            .lease_until_ms = until;
         self.save()
     }
     /// (message_id, sender) of the pending message, for logs.

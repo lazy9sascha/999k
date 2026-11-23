@@ -327,7 +327,8 @@ fn check_peer(stream: &UnixStream) -> Result<()> {
         let mut gid = 0;
         // SAFETY: stream descriptor is valid for this call; getpeereid writes into provided out-params.
         let result = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
-        if result != 0 || uid != unsafe { libc::getuid() } { // SAFETY: getuid has no preconditions.
+        if result != 0 || uid != unsafe { libc::getuid() } {
+            // SAFETY: getuid has no preconditions.
             return Err(TransportError::EndpointUntrusted);
         }
     }
@@ -345,7 +346,8 @@ fn check_peer(stream: &UnixStream) -> Result<()> {
                 &mut length,
             )
         };
-        if result != 0 || credentials.uid != unsafe { libc::getuid() } { // SAFETY: getuid has no preconditions.
+        if result != 0 || credentials.uid != unsafe { libc::getuid() } {
+            // SAFETY: getuid has no preconditions.
             return Err(TransportError::EndpointUntrusted);
         }
     }
