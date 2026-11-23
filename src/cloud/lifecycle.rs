@@ -867,10 +867,10 @@ fn change(
                 jobs.service.bootout(HUB_LABEL)?;
             }
             write_json(&dir.join(STATE), current)?;
-            if let Some(registration_before) = registration_before.as_ref() {
-                if fs::read(&current.registration)? != *registration_before {
-                    private_file::replace_private(&current.registration, registration_before)?;
-                }
+            if let Some(registration_before) = registration_before.as_ref()
+                && fs::read(&current.registration)? != *registration_before
+            {
+                private_file::replace_private(&current.registration, registration_before)?;
             }
             if hub.loaded && !active_routes(current).is_empty() {
                 hub.start(jobs)?;
