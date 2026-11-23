@@ -9,7 +9,7 @@ On a Mac with the same architecture as the guest, build the native release archi
 
 ```sh
 scripts/package-release.sh aarch64-apple-darwin
-archive=target/artifacts/pigeonmq-0.1.6-aarch64-apple-darwin.tar.gz
+archive=target/artifacts/pigeonmq-0.2.0-aarch64-apple-darwin.tar.gz
 sha=$(shasum -a 256 "$archive" | cut -d ' ' -f 1)
 python3 packaging/codex/render.py "$archive" "$sha" target/codex-test-catalog
 ```

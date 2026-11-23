@@ -3,7 +3,7 @@
 Build and smoke-test each native archive before rendering its installers.
 
 ```sh
-python3 packaging/render.py 0.1.6 target/artifacts target/distribution
+python3 packaging/render.py 0.2.0 target/artifacts target/distribution
 ```
 
 The archive directory must contain `SHA256SUMS` and the archives it lists.

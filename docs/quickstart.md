@@ -12,7 +12,7 @@ Use the installer from [GitHub Releases](https://github.com/lazy9sascha/pigeonmq
 It installs `pigeonmq` and `pigeonmq-dot-resolve` in `$HOME/.local/bin` by default. No Rust toolchain is needed.
 
 ```sh
-version=0.1.6
+version=0.2.0
 curl -q --proto '=https' -fLsS -o pigeonmq-install.sh \
   "https://github.com/lazy9sascha/pigeonmq/releases/download/$version/install.sh" &&
 sh ./pigeonmq-install.sh
@@ -21,7 +21,7 @@ sh ./pigeonmq-install.sh
 If an archive is not available for your machine, build this checkout with stable Rust and 2024 edition support. Use a new directory so the source build does not replace an existing installation.
 
 ```sh
-source_bin="$HOME/.local/libexec/pigeonmq/0.1.6/bin"
+source_bin="$HOME/.local/libexec/pigeonmq/0.2.0/bin"
 cargo build --locked --release --bin pigeonmq --bin pigeonmq-dot-resolve &&
 mkdir -p "$(dirname "$source_bin")" &&
 mkdir -m 700 "$source_bin" &&
@@ -118,7 +118,7 @@ You need Python 3 for this optional test. It does not require Rust or a source c
 Set `version` to the installed version, without a leading `v`. Use its copy of the script from the source tag.
 
 ```sh
-version=0.1.6
+version=0.2.0
 curl -q --proto '=https' -fLsS -o pigeonmq-smoke.sh \
   "https://raw.githubusercontent.com/lazy9sascha/pigeonmq/$version/scripts/smoke-release.sh" &&
 sh ./pigeonmq-smoke.sh --installed "$(dirname "$PIGEONMQ_BIN")" "$version"

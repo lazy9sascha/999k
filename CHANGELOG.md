@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 (candidate)
+
+- Connect a local MCP client to the running hub with `pigeonmq stdio-mcp`. The hub authenticates the mailbox and uses the existing queue.
+- Enable the private socket on an existing managed macOS hub with `init <active-profile> --apply --stdio-socket`.
+
 ## 0.1.6 (candidate)
 
 - Build native archives with both release executables and their checksums.
