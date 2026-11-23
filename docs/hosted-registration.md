@@ -7,7 +7,7 @@ The registration service manages the address and Cloudflare Tunnel for each appr
 1. Create an owner-only directory with mode 0700 on the operator Mac.
 2. Save the settings below in `settings.json` with mode 0600. Replace example values with the approved pilot settings.
 3. Save the Cloudflare management token in `cloudflare.key` with mode 0600. Grant tunnel management for the operator account and DNS access for the selected zone.
-4. Enable email sign-in in Supabase Auth. Configure the sign-in email to show the numeric code. Add each existing invited email and its Supabase account ID to `invited_accounts`.
+4. In a dedicated test Auth project, enable email sign-in and account creation. Configure the email template to include the numeric code. Do not enable signups on a shared or live project as part of this preview. Direct requests to the public Auth API can create accounts when signups are enabled. PigeonMQ's installation and attempt checks apply only to its own registration endpoints.
 5. Route the registration origin to the loopback service over HTTPS. Preserve the public registration Host header. Disable caching. Keep credentials and form bodies out of logs.
 
 ```json
@@ -38,7 +38,8 @@ The service creates `enrollments.sqlite3` in the private directory. It reserves 
 installation's connector token. A successful finish on an existing installation
 also reconciles its ingress with the current settings.
 
-Open the private installation link from PigeonMQ. Enter your email address and the numeric email code. You do not need an existing Supabase Auth account. Older settings can still contain \`invited_accounts\`; the service warns that this field is ignored. Remove it. Do not enter a code from the Mac.
+Open the private installation link from PigeonMQ. Enter your email address and the numeric email code. You do not need an existing Supabase Auth account. Do not enter a code from the Mac.
+Remove the obsolete `invited_accounts` field from older settings. If the field remains, the service warns on startup and does not use it to restrict registration.
 The link expires with the reservation. Open it only in the intended browser. Do not share or log the full link.
 Opening the link does not send an email. The browser removes the private fragment and submits it only when you request the email code.
 Supabase issues the numeric OTP for an email address, not an installation.

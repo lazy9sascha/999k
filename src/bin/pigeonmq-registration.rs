@@ -144,7 +144,7 @@ impl Operator {
         let origin = https_origin(&config.registration_origin)?;
         let auth_origin = https_origin(&config.supabase_url)?;
         if config.invited_accounts.is_some() {
-            tracing::warn!("invited_accounts is obsolete and does not restrict registration");
+            eprintln!("Warning: invited_accounts is obsolete and does not restrict registration.");
         }
         let mut mcp_paths = config.mcp_path.into_iter().collect::<Vec<_>>();
         for path in config.mcp_paths {
