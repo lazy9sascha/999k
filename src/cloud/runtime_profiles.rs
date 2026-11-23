@@ -248,6 +248,7 @@ fn binding(root: &Path, queue: &Path, name: &str) -> io::Result<Profile> {
         ));
     }
     let profile = Profile {
+        hosted: None,
         identity: Identity::Local(identity),
         db: queue.into(),
         policy: dir.join(POLICY),

@@ -114,6 +114,8 @@ struct Registry {
     profiles: BTreeMap<String, Profile>,
     #[serde(default, skip_serializing_if = "is_false")]
     local_stdio: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finite_cue_installation: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -524,6 +526,86 @@ fn read_hosted_owner(home: &Path) -> io::Result<Option<HostedOwner>> {
         Ok(None)
     } else {
         read_json(&path).map(Some)
+    }
+}
+
+pub(crate) fn hosted_cue_mode(home: &Path, installation: uuid::Uuid) -> io::Result<bool> {
+    let state: Registry = read_json(&home.join(DIRECTORY).join(STATE))?;
+    match state.finite_cue_installation {
+        None => Ok(false),
+        Some(value) if value == installation.to_string() => Ok(true),
+        _ => Err(error(
+            "finite hosted Cue mode belongs to another installation",
+        )),
+    }
+}
+
+pub(crate) fn hosted_cue_bearer_status(home: &Path) -> io::Result<Value> {
+    let home = private_dir(home)?;
+    let owner = read_hosted_owner(&home)?.ok_or_else(|| error("no managed hosted Unix owner"))?;
+    let (installation, _) = hosted_scope(&home, &owner)?;
+    if !hosted_cue_mode(&home, installation)? {
+        return Ok(json!({"state":"legacy"}));
+    }
+    let scope = crate::hosted_mailbox_bearer::Scope::new(&home, installation);
+    let _guard = scope.lock(false)?;
+    Ok(scope.status())
+}
+
+pub(crate) fn hosted_cue_bearer(home: &Path, rotate: Option<(u64, &Path)>) -> io::Result<()> {
+    let home = private_dir(home)?;
+    let dir = private_dir(&home.join(DIRECTORY))?;
+    let _owner_guard = lock(&dir)?;
+    let owner = read_hosted_owner(&home)?.ok_or_else(|| error("no managed hosted Unix owner"))?;
+    let (installation, descriptor) = hosted_scope(&home, &owner)?;
+    let state_path = dir.join(STATE);
+    let mut state: Registry = read_json(&state_path)?;
+    if !scope_matches(&state, &descriptor)
+        || !descriptor.mcp_paths.iter().any(|path| path == "/cue/mcp")
+        || !state
+            .profiles
+            .get("cue")
+            .is_some_and(|row| row.phase == Phase::Active && row.source.route == "/cue/mcp")
+    {
+        return Err(error("managed hosted Cue route is unavailable"));
+    }
+    // A previous binary does not enforce finite grants. Require the owned
+    // managed job to be stopped before the first activation, and hold the
+    // existing queue lease so another application hub cannot enter.
+    let _first_activation_queue = if rotate.is_some()
+        && state.finite_cue_installation.as_deref() != Some(&owner.installation)
+    {
+        let (directory, executable, installation_paths) = system_jobs()?;
+        let jobs = Jobs {
+            service: &SystemLaunchctl,
+            directory: &directory,
+            executable: &executable,
+            installation: Some(&installation_paths),
+        };
+        if managed_hub_job(&jobs, &home)?.loaded {
+            return Err(error(
+                "stop the owned managed hub before enabling finite hosted Cue Bearers",
+            ));
+        }
+        Some(crate::local_http::lock_hub_queue(&home.join(QUEUE))?)
+    } else {
+        None
+    };
+    let scope = crate::hosted_mailbox_bearer::Scope::new(&home, installation);
+    let _grant_guard = scope.lock(true)?;
+    if let Some((seconds, path)) = rotate {
+        // Once opted in, an interrupted rotation or deleted grant fails closed.
+        scope.rotate_locked(seconds, path, || {
+            if state.finite_cue_installation.as_deref() != Some(&owner.installation) {
+                state.finite_cue_installation = Some(owner.installation.clone());
+                write_json(&state_path, &state)?;
+            }
+            Ok(())
+        })
+    } else if state.finite_cue_installation.as_deref() == Some(&owner.installation) {
+        scope.revoke_locked()
+    } else {
+        Err(error("finite hosted Cue Bearer mode is not enabled"))
     }
 }
 
@@ -1131,6 +1213,7 @@ fn init_with(
             relay_command: None,
             profiles: BTreeMap::new(),
             local_stdio: false,
+            finite_cue_installation: None,
         }
     } else {
         read_json::<Registry>(&state_path)?

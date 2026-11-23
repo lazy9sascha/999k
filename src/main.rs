@@ -24,6 +24,8 @@ mod codex_setup;
 mod hosted_connector;
 #[path = "cloud/hosted_enrollment.rs"]
 mod hosted_enrollment;
+#[path = "cloud/hosted_mailbox_bearer.rs"]
+mod hosted_mailbox_bearer;
 #[path = "cloud/hosted_origin.rs"]
 mod hosted_origin;
 #[path = "cloud/hosted_origin_local.rs"]
@@ -210,6 +212,13 @@ enum Command {
         #[arg(long)]
         home: PathBuf,
     },
+    /// Manage a finite Bearer for Cue on the managed hosted Unix origin.
+    HostedCueBearer {
+        #[arg(long)]
+        home: PathBuf,
+        #[command(subcommand)]
+        action: HostedCueBearerAction,
+    },
     /// Prepare a private Muse queue, registration, policy, and Keychain bearer.
     SetupMuse {
         #[arg(long)]
@@ -361,6 +370,21 @@ fn disable_daemon_keychain_ui() -> security_framework::base::Result<()> {
     Ok(())
 }
 
+#[derive(clap::Subcommand)]
+enum HostedCueBearerAction {
+    /// Enable scoped Cue authorization and export a new Bearer to a private file.
+    Rotate {
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=2592000))]
+        lifetime_secs: u64,
+        #[arg(long)]
+        export_file: PathBuf,
+    },
+    /// Check the scoped policy state without showing a Bearer or digest.
+    Status,
+    /// Revoke the current scoped Bearer. Do not re-enable the old Bearer.
+    Revoke,
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match &cli.command {
@@ -447,6 +471,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::ServeHostedConnector { home } => {
             lifecycle::serve_hosted_connector(home).map_err(Into::into)
+        }
+        Command::HostedCueBearer { home, action } => {
+            match action {
+                HostedCueBearerAction::Rotate {
+                    lifetime_secs,
+                    export_file,
+                } => {
+                    lifecycle::hosted_cue_bearer(home, Some((*lifetime_secs, export_file)))?;
+                }
+                HostedCueBearerAction::Revoke => lifecycle::hosted_cue_bearer(home, None)?,
+                HostedCueBearerAction::Status => {
+                    println!("{}", lifecycle::hosted_cue_bearer_status(home)?);
+                    return Ok(());
+                }
+            }
+            println!("Hosted Cue Bearer state updated.");
+            Ok(())
         }
         Command::SetupMuse { home, peer } => cloud_setup::setup_muse(home, peer),
         Command::SetupGrok { home, token_sha256 } => {

@@ -31,8 +31,25 @@ pub struct Profile {
     pub db: PathBuf,
     pub policy: PathBuf,
     pub registration: PathBuf,
+    pub(crate) hosted: Option<crate::hosted_mailbox_bearer::Scope>,
 }
 impl Profile {
+    pub(crate) fn hosted_cue(
+        &self,
+        scope: crate::hosted_mailbox_bearer::Scope,
+    ) -> Result<Self, Fault> {
+        if !matches!(self.identity, Identity::BuiltIn("cue")) {
+            return Err((401, "unauthorized"));
+        }
+        Ok(Self {
+            identity: Identity::BuiltIn("cue"),
+            db: self.db.clone(),
+            policy: self.policy.clone(),
+            registration: self.registration.clone(),
+            hosted: Some(scope),
+        })
+    }
+
     pub(crate) fn mailbox(&self) -> &str {
         match &self.identity {
             Identity::BuiltIn(name) => name,
@@ -74,7 +91,12 @@ impl Profile {
     fn owner(&self, authorization: &[Vec<u8>]) -> Result<Principal, Fault> {
         self.route()?;
         self.check_generation()?;
-        let p = auth::authenticate_private(&self.policy, authorization)?;
+        let p = if let Some(hosted) = &self.hosted {
+            hosted.authorize(authorization)?;
+            auth::active_hosted_cue_policy(&self.policy)?
+        } else {
+            auth::authenticate_private(&self.policy, authorization)?
+        };
         p.identity(self.mailbox())?;
         self.check_generation()?;
         registration::validate_registration(&self.registration, self.mailbox(), self.mailbox())?;
@@ -669,6 +691,7 @@ mod tests {
     fn unknown_profile_identity_is_rejected_before_file_access() {
         let temp = tempfile::tempdir().unwrap();
         let profile = Profile {
+            hosted: None,
             identity: Identity::BuiltIn("not-a-catalog-profile"),
             db: temp.path().join("absent.db"),
             policy: temp.path().join("absent-policy.json"),
@@ -689,6 +712,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let p = Profile {
+            hosted: None,
             identity: Identity::BuiltIn(catalog::codex().mailbox),
             db: d.path().join("q.db"),
             policy: d.path().join("policy.json"),

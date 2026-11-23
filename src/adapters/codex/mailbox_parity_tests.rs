@@ -56,6 +56,7 @@ impl Fixture {
         Self {
             dot: Mailbox::new(db.clone(), dot_policy),
             codex: Profile {
+                hosted: None,
                 identity: crate::codex_mcp::Identity::BuiltIn(
                     pigeonmq::mailbox_catalog::codex().mailbox,
                 ),

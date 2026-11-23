@@ -26,6 +26,7 @@ fn check_scoped_mailbox(
     let home = tempfile::tempdir().unwrap();
     fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let profile = Profile {
+        hosted: None,
         identity: Identity::BuiltIn(mailbox),
         db: home.path().join("queue.db"),
         policy: home.path().join("policy.json"),
