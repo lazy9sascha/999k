@@ -1,5 +1,6 @@
 //! Staged registration of existing built-in profiles and explicit launchd activation.
 use crate::{
+    hosted_registration::HubTarget,
     lifecycle_profile,
     lifecycle_service::{
         HOSTED_LABEL, HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist,
@@ -29,6 +30,7 @@ const DIRECTORY: &str = ".pigeonmq-lifecycle";
 const STATE: &str = "profiles.json";
 const RELAY_CONFIG: &str = "relay-profiles.json";
 const RELAY_STATE: &str = "relay-state.json";
+const HOSTED_OWNER: &str = "hosted-owner.json";
 const DEFAULT_PORT: u16 = 54843;
 
 fn error(reason: &'static str) -> io::Error {
@@ -502,6 +504,69 @@ fn path_arg(path: &Path) -> io::Result<String> {
         .ok_or_else(|| error("lifecycle path must be UTF-8"))
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HostedOwner {
+    cloudflared: PathBuf,
+    target: HubTarget,
+}
+
+fn hosted_target_matches(state: &Registry, target: &HubTarget) -> bool {
+    let active = active_routes(state);
+    target.port != 0
+        && state.port == target.port
+        && !target.mcp_paths.is_empty()
+        && target
+            .mcp_paths
+            .iter()
+            .all(|path| pigeonmq::mailbox_catalog::valid_mcp_route(path) && active.contains(path))
+}
+
+fn hosted_owner(home: &Path) -> io::Result<Option<HostedOwner>> {
+    let path = home.join(DIRECTORY).join(HOSTED_OWNER);
+    if absent(&path)? {
+        Ok(None)
+    } else {
+        Ok(Some(read_json(&path)?))
+    }
+}
+
+fn hosted_job(jobs: &Jobs<'_>, home: &Path, cloudflared: &Path) -> io::Result<Job> {
+    let connector_jobs = Jobs {
+        executable: cloudflared,
+        ..*jobs
+    };
+    Job::inspect(
+        &connector_jobs,
+        HOSTED_LABEL,
+        vec![
+            "tunnel".into(),
+            "run".into(),
+            "--token-file".into(),
+            path_arg(&home.join(crate::hosted_connector::TOKEN_FILE))?,
+        ],
+    )
+}
+
+/// Stop only the verified hosted job for this home. Keep its enrollment and credential.
+fn stop_hosted(jobs: &Jobs<'_>, home: &Path) -> io::Result<()> {
+    let Some(owner) = hosted_owner(home)? else {
+        return Ok(());
+    };
+    let connector = hosted_job(jobs, home, &owner.cloudflared)?;
+    if connector.loaded {
+        jobs.service.bootout(HOSTED_LABEL)?;
+    }
+    if connector.exists {
+        fs::remove_file(connector.path)?;
+        File::open(jobs.directory)?.sync_all()?;
+    }
+    let dir = home.join(DIRECTORY);
+    fs::remove_file(dir.join(HOSTED_OWNER))?;
+    File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
 fn relay_config(state: &Registry) -> io::Result<RelayConfig> {
     state
         .profiles
@@ -627,6 +692,11 @@ fn change(
     } else {
         None
     };
+    if next.profiles[name].phase == Phase::Retired
+        && hosted_owner(home)?.is_some_and(|owner| !hosted_target_matches(&next, &owner.target))
+    {
+        stop_hosted(jobs, home)?;
+    }
     if phase_changed && hub.loaded {
         jobs.service.bootout(HUB_LABEL)?;
     }
@@ -895,25 +965,33 @@ impl HostedServices {
             HUB_LABEL,
             vec!["serve-managed".into(), "--home".into(), path_arg(home)?],
         )?;
-        let connector_jobs = Jobs {
-            executable: &self.cloudflared,
-            ..jobs
-        };
-        let connector = Job::inspect(
-            &connector_jobs,
-            HOSTED_LABEL,
-            vec![
-                "tunnel".into(),
-                "run".into(),
-                "--token-file".into(),
-                path_arg(&home.join(crate::hosted_connector::TOKEN_FILE))?,
-            ],
-        )?;
+        let owner = hosted_owner(home)?;
+        if owner
+            .as_ref()
+            .is_some_and(|row| row.cloudflared != self.cloudflared)
+        {
+            return Err(error(
+                "hosted connector executable differs from the owned LaunchAgent",
+            ));
+        }
+        let connector = hosted_job(&jobs, home, &self.cloudflared)?;
+        if owner.is_none() && connector.exists {
+            return Err(error(
+                "hosted LaunchAgent is not owned by the selected home",
+            ));
+        }
         operation(&jobs, hub, connector, state)
     }
 
-    pub(crate) fn finish(&self, home: &Path, url: &str, id: &str, token: &str) -> io::Result<()> {
-        self.finish_with(&SystemLaunchctl, home, url, id, token)
+    pub(crate) fn finish(
+        &self,
+        home: &Path,
+        url: &str,
+        id: &str,
+        token: &str,
+        target: Option<&HubTarget>,
+    ) -> io::Result<bool> {
+        self.finish_with(&SystemLaunchctl, home, url, id, token, target)
     }
 
     fn finish_with(
@@ -923,8 +1001,14 @@ impl HostedServices {
         url: &str,
         id: &str,
         token: &str,
-    ) -> io::Result<()> {
+        target: Option<&HubTarget>,
+    ) -> io::Result<bool> {
         self.with_jobs(service, home, |jobs, hub, connector, state| {
+            let Some(target) = target.filter(|target| hosted_target_matches(&state, target)) else {
+                stop_hosted(jobs, home)?;
+                crate::hosted_connector::stage(home, url, id, token).map_err(io::Error::other)?;
+                return Ok(false);
+            };
             if !hub.loaded {
                 hub.start(jobs)?;
             }
@@ -946,10 +1030,20 @@ impl HostedServices {
                 crate::hosted_connector::save_token(home, token).map_err(io::Error::other)?;
             }
             crate::hosted_connector::save_connection(home, url, id).map_err(io::Error::other)?;
+            write_json(
+                &home.join(DIRECTORY).join(HOSTED_OWNER),
+                &HostedOwner {
+                    cloudflared: self.cloudflared.clone(),
+                    target: HubTarget {
+                        port: target.port,
+                        mcp_paths: target.mcp_paths.clone(),
+                    },
+                },
+            )?;
             if !connector.loaded || changed {
                 connector.start(jobs)?;
             }
-            Ok(())
+            Ok(true)
         })
     }
 }

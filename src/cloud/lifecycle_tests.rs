@@ -543,6 +543,13 @@ fn managed_apply_refuses_a_persisted_disposable_relay_before_launchd_changes() {
     );
 }
 
+fn hosted_target(path: &str) -> HubTarget {
+    HubTarget {
+        port: DEFAULT_PORT,
+        mcp_paths: vec![path.into()],
+    }
+}
+
 #[test]
 fn hosted_lifecycle_reuses_hub_and_restarts_only_the_owned_connector() {
     let fixture = Fixture::new(false);
@@ -570,7 +577,17 @@ fn hosted_lifecycle_reuses_hub_and_restarts_only_the_owned_connector() {
     let inode = queue.metadata().unwrap().ino();
     let public = "https://u-fixture.example.test";
     let id = "11111111-1111-4111-8111-111111111111";
-    let apply = |token| services.finish_with(&fixture.fake, &fixture.home, public, id, token);
+    let target = hosted_target("/cue/mcp");
+    let apply = |token| {
+        services.finish_with(
+            &fixture.fake,
+            &fixture.home,
+            public,
+            id,
+            token,
+            Some(&target),
+        )
+    };
     let before = fixture.fake.actions.borrow().len();
     apply("synthetic-token-one").unwrap();
     let plist = fixture.agents.join(format!("{HOSTED_LABEL}.plist"));
@@ -661,6 +678,7 @@ fn hosted_lifecycle_refuses_an_occupied_label_before_writing_credentials() {
         "https://u-fixture.example.test",
         "11111111-1111-4111-8111-111111111111",
         "synthetic-token",
+        Some(&hosted_target("/cue/mcp")),
     );
     assert!(result.is_err());
     assert_eq!(fixture.fake.actions.borrow().len(), before);
@@ -690,4 +708,125 @@ fn hosted_lifecycle_is_not_selected_on_a_clean_home() {
     .unwrap();
     assert!(!home.path().join(QUEUE).exists());
     assert!(!home.path().join(DIRECTORY).exists());
+}
+
+#[test]
+fn retiring_last_managed_profile_removes_only_the_owned_hosted_job() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    for agent in ["cue", "instinct"] {
+        init_with(
+            &fixture.home,
+            agent,
+            &fixture.options(true, None),
+            Some(&jobs),
+        )
+        .unwrap();
+    }
+    let services = HostedServices {
+        directory: fixture.agents.clone(),
+        executable: fixture.executable.clone(),
+        cloudflared: fixture.home.join("synthetic-cloudflared"),
+    };
+    let self_managed = fixture.agents.join("test.self-managed.plist");
+    fs::write(&self_managed, b"self-managed fixture").unwrap();
+    fixture
+        .fake
+        .loaded
+        .borrow_mut()
+        .insert("test.self-managed".into(), self_managed.clone());
+    services
+        .finish_with(
+            &fixture.fake,
+            &fixture.home,
+            "https://u-fixture.example.test",
+            "11111111-1111-4111-8111-111111111111",
+            "synthetic-token",
+            Some(&hosted_target("/instinct/mcp")),
+        )
+        .unwrap();
+    let plist = fixture.agents.join(format!("{HOSTED_LABEL}.plist"));
+    let queue = fixture.home.join(QUEUE);
+    let inode = queue.metadata().unwrap().ino();
+    remove_with(&fixture.home, "cue", Some(&jobs)).unwrap();
+    assert_eq!(fixture.fake.loaded.borrow().get(HOSTED_LABEL), Some(&plist));
+    assert!(plist.is_file());
+    remove_with(&fixture.home, "instinct", Some(&jobs)).unwrap();
+    assert!(!fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+    assert!(!plist.exists());
+    assert!(hosted_owner(&fixture.home).unwrap().is_none());
+    assert!(
+        fixture
+            .home
+            .join(crate::hosted_connector::TOKEN_FILE)
+            .is_file()
+    );
+    assert_eq!(queue.metadata().unwrap().ino(), inode);
+    assert_eq!(
+        fixture.fake.loaded.borrow().get("test.self-managed"),
+        Some(&self_managed)
+    );
+    assert_eq!(fs::read(&self_managed).unwrap(), b"self-managed fixture");
+    remove_with(&fixture.home, "instinct", Some(&jobs)).unwrap();
+    assert_eq!(
+        fixture
+            .fake
+            .actions
+            .borrow()
+            .iter()
+            .filter(|action| **action == Action::Bootout(HOSTED_LABEL.into()))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn missing_or_mismatched_hosted_target_stages_without_scheduling() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let services = HostedServices {
+        directory: fixture.agents.clone(),
+        executable: fixture.executable.clone(),
+        cloudflared: fixture.home.join("synthetic-cloudflared"),
+    };
+    let apply = |target| {
+        services.finish_with(
+            &fixture.fake,
+            &fixture.home,
+            "https://u-fixture.example.test",
+            "11111111-1111-4111-8111-111111111111",
+            "synthetic-token",
+            target,
+        )
+    };
+    let before = fixture.fake.actions.borrow().len();
+    let port = HubTarget {
+        port: 54943,
+        mcp_paths: vec!["/cue/mcp".into()],
+    };
+    let route = hosted_target("/muse/mcp");
+    assert!(!apply(None).unwrap());
+    assert!(!apply(Some(&port)).unwrap());
+    assert!(!apply(Some(&route)).unwrap());
+    assert_eq!(fixture.fake.actions.borrow().len(), before);
+    assert!(
+        fixture
+            .home
+            .join(crate::hosted_connector::TOKEN_FILE)
+            .is_file()
+    );
+    assert!(hosted_owner(&fixture.home).unwrap().is_none());
+    let valid = hosted_target("/cue/mcp");
+    assert!(apply(Some(&valid)).unwrap());
+    assert!(hosted_owner(&fixture.home).unwrap().is_some());
+    assert!(!apply(Some(&port)).unwrap());
+    assert!(!fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+    assert!(fixture.fake.loaded.borrow().contains_key(HUB_LABEL));
 }

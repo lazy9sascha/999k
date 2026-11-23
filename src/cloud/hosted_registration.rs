@@ -1,5 +1,5 @@
 //! Local HTTP client for the hosted registration service.
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Clone)]
@@ -35,10 +35,19 @@ pub(crate) struct StatusResponse {
 }
 
 #[derive(Deserialize)]
-struct FinishResponse {
+pub(crate) struct FinishResponse {
     state: String,
-    public_url: String,
-    connector_token: String,
+    pub(crate) public_url: String,
+    pub(crate) connector_token: String,
+    pub(crate) hub_target: Option<HubTarget>,
+}
+
+// This scope comes from the same operator settings used to build Cloudflare ingress.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HubTarget {
+    pub(crate) port: u16,
+    pub(crate) mcp_paths: Vec<String>,
 }
 
 fn client() -> reqwest::blocking::Client {
@@ -128,7 +137,7 @@ pub fn finish(
     base_url: &str,
     installation_id: &str,
     proof: &str,
-) -> Result<(String, String), String> {
+) -> Result<FinishResponse, String> {
     // Validate installation_id to prevent path injection.
     if uuid::Uuid::parse_str(installation_id).is_err() {
         return Err("invalid_installation_id".to_string());
@@ -155,7 +164,7 @@ pub fn finish(
     if parsed.state != "ready" {
         return Err("unexpected_state".to_string());
     }
-    Ok((parsed.public_url, parsed.connector_token))
+    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -201,9 +210,10 @@ mod tests {
     fn finish_returns_token() {
         let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u-fixture.example.com\",\"connector_token\":\"tok-123\"}";
         let base = mock_server(resp);
-        let (url, token) = finish(&base, "11111111-1111-4111-8111-111111111111", "proof").unwrap();
-        assert_eq!(url, "https://u-fixture.example.com");
-        assert_eq!(token, "tok-123");
+        let result = finish(&base, "11111111-1111-4111-8111-111111111111", "proof").unwrap();
+        assert_eq!(result.public_url, "https://u-fixture.example.com");
+        assert_eq!(result.connector_token, "tok-123");
+        assert!(result.hub_target.is_none());
     }
 
     #[test]
