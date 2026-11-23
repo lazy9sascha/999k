@@ -708,6 +708,41 @@ fn managed_stdio_is_explicit_at_first_activation_and_persists_without_restart() 
 }
 
 #[test]
+fn existing_managed_home_stdio_failed_readiness_restores_and_retries() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    assert!(!read_json::<Registry>(&file).unwrap().local_stdio);
+
+    let mut opt_in = fixture.options(true, None);
+    opt_in.local_stdio = true;
+    fixture.fake.fail_next_readiness.set(true);
+    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_err());
+    assert!(!read_json::<Registry>(&file).unwrap().local_stdio);
+
+    let mut retry = fixture.options(true, None);
+    retry.local_stdio = true;
+    let before_retry = fixture.fake.actions.borrow().len();
+    assert!(init_with(&fixture.home, "cue", &retry, Some(&jobs)).is_ok());
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(fixture.fake.actions.borrow().len() > before_retry);
+
+    let after_success = fixture.fake.actions.borrow().len();
+    let mut repeat = fixture.options(true, None);
+    repeat.local_stdio = true;
+    assert!(init_with(&fixture.home, "cue", &repeat, Some(&jobs)).is_ok());
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert_eq!(fixture.fake.actions.borrow().len(), after_success);
+}
+
+#[test]
 fn existing_managed_home_can_enable_stdio_once_with_explicit_opt_in() {
     let fixture = Fixture::new(false);
     let jobs = fixture.jobs();

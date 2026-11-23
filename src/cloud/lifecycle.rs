@@ -876,6 +876,19 @@ fn change(
                 fs::remove_file(&hub.path)?;
                 File::open(jobs.directory)?.sync_all()?;
             }
+        } else if stdio_changed && hub.loaded {
+            if jobs.service.loaded(HUB_LABEL, &hub.path)? {
+                jobs.service.bootout(HUB_LABEL)?;
+            }
+            write_json(&dir.join(STATE), current)?;
+            if hub.loaded && !active_routes(current).is_empty() {
+                hub.start(jobs)?;
+                jobs.service
+                    .hub_ready(&hub.path, current.port, &active_routes(current))?;
+            } else if !hub.exists && verify_plist(jobs.directory, hub.label, &hub.args)?.is_some() {
+                fs::remove_file(&hub.path)?;
+                File::open(jobs.directory)?.sync_all()?;
+            }
         } else if phase_changed
             && hub.loaded
             && current
