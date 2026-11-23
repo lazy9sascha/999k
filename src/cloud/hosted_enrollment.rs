@@ -186,6 +186,10 @@ enum OriginIntent {
     UnixV1,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep the enrollment options and injected browser and activation boundaries explicit"
+)]
 fn enroll(
     home: &Path,
     origin: &Url,
@@ -257,14 +261,14 @@ fn enroll(
             match status.state.as_str() {
                 "approved" | "ready" => break,
                 "pending" => {
-                    if let Some(open) = opener.take() {
-                        if let Some(link) = link.as_ref() {
-                            // The OS opener receives the link; the CLI never prints or saves it.
-                            open(link)?;
-                            eprintln!(
-                                "Approve this installation in your browser. Waiting for approval."
-                            );
-                        }
+                    if let Some(open) = opener.take()
+                        && let Some(link) = link.as_ref()
+                    {
+                        // The OS opener receives the link; the CLI never prints or saves it.
+                        open(link)?;
+                        eprintln!(
+                            "Approve this installation in your browser. Waiting for approval."
+                        );
                     }
                 }
                 "revoked" => return Err("registration_revoked".into()),
@@ -481,10 +485,10 @@ mod tests {
             if let Some(value) = lower.strip_prefix("content-length:") {
                 content_length = value.trim().parse().unwrap();
             }
-            if let Some((header, value)) = line.split_once(':') {
-                if header.eq_ignore_ascii_case("authorization") {
-                    proof = value.trim().to_owned();
-                }
+            if let Some((header, value)) = line.split_once(':')
+                && header.eq_ignore_ascii_case("authorization")
+            {
+                proof = value.trim().to_owned();
             }
             if line == "\r\n" {
                 break;

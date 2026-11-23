@@ -691,6 +691,10 @@ pub(crate) fn setup(path: &Path, init: bool) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+pub(crate) fn reserve_address(home: &Path, unix: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::hosted_enrollment::run(home, unix).map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,8 +1066,4 @@ mod tests {
         assert_eq!(fs::read(&settings).unwrap(), b"operator settings");
         assert_eq!(fs::read(&registry).unwrap(), b"operator registry");
     }
-}
-
-pub(crate) fn reserve_address(home: &Path, unix: bool) -> Result<(), Box<dyn std::error::Error>> {
-    crate::hosted_enrollment::run(home, unix).map_err(Into::into)
 }

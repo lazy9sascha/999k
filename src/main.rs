@@ -390,7 +390,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             port,
         } => {
             if *reserve_address {
-                return cloud_setup::reserve_address(home, *hosted_unix).map_err(Into::into);
+                return cloud_setup::reserve_address(home, *hosted_unix);
             }
             if *operational {
                 let mailbox = agent.as_deref().ok_or("mailbox name required")?;

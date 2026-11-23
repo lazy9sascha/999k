@@ -1932,6 +1932,10 @@ enum HubMode {
     Managed,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep the existing hub entry point and explicit socket configuration"
+)]
 pub fn serve_hub(
     db: PathBuf,
     generic_policy: Option<PathBuf>,
@@ -2092,6 +2096,10 @@ pub(crate) fn serve_managed_hosted_hub(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Both startup modes pass their explicit configuration to this shared listener"
+)]
 fn serve_hub_on(
     db: PathBuf,
     generic_policy: Option<PathBuf>,

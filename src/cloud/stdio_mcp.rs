@@ -176,7 +176,7 @@ fn connect(home: &Path, route: &str) -> io::Result<UnixStream> {
             "selected mailbox is not mounted on the local MCP socket",
         ));
     }
-    let socket = socket_path(&home);
+    let socket = socket_path(home);
     let pinned = (owner.device, owner.inode);
     let checked = metadata(&socket)?;
     if (checked.dev(), checked.ino()) != pinned {
@@ -322,11 +322,11 @@ fn serve(
                     }
                     continue;
                 }
-                if !id.is_some_and(|id| id.is_i64() || id.is_string()) || method.is_none() {
-                    error(Value::Null, -32600, "Invalid Request")
-                } else {
-                    let id = id.unwrap().clone();
-                    match method.unwrap() {
+                if let (Some(id), Some(method)) =
+                    (id.filter(|id| id.is_i64() || id.is_string()), method)
+                {
+                    let id = id.clone();
+                    match method {
                         "initialize" if session == Session::AwaitInitialize => {
                             let mut init = request;
                             if let Some(params) =
@@ -372,6 +372,8 @@ fn serve(
                         }
                         _ => error(id, -32601, "Method not found"),
                     }
+                } else {
+                    error(Value::Null, -32600, "Invalid Request")
                 }
             }
             Ok(_) => error(Value::Null, -32600, "Invalid Request"),

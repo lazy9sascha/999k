@@ -351,6 +351,10 @@ impl CloudflareProvisioner {
 
     /// The operator must hold the installation lock through this request and its state writes.
     /// The host, port, and MCP paths come from the operator, and the installation UUID is server-issued.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep operator scope, installation routing and durable provisioning state explicit"
+    )]
     pub(crate) async fn provision_at(
         &self,
         installation_id: Uuid,

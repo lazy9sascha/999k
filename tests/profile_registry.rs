@@ -1306,11 +1306,11 @@ fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
         "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}
     }});
     assert_eq!(
-        run("dot", &muse_token, &[init.clone()])[0]["error"]["code"],
+        run("dot", &muse_token, std::slice::from_ref(&init))[0]["error"]["code"],
         -32000
     );
     assert_eq!(
-        run("unmounted", &dot_token, &[init.clone()])[0]["error"]["code"],
+        run("unmounted", &dot_token, std::slice::from_ref(&init))[0]["error"]["code"],
         -32000
     );
     let rpc = |id, name, args| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}});
