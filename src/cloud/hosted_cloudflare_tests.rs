@@ -38,6 +38,7 @@ struct Step {
     status: u16,
     result: serde_json::Value,
     payload: Option<serde_json::Value>,
+    drop_response: bool,
 }
 
 impl Step {
@@ -48,6 +49,7 @@ impl Step {
             status: 200,
             result,
             payload: None,
+            drop_response: false,
         }
     }
 
@@ -155,6 +157,9 @@ async fn exchange(mut incoming: TcpStream, step: Step) {
         assert_eq!(actual, expected);
     } else {
         assert_eq!(body_len, 0);
+    }
+    if step.drop_response {
+        return;
     }
     let mut response = json!({"success":step.status==200,"result":step.result});
     if let Some(records) = response["result"].as_array() {
@@ -461,5 +466,120 @@ async fn publishes_explicit_paths_on_one_tunnel_and_keeps_default_denial() {
         .await
         .unwrap();
     assert_eq!(result.origin, format!("https://{HOST}"));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn operator_reopens_sqlite_and_reconciles_a_lost_tunnel_create_response() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use http::StatusCode;
+
+    let (home, mut operator) = crate::tests::fixture();
+    let proof = URL_SAFE_NO_PAD.encode([7; 32]);
+    let (status, initial) = crate::tests::call(
+        &operator,
+        Method::POST,
+        "/v1/enrollments",
+        &proof,
+        Some(json!({"request_id": Uuid::new_v4().to_string(), "user_code": "A1B2C3D4"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = Uuid::parse_str(initial["installation_id"].as_str().unwrap()).unwrap();
+    let now = crate::epoch_seconds().unwrap();
+    let account = *operator.access.values().next().unwrap();
+    operator
+        .record(|registry| {
+            let attempt = registry.start_browser(id, "A1B2C3D4", now)?;
+            registry.take_browser(attempt.id, now)?;
+            registry.approve(
+                id,
+                account,
+                &std::collections::HashSet::from([account]),
+                now,
+            )
+        })
+        .unwrap();
+
+    let hostname = operator.hostname(id);
+    // Use the existing protocol fixtures with the server-issued installation and operator scope.
+    let translate = |step: Step| {
+        let replace = |input: &str| {
+            input
+                .replace(ACCOUNT, &operator.account_id)
+                .replace(ZONE, &operator.zone_id)
+                .replace(INSTALLATION, &id.to_string())
+                .replace(HOST, &hostname)
+        };
+        let replace_json =
+            |value: serde_json::Value| serde_json::from_str(&replace(&value.to_string())).unwrap();
+        Step {
+            path: replace(&step.path),
+            result: replace_json(step.result),
+            payload: step.payload.map(replace_json),
+            ..step
+        }
+    };
+    let mut lost_tunnel = create_tunnel();
+    lost_tunnel.drop_response = true;
+    let (provider, server) = fixture(
+        vec![
+            lookup_dns(json!([])),
+            lookup_tunnel(json!([])),
+            lost_tunnel,
+            lookup_dns(json!([])),
+            lookup_tunnel(json!([tunnel()])),
+            configure(),
+            create_dns(),
+            get_token(),
+            lookup_dns(json!([dns(&marker())])),
+            lookup_tunnel(json!([tunnel()])),
+            configure(),
+            get_token(),
+        ]
+        .into_iter()
+        .map(translate)
+        .collect(),
+    )
+    .await;
+    let api = provider.api;
+    // Use the same synthetic management token that the provider fixture expects.
+    pigeonmq::private_file::replace_private(&home.path().join("cloudflare.key"), API.as_bytes())
+        .unwrap();
+    operator = crate::Operator::from_home(home.path()).unwrap();
+    operator.cloudflare.api = api.clone();
+    let path = format!("/v1/enrollments/{id}/finish");
+    let (status, _) = crate::tests::call(&operator, Method::POST, &path, &proof, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    for recovered in [false, true] {
+        drop(operator);
+        operator = crate::Operator::from_home(home.path()).unwrap();
+        operator.cloudflare.api = api.clone();
+        let record = operator
+            .record(|registry| registry.get(id, &proof, crate::epoch_seconds().unwrap()))
+            .unwrap();
+        let checkpoint = operator
+            .bound_resources(record.resources.as_deref())
+            .unwrap();
+        let expected = if recovered {
+            CloudflareResources {
+                tunnel: ResourceState::Known(ID.into()),
+                dns_record: ResourceState::Known(DNS_ID.into()),
+            }
+        } else {
+            CloudflareResources {
+                tunnel: ResourceState::Attempted,
+                dns_record: ResourceState::New,
+            }
+        };
+        assert_eq!(checkpoint, expected);
+
+        let (status, result) =
+            crate::tests::call(&operator, Method::POST, &path, &proof, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["public_url"], initial["public_url"]);
+        assert_eq!(result["connector_token"], CONNECTOR);
+    }
     server.await.unwrap();
 }

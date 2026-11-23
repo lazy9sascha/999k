@@ -454,7 +454,7 @@ mod tests {
     use http_body_util::{BodyExt, Full};
     use serde_json::Value;
 
-    fn fixture() -> (tempfile::TempDir, Operator) {
+    pub(crate) fn fixture() -> (tempfile::TempDir, Operator) {
         let home = tempfile::tempdir().unwrap();
         std::fs::set_permissions(
             home.path(),
@@ -482,7 +482,7 @@ mod tests {
         (home, operator)
     }
 
-    async fn call(
+    pub(crate) async fn call(
         operator: &Operator,
         method: Method,
         path: &str,
