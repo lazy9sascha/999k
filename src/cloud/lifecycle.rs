@@ -903,7 +903,7 @@ fn change(
         return Err(err);
     }
 
-    if !stdio_changed {
+    if !(stdio_changed && !phase_changed) {
         let current_relay = relay_config(&next)?;
         if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
             write_json(&relay_path, &current_relay)?;

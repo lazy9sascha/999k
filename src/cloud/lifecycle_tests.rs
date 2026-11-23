@@ -790,6 +790,19 @@ fn existing_managed_home_stdio_activation_preserves_relay() {
 }
 
 #[test]
+fn first_managed_apply_with_email_and_stdio_configures_relay() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    let mut options = fixture.options(true, Some("cue@example.invalid"));
+    options.local_stdio = true;
+    let result = init_with(&fixture.home, "cue", &options, Some(&jobs)).unwrap();
+    assert_eq!(result["state"], "active");
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(fixture.fake.loaded.borrow().contains_key(RELAY_LABEL));
+}
+
+#[test]
 fn existing_managed_home_can_enable_stdio_once_with_explicit_opt_in() {
     let fixture = Fixture::new(false);
     let jobs = fixture.jobs();
