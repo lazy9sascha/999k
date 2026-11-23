@@ -1172,6 +1172,7 @@ pub(crate) fn codex_preview_stdio() -> io::Result<()> {
         }
     }
     mkdir_private(&home)?;
+    let credentials = home.join(DIRECTORY).join("initial-cue");
     let state_path = home.join(DIRECTORY).join(STATE);
     if !absent(&state_path)? {
         let state: Registry = read_json(&state_path)?;
@@ -1186,7 +1187,7 @@ pub(crate) fn codex_preview_stdio() -> io::Result<()> {
                     && profile
                         .token_file
                         .as_deref()
-                        .is_some_and(|token| token.parent() == Some(&home))
+                        .is_some_and(|token| token.parent() == Some(&credentials))
             })
         {
             return Err(error("Codex preview refuses an existing foreign hub home"));
@@ -1208,7 +1209,7 @@ pub(crate) fn codex_preview_stdio() -> io::Result<()> {
     let bearer = result["token_file"]
         .as_str()
         .map(Path::new)
-        .filter(|path| path.parent() == Some(&home))
+        .filter(|path| path.parent() == Some(&credentials))
         .ok_or_else(|| error("Codex preview mailbox bearer is unavailable"))?;
     drop(guard);
     crate::stdio_mcp::run(&home, MAILBOX, bearer)

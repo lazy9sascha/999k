@@ -3,7 +3,8 @@
     "pigeonmq": {
       "type": "stdio",
       "command": "/bin/sh",
-      "args": ["-c", "exec \"$1\" codex-preview-stdio", "pigeonmq-preview", "${PLUGIN_ROOT}/bin/pigeonmq"]
+      "cwd": ".",
+      "args": ["-c", "exec ./bin/pigeonmq codex-preview-stdio"]
     }
   }
 }
