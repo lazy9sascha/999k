@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Write},
-    net::{Ipv4Addr, TcpListener, TcpStream},
+    net::{Ipv4Addr, TcpListener},
     os::{
         fd::AsRawFd,
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -33,6 +33,8 @@ mod cloudflare_access;
 mod transport;
 #[cfg(test)]
 use std::io::Read;
+#[cfg(test)]
+use std::net::TcpStream;
 use transport::{
     Fault, Input, MAX_HEADERS, ProfileHandler, ProfileListener, ProfileStream, WireResponse,
     serve_profile_listeners,
@@ -411,6 +413,7 @@ mod tests {
                 Vec::new(),
                 None,
                 (addr.port(), Some(1), HubMode::Explicit),
+                false,
                 Some(listener.try_clone().unwrap()),
                 None,
             )
@@ -428,6 +431,7 @@ mod tests {
                 Vec::new(),
                 Some("managed"),
                 (addr.port(), Some(1), HubMode::Managed),
+                false,
                 Some(listener),
                 None,
             )
@@ -1936,6 +1940,7 @@ pub fn serve_hub(
     manifest_fingerprint: Option<&str>,
     port: u16,
     seconds: Option<u64>,
+    local_stdio: bool,
 ) -> io::Result<()> {
     serve_hub_on(
         db,
@@ -1944,6 +1949,7 @@ pub fn serve_hub(
         local_profiles,
         manifest_fingerprint,
         (port, seconds, HubMode::Explicit),
+        local_stdio,
         None,
         None,
     )
@@ -1958,6 +1964,7 @@ pub(crate) fn serve_managed_hub(db: PathBuf, bindings: Vec<Binding>, port: u16) 
         Vec::new(),
         Some("managed"),
         (port, None, HubMode::Managed),
+        false,
         None,
         None,
     )
@@ -1985,6 +1992,7 @@ pub(crate) fn serve_dot_on(
         Vec::new(),
         None,
         (addr.port(), None, HubMode::Explicit),
+        false,
         Some(listener),
         None,
     )
@@ -2067,6 +2075,7 @@ pub(crate) fn serve_managed_hosted_hub(
         Vec::new(),
         Some("managed"),
         (port, None, HubMode::Managed),
+        false,
         None,
         Some(HostedSocket {
             installation,
@@ -2084,6 +2093,7 @@ fn serve_hub_on(
     local_profiles: Vec<crate::codex_mcp::Profile>,
     manifest_fingerprint: Option<&str>,
     (port, seconds, mode): (u16, Option<u64>, HubMode),
+    local_stdio: bool,
     prebound: Option<TcpListener>,
     hosted: Option<HostedSocket<'_>>,
 ) -> io::Result<()> {
@@ -2277,6 +2287,22 @@ fn serve_hub_on(
     } else {
         None
     };
+    let stdio_routes: Vec<String> = routes
+        .0
+        .iter()
+        .filter(|(path, route)| {
+            crate::stdio_mcp::named_route(path) && !matches!(route.handler, RouteHandler::Disabled)
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    let stdio_listener = if local_stdio {
+        let home = db
+            .parent()
+            .ok_or_else(|| io::Error::other("queue parent required"))?;
+        Some(crate::stdio_mcp::bind(home, &stdio_routes)?)
+    } else {
+        None
+    };
     let listener = match prebound {
         Some(listener) => listener,
         None => TcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
@@ -2336,6 +2362,18 @@ fn serve_hub_on(
             }),
         ));
     }
+    if let Some(holder) = &stdio_listener {
+        let stdio_state = state.clone();
+        listeners.push((
+            ProfileListener::Unix(
+                holder.listener.try_clone()?,
+                crate::stdio_mcp::AUTHORITY.into(),
+            ),
+            Arc::new(move |stream, authority| {
+                handle_hub_routes(stream, authority, &stdio_state, Some(&stdio_routes));
+            }),
+        ));
+    }
     let dot_events_enabled = dot_events.is_some();
     let _dot_events_worker = dot_events
         .map(|events| events.start(deadline))
@@ -2361,6 +2399,9 @@ fn serve_hub_on(
         .as_object_mut()
         .expect("readiness object")
         .extend(enabled);
+    if local_stdio {
+        ready["local_stdio_socket"] = json!(true);
+    }
     if let Some(fingerprint) = manifest_fingerprint {
         ready["profiles_fingerprint"] = json!(fingerprint);
     }
@@ -2499,6 +2540,7 @@ mod dot_wire {
                 Vec::new(),
                 Some("managed"),
                 (port, Some(2), HubMode::Managed),
+                false,
                 None,
                 Some(HostedSocket {
                     installation,

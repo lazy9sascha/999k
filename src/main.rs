@@ -43,6 +43,8 @@ mod mailbox_startup;
 mod reply_mailbox_setup;
 #[path = "cloud/runtime_profiles.rs"]
 mod runtime_profiles;
+#[path = "cloud/stdio_mcp.rs"]
+mod stdio_mcp;
 
 use clap::{Parser, Subcommand};
 use pigeonmq::Queue;
@@ -95,6 +97,9 @@ struct ServeHubOptions {
     seconds: Option<u64>,
     #[arg(long)]
     continuous: bool,
+    /// Also bind an owner-private Unix socket for local MCP clients.
+    #[arg(long)]
+    stdio_socket: bool,
     #[arg(long, hide = true, requires_all = ["continuous", "queue"])]
     run_lease_lock: Option<std::os::fd::RawFd>,
 }
@@ -295,6 +300,15 @@ enum Command {
         auth_policy: PathBuf,
     },
     ServeHub(Box<ServeHubOptions>),
+    /// Serve one configured local mailbox over MCP standard input and output.
+    StdioMcp {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        mailbox: String,
+        #[arg(long)]
+        bearer_file: PathBuf,
+    },
     // Disabled by owner request. Use the authenticated hub API/MCP for messages.
     // Keep these declarations with the disabled handlers below for a reversible change.
     /*
@@ -554,6 +568,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cloud_credentials::provision(auth_policy, cloud_credentials::App::GrokBot)?;
             local_http::prepare_grok(queue, auth_policy).map_err(Into::into)
         }
+        Command::StdioMcp {
+            home,
+            mailbox,
+            bearer_file,
+        } => stdio_mcp::run(home, mailbox, bearer_file).map_err(Into::into),
         Command::ServeHub(options) => {
             let ServeHubOptions {
                 queue,
@@ -565,6 +584,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 port,
                 seconds,
                 continuous,
+                stdio_socket,
                 run_lease_lock,
             } = options.as_ref();
             if let Some(lock) = run_lease_lock {
@@ -613,6 +633,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(mailbox_startup::Manifest::fingerprint),
                 *port,
                 seconds,
+                *stdio_socket,
             )
             .map_err(Into::into)
         }

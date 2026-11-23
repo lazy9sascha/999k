@@ -601,3 +601,26 @@ The first text item contains a JSON object with an `error` reason, such as `repl
 HTTP authentication failures remain separate from tool results.
 
 For the wake, see [quickstart step 5](quickstart.md#5-optional-grok-bot-wake).
+
+## Local MCP over stdio
+
+Use stdio for a local MCP client that runs under the same OS user as your hub.
+It needs no Cloudflare Tunnel or installation email. It uses the mailbox policy
+already mounted in the hub. It does not create a queue, grant access, or start or
+stop the hub.
+
+Add `--stdio-socket` to your existing `pigeonmq serve-hub` command. Keep the same
+private queue and profile options. When the hub starts, it binds a private Unix socket
+next to the queue. Do not start a second hub for that queue. If the normal start
+command does not expose this option, use the configured hub directly with `serve-hub`.
+
+Configure your client's stdio command with the same private hub home, a mounted
+mailbox with its default route, and its existing owner-private bearer file:
+
+```sh
+pigeonmq stdio-mcp --home <hub-home> --mailbox <name> --bearer-file <private-file>
+```
+
+Give the client the bearer file path, not the bearer value. A missing or unauthenticated
+hub returns a protocol error. The adapter does not fall back to TCP. Closing the client
+leaves the hub running. This adapter handles one request at a time with the MCP 2025-03-26 initialization handshake. It does not expose remote events or cancel calls in progress.

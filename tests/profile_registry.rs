@@ -1234,3 +1234,163 @@ fn terminal_confirmation_reports_only_in_scope_domain_errors_over_rmcp() {
         }
     }
 }
+
+#[test]
+fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
+    let fixture = Fixture::new();
+    let port = Hub::available_port();
+    let mut command = fixture.command(port);
+    command.args(["--bundled-profiles", "--stdio-socket"]);
+    let (hub, ready) = Hub::launch(port, &mut command);
+    assert_eq!(ready["local_stdio_socket"], true);
+    let token_path = |name: &str, token: &str| {
+        let path = fixture.home.path().join(name);
+        fs::write(&path, token).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    };
+    let dot_token = token_path("dot.key", "test-dot");
+    let muse_token = token_path("muse.key", "test-muse");
+    let run = |mailbox: &str, token: &Path, inputs: &[Value]| {
+        let mut child = Command::new(BIN)
+            .env_clear()
+            .args(["stdio-mcp", "--mailbox", mailbox, "--home"])
+            .arg(fixture.home.path())
+            .arg("--bearer-file")
+            .arg(token)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        for frame in inputs {
+            serde_json::to_writer(&mut input, frame).unwrap();
+            input.write_all(b"\n").unwrap();
+        }
+        drop(input);
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        let diagnostics = String::from_utf8(out.stderr).unwrap();
+        assert!(!diagnostics.contains("test-dot") && !diagnostics.contains("test-muse"));
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(!text.contains("test-dot") && !text.contains("test-muse"));
+        text.lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let init = json!({"jsonrpc":"2.0","id":"init","method":"initialize","params":{
+        "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}
+    }});
+    assert_eq!(
+        run("dot", &muse_token, &[init.clone()])[0]["error"]["code"],
+        -32000
+    );
+    assert_eq!(
+        run("unmounted", &dot_token, &[init.clone()])[0]["error"]["code"],
+        -32000
+    );
+    let rpc = |id, name, args| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}});
+    let extract = |reply: &Value| {
+        let result = &reply["result"];
+        assert_ne!(result["isError"], true, "{reply}");
+        result.get("structuredContent").cloned().unwrap_or_else(|| {
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        })
+    };
+    let exchange = |recipient, key| {
+        let (status, reply) = hub.request(
+            "/muse/mcp",
+            "test-muse",
+            &rpc(
+                "send",
+                "pigeonmq_send",
+                json!({"recipient":recipient,"body":"fixture request","idempotency_key":key}),
+            ),
+        );
+        assert_eq!(status, 200);
+        extract(&reply)["message"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let original = exchange("dot", "fixture-original");
+    let other = exchange("grok-bot", "fixture-another-mailbox");
+    let frames = run(
+        "dot",
+        &dot_token,
+        &[
+            init.clone(),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({"jsonrpc":"2.0","id":"list","method":"tools/list","params":{}}),
+            rpc("read", "pigeonmq_read", json!({"message_id":original})),
+            rpc("outside", "pigeonmq_read", json!({"message_id":other})),
+            rpc(
+                "reply",
+                "pigeonmq_reply",
+                json!({"message_id":original,"body":"stdio fixture reply"}),
+            ),
+        ],
+    );
+    assert_eq!(frames.len(), 5);
+    assert_eq!(frames[0]["result"]["protocolVersion"], "2025-03-26");
+    assert!(frames[0]["result"]["capabilities"]["events"].is_null());
+    assert!(
+        frames[1]["result"]["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("invalid list response: {}", frames[1]))
+            .iter()
+            .any(|tool| tool["name"] == "pigeonmq_reply")
+    );
+    let read = extract(&frames[2]);
+    assert_eq!(
+        read.get("envelope").unwrap_or(&read)["body"],
+        "fixture request"
+    );
+    assert!(
+        frames[3]["error"].is_object() || frames[3]["result"]["isError"] == true,
+        "cross-mailbox request must fail"
+    );
+    let reply = extract(&frames[4]);
+    let reply_id = reply["reply_id"].as_str().unwrap();
+    let (status, result) = hub.request(
+        "/muse/mcp",
+        "test-muse",
+        &rpc("linked", "pigeonmq_read", json!({"message_id":reply_id})),
+    );
+    assert_eq!(status, 200); // Hub still responds after stdio EOF.
+    let linked = extract(&result);
+    assert_eq!(linked["body"], "stdio fixture reply");
+    assert_eq!(linked["in_reply_to"], original);
+    let db = rusqlite::Connection::open_with_flags(
+        &fixture.db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let ack: Option<i64> = db
+        .query_row(
+            "SELECT acknowledged_at_ms FROM messages WHERE id=?1",
+            [&original],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(ack.is_some());
+    drop(db);
+
+    // A foreign listener on the expected pathname must receive no credential or request.
+    drop(hub);
+    let socket = fixture.home.path().join("mcp.sock");
+    fs::remove_file(&socket).unwrap();
+    let impostor = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    impostor.set_nonblocking(true).unwrap();
+    assert_eq!(run("dot", &dot_token, &[init])[0]["error"]["code"], -32000);
+    match impostor.accept() {
+        Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock),
+        Ok((mut stream, _)) => {
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        }
+    }
+}
