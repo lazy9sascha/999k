@@ -127,7 +127,7 @@ async fn exchange(
 #[tokio::test]
 async fn exchange_returns_only_verified_non_anonymous_uuid() {
     let user = format!(
-        r#"{{"id":"{USER_ID}","role":"authenticated","is_anonymous":false,"email":"ignored@example.test"}}"#
+        r#"{{"id":"{USER_ID}","role":"authenticated","is_anonymous":false,"email":"Invited@EXAMPLE.test","email_confirmed_at":"2026-11-01T00:00:00Z"}}"#
     );
     assert_eq!(
         exchange("200 OK", "", user).await,
@@ -139,6 +139,18 @@ async fn exchange_returns_only_verified_non_anonymous_uuid() {
         exchange("200 OK", "", anonymous).await,
         Err(SupabaseAuthError::Rejected)
     );
+    for (email, confirmed) in [
+        ("other@example.test", r#""2026-11-01T00:00:00Z""#),
+        (EMAIL, "null"),
+    ] {
+        let user = format!(
+            r#"{{"id":"{USER_ID}","role":"authenticated","is_anonymous":false,"email":"{email}","email_confirmed_at":{confirmed}}}"#
+        );
+        assert_eq!(
+            exchange("200 OK", "", user).await,
+            Err(SupabaseAuthError::Rejected)
+        );
+    }
 }
 
 #[tokio::test]
@@ -154,20 +166,22 @@ async fn upstream_rejection_and_redirect_fail_closed() {
 }
 
 #[tokio::test]
-async fn otp_request_disables_user_creation_and_uses_no_redirect() {
+async fn otp_request_can_create_a_verified_email_account() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut auth = auth();
     auth.project = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
     let server = tokio::spawn(async move {
-        let (stream, start, headers, body) = request(&listener).await;
-        assert_eq!(start, "POST /auth/v1/otp HTTP/1.1");
-        assert_eq!(headers["apikey"], KEY);
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            body,
-            serde_json::json!({"email": EMAIL, "create_user": false})
-        );
-        respond(stream, "200 OK", "", "{}").await;
+        {
+            let (stream, start, headers, body) = request(&listener).await;
+            assert_eq!(start, "POST /auth/v1/otp HTTP/1.1");
+            assert_eq!(headers["apikey"], KEY);
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({"email": EMAIL, "create_user": true})
+            );
+            respond(stream, "200 OK", "", "{}").await;
+        }
     });
     assert_eq!(auth.request_otp(EMAIL).await, Ok(()));
     server.await.unwrap();

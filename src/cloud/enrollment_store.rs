@@ -620,7 +620,22 @@ impl Registry {
         self.approve_email_attempt(id, None, verified_account, allowed_accounts, now)
     }
 
-    /// Approve only the pending installation bound to the exact consumed attempt.
+    /// Approve the pending installation and exact consumed, verified email attempt.
+    pub(crate) fn approve_verified_email(
+        &mut self,
+        id: Uuid,
+        attempt: Uuid,
+        email: &str,
+        account: Uuid,
+        now: i64,
+    ) -> Result<Enrollment> {
+        if account.is_nil() {
+            return Err(RegistryError::Forbidden);
+        }
+        self.approve_bound_attempt(id, Some(attempt), account, Some(email), now)
+    }
+
+    #[cfg(test)]
     pub(crate) fn approve_email_attempt(
         &mut self,
         id: Uuid,
@@ -632,6 +647,17 @@ impl Registry {
         if !allowed_accounts.contains(&verified_account) {
             return Err(RegistryError::Forbidden);
         }
+        self.approve_bound_attempt(id, attempt, verified_account, None, now)
+    }
+
+    fn approve_bound_attempt(
+        &mut self,
+        id: Uuid,
+        attempt: Option<Uuid>,
+        verified_account: Uuid,
+        email: Option<&str>,
+        now: i64,
+    ) -> Result<Enrollment> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -640,8 +666,9 @@ impl Registry {
         let consumed: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM browser_attempts
                             WHERE installation_id = ?1 AND substr(verifier, 1, 5) = 'used:' AND expires_at > ?2
-                              AND (?3 IS NULL OR id = ?3))",
-            params![id, now, attempt.map(|id| id.to_string())],
+                              AND (?3 IS NULL OR id = ?3)
+                              AND (?4 IS NULL OR verifier = 'used:' || ?4))",
+            params![id, now, attempt.map(|id| id.to_string()), email],
             |row| row.get(0),
         )?;
         if !consumed {

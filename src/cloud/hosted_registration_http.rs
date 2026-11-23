@@ -383,7 +383,7 @@ pub(crate) fn login_form(
 <p id="missing">Open the installation link from PigeonMQ on your Mac.</p>
 <form id="request" method="post" action="/register/{installation_id}">
 <input id="handoff" name="handoff" type="hidden" value="">
-<label for="email">Invited email address</label>
+<label for="email">Email address</label>
 <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
 <button id="send" type="submit" disabled>Send email code</button>
 </form>
@@ -406,7 +406,7 @@ pub(crate) fn otp_form(installation_id: Uuid, attempt: Uuid) -> RegistrationResp
     let mut response = html_response(format!(
         r#"<!doctype html><html lang="en"><meta charset="utf-8">
 <title>Verify PigeonMQ registration</title><h1>Verify PigeonMQ registration</h1>
-<p>If the address is invited, check its inbox for a code.</p>
+<p>Check your inbox for a code. If it does not arrive, try the registration link again after the current attempt expires.</p>
 <form method="post" action="/register/{installation_id}/verify">
 <label for="otp">Email code</label>
 <input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{{6,8}}" maxlength="8" required>

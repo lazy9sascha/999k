@@ -36,6 +36,8 @@ struct User {
     id: String,
     role: String,
     is_anonymous: bool,
+    email: Option<String>,
+    email_confirmed_at: Option<String>,
 }
 
 impl SupabaseAuth {
@@ -75,7 +77,7 @@ impl SupabaseAuth {
             .client
             .post(self.endpoint("auth/v1/otp")?)
             .header(CONTENT_TYPE, "application/json")
-            .body(serde_json::json!({"email": email, "create_user": false}).to_string());
+            .body(serde_json::json!({"email": email, "create_user": true}).to_string());
         let _: serde_json::Value = json_response(request).await?;
         Ok(())
     }
@@ -103,7 +105,14 @@ impl SupabaseAuth {
             .get(self.endpoint("auth/v1/user")?)
             .header(AUTHORIZATION, bearer);
         let user: User = json_response(verify).await?;
-        if user.is_anonymous || user.role != "authenticated" {
+        if user.is_anonymous
+            || user.role != "authenticated"
+            || user.email.as_deref().and_then(normalized_email).as_deref() != Some(email)
+            || !user
+                .email_confirmed_at
+                .as_deref()
+                .is_some_and(|time| chrono::DateTime::parse_from_rfc3339(time).is_ok())
+        {
             return Err(SupabaseAuthError::Rejected);
         }
         user.id

@@ -1,6 +1,6 @@
 # Hosted registration operator preview
 
-The registration service manages the address and Cloudflare Tunnel for each invited installation. It listens on loopback. User Macs serve their own MCP endpoints and store their own queues.
+The registration service manages the address and Cloudflare Tunnel for each approved installation. It listens on loopback. User Macs serve their own MCP endpoints and store their own queues.
 
 ## Prepare a private pilot
 
@@ -15,7 +15,6 @@ The registration service manages the address and Cloudflare Tunnel for each invi
   "registration_origin": "https://init.example.com",
   "supabase_url": "https://project.example.com",
   "supabase_publishable_key": "sb_publishable_example",
-  "invited_accounts": {"pilot@example.com": "11111111-1111-4111-8111-111111111111"},
   "cloudflare_account_id": "<account-id>",
   "cloudflare_zone_id": "<zone-id>",
   "cloudflare_zone_name": "example.com",
@@ -39,11 +38,11 @@ The service creates `enrollments.sqlite3` in the private directory. It reserves 
 installation's connector token. A successful finish on an existing installation
 also reconciles its ingress with the current settings.
 
-Open the private installation link from PigeonMQ. Enter the invited email address and the numeric email code. Do not enter a code from the Mac.
+Open the private installation link from PigeonMQ. Enter your email address and the numeric email code. You do not need an existing Supabase Auth account. Older settings can still contain \`invited_accounts\`; the service warns that this field is ignored. Remove it. Do not enter a code from the Mac.
 The link expires with the reservation. Open it only in the intended browser. Do not share or log the full link.
 Opening the link does not send an email. The browser removes the private fragment and submits it only when you request the email code.
 Supabase issues the numeric OTP for an email address, not an installation.
-PigeonMQ applies approval only to the installation bound to the browser attempt.
+PigeonMQ checks that the verified account holds the exact email address for this attempt. It applies approval only to the installation bound to that attempt. The email code and the tunnel connector token do not grant MCP access. Existing MCP authentication does not change.
 The request page does not show whether it sent an email. Response times can differ.
 If an attempt fails, wait up to five minutes, then reopen registration from PigeonMQ. Use the same pending installation until its reservation expires.
 
