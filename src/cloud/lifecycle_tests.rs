@@ -708,7 +708,7 @@ fn managed_stdio_is_explicit_at_first_activation_and_persists_without_restart() 
 }
 
 #[test]
-fn existing_managed_home_does_not_silently_enable_stdio_or_restart() {
+fn existing_managed_home_can_enable_stdio_once_with_explicit_opt_in() {
     let fixture = Fixture::new(false);
     let jobs = fixture.jobs();
     init_with(
@@ -729,8 +729,15 @@ fn existing_managed_home_does_not_silently_enable_stdio_or_restart() {
     );
     let mut opt_in = fixture.options(true, None);
     opt_in.local_stdio = true;
-    let n = fixture.fake.actions.borrow().len();
-    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_err());
-    assert_eq!(fixture.fake.actions.borrow().len(), n);
-    assert_eq!(fs::read(file).unwrap(), saved);
+    let before_actions = fixture.fake.actions.borrow().len();
+    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_ok());
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(fixture.fake.actions.borrow().len() > before_actions);
+
+    let after_first = fixture.fake.actions.borrow().len();
+    let mut repeat = fixture.options(true, None);
+    repeat.local_stdio = true;
+    assert!(init_with(&fixture.home, "cue", &repeat, Some(&jobs)).is_ok());
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert_eq!(fixture.fake.actions.borrow().len(), after_first);
 }

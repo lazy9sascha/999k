@@ -71,6 +71,7 @@ The first named command stages the policy and bearer file. Use the private `toke
 The command does not print the bearer.
 The apply command registers and starts the managed loopback hub and binds the private stdio socket for that home.
 `--stdio-socket` belongs on that first managed apply. The setting stays with the home.
+An already-active managed home can add it once with the same command and `--apply`.
 This command does not start hosted registration.
 Repeating an active setup keeps its bearer.
 See [managed profiles](configuration.md#manage-built-in-profiles) for other profiles, email, and removal.

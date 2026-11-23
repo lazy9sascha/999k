@@ -760,6 +760,7 @@ fn change(
 ) -> io::Result<()> {
     let dir = home.join(DIRECTORY);
     let queue = home.join(QUEUE);
+    let stdio_changed = next.local_stdio && !current.local_stdio;
     let want_relay = next
         .profiles
         .values()
@@ -809,7 +810,7 @@ fn change(
     {
         stop_hosted(jobs, home, &owner)?;
     }
-    if phase_changed && hub.loaded {
+    if (phase_changed || stdio_changed) && hub.loaded {
         jobs.service.bootout(HUB_LABEL)?;
     }
     let transition = (|| {
@@ -840,9 +841,12 @@ fn change(
             }
             write_json(&dir.join(STATE), &next)?;
         }
+        if stdio_changed && !phase_changed {
+            write_json(&dir.join(STATE), &next)?;
+        }
         let routes = active_routes(&next);
         if !routes.is_empty() {
-            if !hub.loaded || phase_changed {
+            if !hub.loaded || phase_changed || stdio_changed {
                 hub.start(jobs)?;
             }
             jobs.service.hub_ready(&hub.path, next.port, &routes)?;
@@ -1382,9 +1386,7 @@ fn init_with(
     } else {
         read_json::<Registry>(&state_path)?
     };
-    if options.local_stdio
-        && (!options.apply || (!state.local_stdio && !active_routes(&state).is_empty()))
-    {
+    if options.local_stdio && !options.apply {
         return Err(error(
             "enable managed stdio on the first active profile in this home",
         ));
