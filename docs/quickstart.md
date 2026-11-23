@@ -1,6 +1,7 @@
 # Quickstart
 
-Install PigeonMQ, try a local exchange, and connect a client.
+Install PigeonMQ, set up a local mailbox on macOS, and connect a client over stdio.
+A reverse tunnel is optional and is only for a remote agent.
 For agent-specific connections, see [agents and capabilities](agents.md).
 
 <a id="1-build"></a>
@@ -39,6 +40,77 @@ export PATH="$(dirname "$PIGEONMQ_BIN"):$PATH"
 If you used another install directory, set `PIGEONMQ_BIN` to the absolute path of its `pigeonmq`.
 Use a stable absolute path for a managed service.
 For an existing 0.1.0 service, change the executable name from `pigeonmq-cloud` to `pigeonmq` when you upgrade.
+
+## Local MCP on macOS
+
+The stdio steps require a build that provides `pigeonmq stdio-mcp`. If your installed version lacks that command, build this checkout.
+
+### macOS: managed Cue or Instinct
+
+Use one managed home for all profiles in the same macOS login.
+This example uses a new Instinct home and opts in to the private stdio socket on its first managed apply.
+Use `cue` instead to serve `/cue/mcp`.
+
+Keep an existing home on its current absolute path and configuration.
+If `$HOME/.pigeonmq-cloud` already holds a managed installation, keep that directory and choose another absolute home for this example.
+These commands opt in on the first active profile of a new managed Cue or Instinct home.
+An existing managed installation without a socket does not gain one from this flag. That upgrade path is still under verification.
+
+```sh
+export CLOUD_HOME="$HOME/.pigeonmq-stdio"
+if [ ! -e "$CLOUD_HOME" ] && [ ! -L "$CLOUD_HOME" ]; then
+  "$PIGEONMQ_BIN" init --home "$CLOUD_HOME" &&
+  "$PIGEONMQ_BIN" init instinct --home "$CLOUD_HOME" &&
+  "$PIGEONMQ_BIN" init instinct --home "$CLOUD_HOME" --apply --stdio-socket
+else
+  printf '%s\n' "Choose a new PigeonMQ home." >&2
+fi
+```
+
+The first named command stages the policy and bearer file. Use the private `token_file` path it prints.
+The command does not print the bearer.
+The apply command registers and starts the managed loopback hub and binds the private stdio socket for that home.
+`--stdio-socket` belongs on that first managed apply. The setting stays with the home.
+This command does not start hosted registration.
+Repeating an active setup keeps its bearer.
+See [managed profiles](configuration.md#manage-built-in-profiles) for other profiles, email, and removal.
+See [Local MCP over stdio](configuration.md#local-mcp-over-stdio) for the socket rules and for adding `--stdio-socket` to an existing foreground `serve-hub` command.
+Use the macOS procedures for [Dot](configuration.md#dot-through-a-private-secure-mcp-tunnel) and [Codex Cloud](configuration.md#codex-cloud-operation).
+A detected app is not a connected app.
+
+#### Connect over stdio
+
+`stdio-mcp` uses the absolute `pigeonmq` executable and the private bearer file path.
+The client runs as the same OS user as the hub.
+Pass the private bearer file path.
+
+If your client uses an `mcpServers` object, enter this configuration. Otherwise, use the same command and arguments in the client's stdio settings.
+
+```json
+{
+  "mcpServers": {
+    "pigeonmq": {
+      "command": "/absolute/path/to/pigeonmq",
+      "args": [
+        "stdio-mcp",
+        "--home",
+        "/absolute/path/to/hub-home",
+        "--mailbox",
+        "instinct",
+        "--bearer-file",
+        "/absolute/path/to/private-bearer-file"
+      ]
+    }
+  }
+}
+```
+
+Set `command` to the absolute path in `PIGEONMQ_BIN`.
+Set `--home` to the same absolute home, and `--bearer-file` to the absolute `token_file` path from init.
+Use `cue` as `--mailbox` when the applied profile is Cue.
+The adapter uses the mailbox policy already mounted in the hub. Closing the client leaves the hub running. Use a synthetic message from an authorized peer to verify access.
+
+See [Local MCP over stdio](configuration.md#local-mcp-over-stdio) for foreground socket setup and protocol details.
 
 ## 2. Try a local exchange
 
@@ -85,28 +157,11 @@ Use the Bearer in the mode-600 file printed as `token_file`. The command does no
 Add active peers only as needed in the [registration file](configuration.md#registration-format).
 Keep this terminal open while you use the hub. Press Ctrl+C to stop it.
 On later starts, use only the `run` command with the same home.
-
-### macOS: managed Cue or Instinct
-
-Use one managed home for all profiles in the same macOS login.
-This example uses Instinct. Use `cue` instead to serve `/cue/mcp`.
-
-```sh
-export CLOUD_HOME="$HOME/.pigeonmq-cloud"
-"$PIGEONMQ_BIN" init --home "$CLOUD_HOME"
-"$PIGEONMQ_BIN" init instinct --home "$CLOUD_HOME"
-"$PIGEONMQ_BIN" init instinct --home "$CLOUD_HOME" --apply
-```
-
-The first named command stages the policy and Bearer file. Use the file path it prints.
-The second registers and starts the managed loopback hub. Repeating an active setup keeps its Bearer.
-See [managed profiles](configuration.md#manage-built-in-profiles) for other profiles, email, and removal.
-Use the macOS procedures for [Dot](configuration.md#dot-through-a-private-secure-mcp-tunnel) and [Codex Cloud](configuration.md#codex-cloud-operation).
-A detected app is not a connected app.
+For a new macOS managed Cue or Instinct home, use [macOS: managed Cue or Instinct](#macos-managed-cue-or-instinct) and connect with stdio.
 
 ## 3. Open a tunnel
 
-Skip this section for a client on the hub machine.
+This section is optional. Skip it for a client on the hub machine.
 A remote HTTPS connector needs a reachable origin. Private Dot and Codex Cloud tunnels use separate procedures.
 `run` has no default tunnel mode. Pass `--local-only` only for loopback.
 If a managed hub already serves the route, connect the tunnel to that listener. Do not start a second runner.
@@ -180,7 +235,8 @@ Only one `run` can own a folder. Use `--port` to change the loopback port (defau
 
 ## 4. Connect an app
 
-Use Streamable HTTP with the full URL of the running mailbox route.
+A local stdio client uses [Connect over stdio](#connect-over-stdio).
+The steps below connect a client with Streamable HTTP.
 For a client on the hub machine, use the loopback URL. A remote client needs a trusted HTTPS origin or its supported private tunnel.
 Use that mailbox's real Bearer in the client's secure credential field. A URL alone cannot authenticate.
 

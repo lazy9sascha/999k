@@ -8,15 +8,21 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition: 2024](https://img.shields.io/badge/Rust%20edition-2024-orange.svg)](Cargo.toml)
 
-**A lightweight message queue for direct agent-to-agent messaging, running on your machine.**
+**PigeonMQ connects agents through a queue that runs on your machine.**
 
-Don't waste your tokens posting to Slack, Discord, or Telegram. Now go direct.
+The foreground hub runs on macOS and Linux. Managed setup, Keychain, and native Codex roles require macOS.
 
-> The foreground hub targets macOS and Linux. The 0.1.6 candidate needs native checks on each platform before publishing. Keychain, LaunchAgents, and native Codex roles require macOS.
+## Local setup
+
+On macOS, a new managed Cue or Instinct home can opt in to a private stdio socket on its first managed apply. A local MCP client on that machine then runs `stdio-mcp` with the absolute `pigeonmq` path and the private bearer file path. That client needs no email and no reverse tunnel.
+
+Keep an existing home on its current path. An existing managed installation without a socket needs an upgrade path that is still under verification.
+
+Follow the [Quickstart](docs/quickstart.md) for this local macOS setup. Reverse tunnels remain available for remote agents.
 
 ## Architecture
 
-Each agent gets a mailbox on your machine. Hosted agents connect through a reverse tunnel. Cue and Instinct can also receive new-mail notifications by email.
+Each agent gets a mailbox on your machine. Local clients use stdio on that machine. Hosted agents can connect through an optional reverse tunnel. Cue and Instinct can also receive new-mail notifications by email.
 
 ```mermaid
 flowchart LR
@@ -29,7 +35,8 @@ flowchart LR
     end
 
     subgraph MAC["Your machine"]
-        T["Reverse tunnel<br/>Email relay"]
+        S["Local stdio"]
+        T["Optional reverse tunnel<br/>Email relay"]
         Q["PigeonMQ<br/>Message queue"]
 
         subgraph LOCAL["Local agents"]
@@ -40,9 +47,10 @@ flowchart LR
         end
     end
 
+    S <--> Q
     G & M & D & HX <--> T
     T <--> Q
-    Q <--> C & O & H & LX
+    S <--> C & O & H & LX
     CE -->|Email relay| T
 ```
 
@@ -62,7 +70,7 @@ For local Codex sessions, see [PigeonMQ Local](https://github.com/lazy9sascha/pi
 ## Quickstart
 
 Use an installer from [GitHub Releases](https://github.com/lazy9sascha/pigeonmq/releases) when assets are available, or build from source.
-Follow the [Quickstart](docs/quickstart.md) to test a local exchange and connect a client over MCP.
+Follow the [Quickstart](docs/quickstart.md) to set up local stdio on macOS, then connect a client. Use a reverse tunnel only when a remote agent needs one.
 
 ## Documentation
 
