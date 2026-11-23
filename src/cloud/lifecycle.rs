@@ -540,6 +540,18 @@ pub(crate) fn hosted_cue_mode(home: &Path, installation: uuid::Uuid) -> io::Resu
     }
 }
 
+pub(crate) fn hosted_cue_bearer_status(home: &Path) -> io::Result<Value> {
+    let home = private_dir(home)?;
+    let owner = read_hosted_owner(&home)?.ok_or_else(|| error("no managed hosted Unix owner"))?;
+    let (installation, _) = hosted_scope(&home, &owner)?;
+    if !hosted_cue_mode(&home, installation)? {
+        return Ok(json!({"state":"legacy"}));
+    }
+    let scope = crate::hosted_mailbox_bearer::Scope::new(&home, installation);
+    let _guard = scope.lock(false)?;
+    Ok(scope.status())
+}
+
 pub(crate) fn hosted_cue_bearer(home: &Path, rotate: Option<(u64, &Path)>) -> io::Result<()> {
     let home = private_dir(home)?;
     let dir = private_dir(&home.join(DIRECTORY))?;

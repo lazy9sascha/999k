@@ -39,3 +39,20 @@ Keep the managed lifecycle registry with the installation. It records that
 finite mode is enabled. Do not start an older binary with this registry.
 For rollback, first leave hosted access disabled. Do not restore a snapshot that
 re-enables the old remote Bearer.
+
+## Recover after a failed rotation
+
+A failed command may leave the export file. Do not distribute it. Keep it in
+its owner-private directory. The file can be inactive. It can also hold the
+active Bearer if the state changed before the command reported an error.
+
+Check state with the current binary:
+
+```sh
+pigeonmq hosted-cue-bearer --home /private/hub status
+```
+
+Status reports the current grant state. It does not identify the exported file.
+To issue a known Bearer, rotate again to a different new export file. If you
+need to block hosted Cue, revoke the grant. If revocation fails or status is
+unavailable, keep hosted access stopped. Do not restart with the old binary.

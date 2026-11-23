@@ -379,6 +379,8 @@ enum HostedCueBearerAction {
         #[arg(long)]
         export_file: PathBuf,
     },
+    /// Check the scoped policy state without showing a Bearer or digest.
+    Status,
     /// Revoke the current scoped Bearer. Do not re-enable the old Bearer.
     Revoke,
 }
@@ -479,6 +481,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     lifecycle::hosted_cue_bearer(home, Some((*lifetime_secs, export_file)))?;
                 }
                 HostedCueBearerAction::Revoke => lifecycle::hosted_cue_bearer(home, None)?,
+                HostedCueBearerAction::Status => {
+                    println!("{}", lifecycle::hosted_cue_bearer_status(home)?);
+                    return Ok(());
+                }
             }
             println!("Hosted Cue Bearer state updated.");
             Ok(())

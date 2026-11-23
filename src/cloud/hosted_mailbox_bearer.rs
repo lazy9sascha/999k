@@ -113,6 +113,28 @@ impl Scope {
         Ok(grant)
     }
 
+    pub(crate) fn status(&self) -> serde_json::Value {
+        let Ok(grant) = self.load() else {
+            return serde_json::json!({"state":"unavailable"});
+        };
+        if auth::digest(&grant.digest).is_none() {
+            return serde_json::json!({"state":"unavailable"});
+        }
+        let Ok(now) = now_ms() else {
+            return serde_json::json!({"state":"unavailable"});
+        };
+        let state = if grant.revoked {
+            "revoked"
+        } else if now >= grant.expires_at_ms {
+            "expired"
+        } else if now < grant.issued_at_ms {
+            "unavailable"
+        } else {
+            "active"
+        };
+        serde_json::json!({"state":state,"expires_at_ms":grant.expires_at_ms})
+    }
+
     fn save(&self, grant: &Grant) -> io::Result<()> {
         private_file::replace_private(&self.home.join(GRANT), &serde_json::to_vec(grant)?)
     }
@@ -252,5 +274,45 @@ mod tests {
         let _lock = reopened.lock(true).unwrap();
         reopened.revoke_locked().unwrap();
         assert!(reopened.authorize(&new).is_err());
+    }
+
+    #[test]
+    fn failed_mode_or_commit_leaves_private_undistributable_export() {
+        let home = tempfile::tempdir().unwrap();
+        let transfer = tempfile::tempdir().unwrap();
+        for dir in [&home, &transfer] {
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let scope = Scope::new(home.path(), Uuid::new_v4());
+        let _lock = scope.lock(true).unwrap();
+        let mode_failure = transfer.path().join("mode-failure");
+        assert!(
+            scope
+                .rotate_locked(30, &mode_failure, || Err(invalid()))
+                .is_err()
+        );
+        assert_eq!(
+            fs::metadata(&mode_failure).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(
+            scope
+                .authorize(&headers(&fs::read_to_string(mode_failure).unwrap()))
+                .is_err()
+        );
+        assert_eq!(scope.status()["state"], "unavailable");
+        fs::create_dir(home.path().join(GRANT)).unwrap();
+        let commit_failure = transfer.path().join("commit-failure");
+        assert!(scope.rotate_locked(30, &commit_failure, || Ok(())).is_err());
+        assert_eq!(
+            fs::metadata(&commit_failure).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(
+            scope
+                .authorize(&headers(&fs::read_to_string(commit_failure).unwrap()))
+                .is_err()
+        );
+        assert_eq!(scope.status()["state"], "unavailable");
     }
 }
