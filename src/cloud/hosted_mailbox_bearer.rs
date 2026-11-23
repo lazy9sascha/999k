@@ -156,7 +156,7 @@ impl Scope {
             .ok_or_else(invalid)?;
         let parent = crate::cloud_setup::require_home(parent)?;
         let output = parent.join(output.file_name().ok_or_else(invalid)?);
-        if output.starts_with(&self.home) {
+        if output.starts_with(crate::cloud_setup::require_home(&self.home)?) {
             return Err(io::Error::other(
                 "select an export directory outside the hub home",
             ));
