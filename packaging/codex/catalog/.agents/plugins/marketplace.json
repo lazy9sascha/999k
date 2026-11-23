@@ -1,0 +1,20 @@
+{
+  "name": "pigeonmq-local-test",
+  "interface": {
+    "displayName": "PigeonMQ Local Test"
+  },
+  "plugins": [
+    {
+      "name": "pigeonmq-preview",
+      "source": {
+        "source": "local",
+        "path": "./plugins/pigeonmq-preview"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

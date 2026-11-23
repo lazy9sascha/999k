@@ -207,7 +207,7 @@ pub(crate) fn ensure_plist(
 }
 
 #[cfg(target_os = "macos")]
-fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let temporary = CString::new(temporary.as_os_str().as_bytes())?;
     let destination = CString::new(destination.as_os_str().as_bytes())?;
@@ -221,7 +221,7 @@ fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
     // The local staging format can be verified without launchd on other Unix targets.
     fs::hard_link(temporary, destination)?;
     fs::remove_file(temporary)

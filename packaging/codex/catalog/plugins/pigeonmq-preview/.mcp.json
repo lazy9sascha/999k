@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "pigeonmq": {
+      "type": "stdio",
+      "command": "/bin/sh",
+      "cwd": ".",
+      "args": ["-c", "exec ./bin/pigeonmq codex-preview-stdio"]
+    }
+  }
+}

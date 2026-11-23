@@ -208,6 +208,10 @@ fn write_json(path: &Path, data: &impl Serialize) -> io::Result<()> {
 }
 
 fn lock(dir: &Path) -> io::Result<File> {
+    lock_until(dir, std::time::Duration::ZERO)
+}
+
+fn lock_until(dir: &Path, wait: std::time::Duration) -> io::Result<File> {
     let path = dir.join("lifecycle.lock");
     let file = OpenOptions::new()
         .read(true)
@@ -218,11 +222,21 @@ fn lock(dir: &Path) -> io::Result<File> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(&path)?;
     open_private(&path)?;
-    // SAFETY: the lock is held by the live returned descriptor.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(error("another lifecycle change is in progress"));
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        // SAFETY: the lock is held by the live returned descriptor.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let cause = io::Error::last_os_error();
+        if cause.kind() != io::ErrorKind::WouldBlock {
+            return Err(cause);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(error("another lifecycle change is in progress"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    Ok(file)
 }
 
 fn configured(home: &Path, name: &str, manifest: Option<&Path>) -> io::Result<Binding> {
@@ -988,6 +1002,10 @@ impl InstallPaths {
 }
 
 fn system_jobs() -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
+    system_jobs_for(&std::env::current_exe()?)
+}
+
+fn system_jobs_for(binary: &Path) -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -1004,7 +1022,7 @@ fn system_jobs() -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
             .filter(|root| root.is_absolute())
             .collect(),
     };
-    let executable = installation.require_executable(&std::env::current_exe()?)?;
+    let executable = installation.require_executable(binary)?;
     Ok((directory, executable, installation))
 }
 
@@ -1162,6 +1180,141 @@ pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result
     } else {
         init_with(home, name, options, None)
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn codex_preview_stdio() -> io::Result<()> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+
+    const MARKER: &[u8] = b"pigeonmq-codex-local-preview-v1\n";
+    const MAILBOX: &str = "cue";
+
+    fn digest(reader: &mut impl Read) -> io::Result<[u8; 32]> {
+        let mut hash = Sha256::new();
+        let mut bytes = [0; 64 * 1024];
+        loop {
+            let count = reader.read(&mut bytes)?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&bytes[..count]);
+        }
+        Ok(hash.finalize().into())
+    }
+
+    let user = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| error("Codex preview needs an absolute user home"))?
+        .canonicalize()?;
+    let prefix = private_dir(&user.join(".pmq-codex-preview"))?;
+    let mut marker = Vec::new();
+    open_private(&prefix.join("enable"))?
+        .take((MARKER.len() + 1) as u64)
+        .read_to_end(&mut marker)?;
+    if marker != MARKER {
+        return Err(error(
+            "enable this Codex preview in a disposable macOS account",
+        ));
+    }
+    // Codex can open a discovery connection while the thread connection starts.
+    let guard = lock_until(&prefix, std::time::Duration::from_secs(8))?;
+    let home = prefix.join("hub");
+    let durable = prefix.join("pigeonmq");
+    let running = std::env::current_exe()?;
+    let expected = digest(&mut File::open(&running)?)?;
+    if absent(&durable)? {
+        let temporary = prefix.join(format!(".binary-{}", uuid::Uuid::new_v4()));
+        let stage = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .mode(0o700)
+                .open(&temporary)?;
+            io::copy(&mut File::open(&running)?, &mut file)?;
+            file.flush()?;
+            file.sync_all()?;
+            if digest(&mut open_private(&temporary)?)? != expected {
+                return Err(error("Codex preview binary changed during installation"));
+            }
+            crate::lifecycle_service::publish_new(&temporary, &durable)?;
+            Ok(())
+        })();
+        // Only remove this attempt's unique staging file.
+        if stage.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        stage?;
+        File::open(&prefix)?.sync_all()?;
+    }
+    if digest(&mut open_private(&durable)?)? != expected {
+        return Err(error("a different Codex preview binary is installed"));
+    }
+    let (directory, executable, installation) = system_jobs_for(&durable)?;
+    let jobs = Jobs {
+        service: &SystemLaunchctl,
+        directory: &directory,
+        executable: &executable,
+        installation: Some(&installation),
+    };
+    managed_hub_job(&jobs, &home)?;
+    for label in [HOSTED_LABEL, RELAY_LABEL] {
+        let path = directory.join(format!("{label}.plist"));
+        if !absent(&path)? || jobs.service.loaded(label, &path)? {
+            return Err(error(
+                "an existing hosted or relay job conflicts with the preview",
+            ));
+        }
+    }
+    mkdir_private(&home)?;
+    let credentials = home.join(DIRECTORY).join("initial-cue");
+    let state_path = home.join(DIRECTORY).join(STATE);
+    if !absent(&state_path)? {
+        let state: Registry = read_json(&state_path)?;
+        if state.registration != home.join(REGISTRATION)
+            || state.relay_command.is_some()
+            || state.profiles.len() != 1
+            || !state.profiles.get(MAILBOX).is_some_and(|profile| {
+                profile.provisioned
+                    && profile.phase != Phase::Retired
+                    && profile.email_recipient.is_none()
+                    && profile.source.route == "/cue/mcp"
+                    && profile
+                        .token_file
+                        .as_deref()
+                        .is_some_and(|token| token.parent() == Some(&credentials))
+            })
+        {
+            return Err(error("Codex preview refuses an existing foreign hub home"));
+        }
+    }
+    let result = init_with(
+        &home,
+        MAILBOX,
+        &Options {
+            profiles_file: None,
+            email_recipient: None,
+            relay_command: None,
+            port: None,
+            local_stdio: true,
+            apply: true,
+        },
+        Some(&jobs),
+    )?;
+    let bearer = result["token_file"]
+        .as_str()
+        .map(Path::new)
+        .filter(|path| path.parent() == Some(&credentials))
+        .ok_or_else(|| error("Codex preview mailbox bearer is unavailable"))?;
+    drop(guard);
+    crate::stdio_mcp::run(&home, MAILBOX, bearer)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn codex_preview_stdio() -> io::Result<()> {
+    Err(error("Codex preview requires macOS"))
 }
 
 fn init_with(
