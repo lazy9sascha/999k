@@ -393,6 +393,29 @@ fn settings_result(
     )
 }
 
+pub(crate) fn resolve_home(home: Option<PathBuf>) -> PathBuf {
+    if let Some(h) = home {
+        return h;
+    }
+    if let Ok(env_home) = std::env::var("PIGEONMQ_HOME") {
+        let p = PathBuf::from(env_home);
+        if p.is_absolute() {
+            return p;
+        }
+    }
+    let new_default = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|h| h.join(".pigeonmq"))
+        .unwrap_or_else(|| PathBuf::from(".pigeonmq"));
+    if new_default.exists() {
+        return new_default;
+    }
+    let legacy = PathBuf::from(".local");
+    if legacy.exists() {
+        return legacy;
+    }
+    new_default
+}
 pub(crate) fn quickstart(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if home.exists() {
         return Err("quickstart_home_exists".into());

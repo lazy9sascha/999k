@@ -33,8 +33,8 @@ use tokio::{
 };
 #[derive(clap::Args)]
 pub(crate) struct RunOptions {
-    #[arg(long, default_value = ".local")]
-    home: PathBuf,
+    #[arg(long)]
+    home: Option<PathBuf>,
     /// Enable generic HTTP and MCP routes with this private policy.
     #[arg(long)]
     auth_policy: Option<PathBuf>,
@@ -920,13 +920,14 @@ fn finish(a: &Args, reason: &str, public_origin: Option<String>, retryable: bool
     i32::from(reason != "stopped")
 }
 pub(crate) fn start(options: &RunOptions) -> std::io::Result<()> {
+    let home = crate::cloud_setup::resolve_home(options.home.clone());
     let companions = options
         .companions_file
         .as_deref()
         .map(run_companions::Manifest::load)
         .transpose()?;
     let transport = if companions.is_some() {
-        if !cfg!(target_os = "macos") || !options.home.is_absolute() {
+        if !cfg!(target_os = "macos") || !home.is_absolute() {
             return Err(io::Error::other(
                 "private_companions_require_macos_and_absolute_home",
             ));
@@ -936,8 +937,13 @@ pub(crate) fn start(options: &RunOptions) -> std::io::Result<()> {
         Transport::select(options.local_only, options.env_file.as_deref())
             .map_err(io::Error::other)?
     };
+    let manifest = options
+        .profiles_file
+        .as_deref()
+        .map(|path| Manifest::load(path, &home))
+        .transpose()?;
     let args = Args {
-        home: options.home.clone(),
+        home,
         binary: std::env::current_exe()?,
         auth_policy: options.auth_policy.clone(),
         port: options.port,
@@ -946,11 +952,7 @@ pub(crate) fn start(options: &RunOptions) -> std::io::Result<()> {
         watchdog_interval: diagnostics::WATCH_INTERVAL,
         operator_health: options.operator_health,
         companions,
-        manifest: options
-            .profiles_file
-            .as_deref()
-            .map(|path| Manifest::load(path, &options.home))
-            .transpose()?,
+        manifest,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
