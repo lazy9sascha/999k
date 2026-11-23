@@ -206,6 +206,10 @@ fn write_json(path: &Path, data: &impl Serialize) -> io::Result<()> {
 }
 
 fn lock(dir: &Path) -> io::Result<File> {
+    lock_until(dir, std::time::Duration::ZERO)
+}
+
+fn lock_until(dir: &Path, wait: std::time::Duration) -> io::Result<File> {
     let path = dir.join("lifecycle.lock");
     let file = OpenOptions::new()
         .read(true)
@@ -216,11 +220,21 @@ fn lock(dir: &Path) -> io::Result<File> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(&path)?;
     open_private(&path)?;
-    // SAFETY: the lock is held by the live returned descriptor.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(error("another lifecycle change is in progress"));
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        // SAFETY: the lock is held by the live returned descriptor.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let cause = io::Error::last_os_error();
+        if cause.kind() != io::ErrorKind::WouldBlock {
+            return Err(cause);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(error("another lifecycle change is in progress"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    Ok(file)
 }
 
 fn configured(home: &Path, name: &str, manifest: Option<&Path>) -> io::Result<Binding> {
@@ -1122,7 +1136,8 @@ pub(crate) fn codex_preview_stdio() -> io::Result<()> {
             "enable this Codex preview in a disposable macOS account",
         ));
     }
-    let guard = lock(&prefix)?;
+    // Codex can open a discovery connection while the thread connection starts.
+    let guard = lock_until(&prefix, std::time::Duration::from_secs(8))?;
     let home = prefix.join("hub");
     let durable = prefix.join("pigeonmq");
     let running = std::env::current_exe()?;

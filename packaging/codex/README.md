@@ -38,7 +38,7 @@ On first use, the plugin copies its binary to the private preview directory.
 It then starts the managed hub and connects to one local Cue mailbox.
 It uses the existing mailbox policy and private Unix socket.
 The plugin does not use an email code, Keychain, or Cloudflare.
-It does not reuse a different existing hub. Concurrent first starts may require a new session.
+It does not reuse a different existing hub. Concurrent first starts wait briefly for the same hub.
 
 The preview binds the normal hub port on loopback. Do not run it alongside another hub.
 Stop if a different PigeonMQ job or binary exists. No upgrade workflow is provided.
