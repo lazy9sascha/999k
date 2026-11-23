@@ -125,11 +125,16 @@ enum Command {
     },
     /// Report supervised hub, queue, tunnel and delivery health.
     Health {
-        #[arg(long, default_value = ".local")]
-        home: PathBuf,
+        #[arg(long)]
+        home: Option<PathBuf>,
         /// Check configured public HTTPS routes without credentials.
         #[arg(long)]
         probe_public: bool,
+    },
+    /// Stage a local-only quickstart home and print next steps.
+    Quickstart {
+        #[arg(long, default_value = ".local-quickstart")]
+        home: PathBuf,
     },
     /// Inspect one dead-lettered request in an owner-private queue without writing.
     DlqInspect {
@@ -163,8 +168,8 @@ enum Command {
     /// Prepare Cloud settings, or stage a named mailbox in a dedicated local-only home.
     Init {
         agent: Option<String>,
-        #[arg(long, default_value = ".local")]
-        home: PathBuf,
+        #[arg(long)]
+        home: Option<PathBuf>,
         /// Prepare an operational mailbox policy and private bearer for Instinct or Cue.
         #[arg(long, requires = "agent")]
         operational: bool,
@@ -415,13 +420,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             hosted_unix,
             port,
         } => {
+            let home = cloud_setup::resolve_home(home.clone());
             if *reserve_address {
-                return cloud_setup::reserve_address(home, *hosted_unix);
+                return cloud_setup::reserve_address(&home, *hosted_unix);
             }
             if *operational {
                 let mailbox = agent.as_deref().ok_or("mailbox name required")?;
-                lifecycle::check_manual_stage(home, mailbox)?;
-                println!("{}", reply_mailbox_setup::stage(home, mailbox)?);
+                lifecycle::check_manual_stage(&home, mailbox)?;
+                println!("{}", reply_mailbox_setup::stage(&home, mailbox)?);
                 return Ok(());
             }
             if let Some(name) = agent {
@@ -430,7 +436,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let result = if lifecycle::supported(name) {
                     lifecycle::init(
-                        home,
+                        &home,
                         name,
                         &lifecycle::Options {
                             profiles_file: profiles_file.as_deref(),
@@ -449,12 +455,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         return Err("built-in lifecycle options require a supported profile".into());
                     }
-                    runtime_profiles::init(home, name, *apply)?
+                    runtime_profiles::init(&home, name, *apply)?
                 };
                 println!("{result}");
                 Ok(())
             } else {
-                cloud_setup::setup(home, true)
+                cloud_setup::setup(&home, true)
             }
         }
         Command::Remove { agent, home, apply } => {
@@ -507,9 +513,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::CompanionGuard { lock, argv } => {
             cloud_service::companion_guard(*lock, argv).map_err(Into::into)
         }
-        Command::Health { home, probe_public } => {
-            std::process::exit(cloud_service::health(home, *probe_public))
-        }
+        Command::Health { home, probe_public } => std::process::exit(cloud_service::health(
+            &cloud_setup::resolve_home(home.clone()),
+            *probe_public,
+        )),
+        Command::Quickstart { home } => cloud_setup::quickstart(home).map_err(Into::into),
         Command::NotifyArrivals {
             queue,
             registration,

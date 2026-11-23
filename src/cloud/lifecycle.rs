@@ -1167,6 +1167,17 @@ pub(crate) fn serve_hosted_connector(_: &Path) -> io::Result<()> {
     Err(error("PigeonMQ hosted LaunchAgents require macOS"))
 }
 
+/// Return the existing managed hub queue path without opening it.
+#[allow(dead_code)]
+pub(crate) fn managed_hub_queue(home: &Path) -> Option<PathBuf> {
+    let queue = home.join("pigeonmq-cloud-queue.sqlite3");
+    let state = home.join(DIRECTORY).join(STATE);
+    if queue.is_file() && state.is_file() {
+        Some(queue)
+    } else {
+        None
+    }
+}
 pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result<Value> {
     if options.apply {
         let (directory, executable, installation) = system_jobs()?;
