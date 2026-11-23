@@ -64,8 +64,21 @@ PigeonMQ reports `hosted_connector=staged` and `hosted_public_route=unverified`.
 It saves the address and private connector credential in the owner-private hub home.
 It does not create a mailbox, change a local hub, or start a connector. The registration
 service can assign a loopback port and MCP paths, but those settings do not prove local
-origin identity across restarts. Automatic connector activation is not available in
-this preview.
+origin identity across restarts.
+
+For a new pilot enrollment, \`--hosted-unix\` selects a private Unix socket and requires
+an operator build that supports this mode. It has no TCP fallback. Do not switch an
+existing enrollment to this mode.
+
+Use the same \`--home\` and flags on each retry. If the home lacks the managed profiles
+the operator selected, the credential stays staged. Apply the required profiles, then
+run the same reserve command. The installer creates an owned LaunchAgent only if the
+running managed hub answers on the private socket. The connector checks that socket
+each time launchd starts it. An unrelated TCP listener cannot receive hosted requests.
+
+\`hosted_connector=scheduled\` reports local setup. It does not prove the public route.
+Retiring a managed profile that supplies a required path removes the hosted job.
+It keeps the registration credential and does not revoke the public address.
 
 ### Connect Dot and Codex Cloud through Cloudflare
 

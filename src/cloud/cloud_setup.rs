@@ -1063,6 +1063,6 @@ mod tests {
     }
 }
 
-pub(crate) fn reserve_address(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    crate::hosted_enrollment::run(home).map_err(Into::into)
+pub(crate) fn reserve_address(home: &Path, unix: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::hosted_enrollment::run(home, unix).map_err(Into::into)
 }

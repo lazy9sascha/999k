@@ -542,3 +542,143 @@ fn managed_apply_refuses_a_persisted_disposable_relay_before_launchd_changes() {
         staged
     );
 }
+
+#[test]
+fn hosted_unix_opt_in_stages_until_match_then_schedules_and_retires_only_owned_job() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    init_with(
+        &fixture.home,
+        "instinct",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let id = uuid::Uuid::new_v4();
+    let cloudflared = fixture.home.join("synthetic-cloudflared");
+    let self_managed = fixture.agents.join("test.self-managed.plist");
+    fs::write(&self_managed, b"unchanged").unwrap();
+    fixture
+        .fake
+        .loaded
+        .borrow_mut()
+        .insert("test.self-managed".into(), self_managed.clone());
+    let baseline = fixture.fake.actions.borrow().len();
+    crate::hosted_enrollment::stage_unix_fixture(
+        &fixture.home,
+        id,
+        DEFAULT_PORT + 1,
+        &["/cue/mcp"],
+    );
+    assert!(!schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    assert_eq!(fixture.fake.actions.borrow().len(), baseline);
+    assert!(read_hosted_owner(&fixture.home).unwrap().is_none());
+
+    crate::hosted_enrollment::stage_unix_fixture(&fixture.home, id, DEFAULT_PORT, &["/cue/mcp"]);
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    let plist = fixture.agents.join(format!("{HOSTED_LABEL}.plist"));
+    let data = plist::Value::from_file(&plist).unwrap();
+    let dict = data.as_dictionary().unwrap();
+    let args = dict["ProgramArguments"].as_array().unwrap();
+    assert_eq!(
+        args.iter()
+            .map(|value| value.as_string().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            fixture.executable.to_str().unwrap(),
+            "serve-hosted-connector",
+            "--home",
+            fixture.home.to_str().unwrap()
+        ]
+    );
+    assert_eq!(dict["KeepAlive"].as_boolean(), Some(true));
+    #[cfg(target_os = "macos")]
+    assert!(
+        std::process::Command::new("/usr/bin/plutil")
+            .arg("-lint")
+            .arg(&plist)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(
+        &fixture.fake.actions.borrow()[baseline..],
+        [
+            Action::Bootout(HUB_LABEL.into()),
+            Action::Bootstrap(HUB_LABEL.into()),
+            Action::Bootstrap(HOSTED_LABEL.into()),
+        ]
+    );
+    let count = fixture.fake.actions.borrow().len();
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    assert_eq!(fixture.fake.actions.borrow().len(), count);
+
+    let queue = fixture.home.join(QUEUE);
+    let inode = queue.metadata().unwrap().ino();
+    remove_with(&fixture.home, "cue", Some(&jobs)).unwrap();
+    assert!(!fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+    assert!(!plist.exists());
+    assert!(read_hosted_owner(&fixture.home).unwrap().is_none());
+    assert!(
+        crate::hosted_enrollment::staged_unix(&fixture.home)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(queue.metadata().unwrap().ino(), inode);
+    assert_eq!(
+        fixture.fake.loaded.borrow().get("test.self-managed"),
+        Some(&self_managed)
+    );
+    assert_eq!(fs::read(self_managed).unwrap(), b"unchanged");
+    assert!(fixture.fake.loaded.borrow().contains_key(HUB_LABEL));
+}
+
+#[test]
+fn hosted_unix_refuses_foreign_job_before_touching_hub_and_recovers_after_interruption() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    crate::hosted_enrollment::stage_unix_fixture(
+        &fixture.home,
+        uuid::Uuid::new_v4(),
+        DEFAULT_PORT,
+        &["/cue/mcp"],
+    );
+    let cloudflared = fixture.home.join("synthetic-cloudflared");
+    let foreign = fixture.home.join("unrelated.plist");
+    fixture
+        .fake
+        .loaded
+        .borrow_mut()
+        .insert(HOSTED_LABEL.into(), foreign.clone());
+    let baseline = fixture.fake.actions.borrow().len();
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).is_err());
+    assert_eq!(fixture.fake.actions.borrow().len(), baseline);
+    assert!(read_hosted_owner(&fixture.home).unwrap().is_none());
+    assert_eq!(
+        fixture.fake.loaded.borrow().get(HOSTED_LABEL),
+        Some(&foreign)
+    );
+
+    fixture.fake.loaded.borrow_mut().remove(HOSTED_LABEL);
+    fixture.fake.fail_next_readiness.set(true);
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).is_err());
+    assert!(read_hosted_owner(&fixture.home).unwrap().is_some());
+    assert!(!fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    assert!(fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+}

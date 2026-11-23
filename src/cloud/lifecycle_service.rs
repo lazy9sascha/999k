@@ -9,6 +9,7 @@ use std::{
 
 pub(crate) const HUB_LABEL: &str = "pigeonmq.hub";
 pub(crate) const RELAY_LABEL: &str = "pigeonmq.email-relay";
+pub(crate) const HOSTED_LABEL: &str = "pigeonmq.hosted-connector";
 const PLIST_LIMIT: u64 = 32 * 1024;
 
 pub(crate) trait LaunchControl {
@@ -20,6 +21,18 @@ pub(crate) trait LaunchControl {
     #[cfg(test)]
     fn hub_ready(&self, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
         Ok(())
+    }
+    #[cfg(not(test))]
+    fn hosted_ready(
+        &self,
+        plist: &Path,
+        socket: &Path,
+        port: u16,
+        routes: &[String],
+    ) -> io::Result<()>;
+    #[cfg(test)]
+    fn hosted_ready(&self, plist: &Path, _: &Path, port: u16, routes: &[String]) -> io::Result<()> {
+        self.hub_ready(plist, port, routes)
     }
 }
 
@@ -39,7 +52,7 @@ fn fail(message: &'static str) -> io::Error {
 }
 
 fn check_label(label: &str) -> io::Result<()> {
-    if matches!(label, HUB_LABEL | RELAY_LABEL) {
+    if matches!(label, HUB_LABEL | RELAY_LABEL | HOSTED_LABEL) {
         return Ok(());
     }
     Err(fail("invalid PigeonMQ service label"))
@@ -448,6 +461,102 @@ async fn wait_for_hub(plist: &Path, port: u16, routes: &[String]) -> io::Result<
 }
 
 #[cfg(target_os = "macos")]
+async fn probe_hosted_socket(socket: &Path, pid: u32, port: u16, route: &str) -> io::Result<bool> {
+    use std::{os::fd::AsRawFd, time::Duration};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    const BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+    tokio::time::timeout(Duration::from_millis(900), async {
+        let mut client = tokio::net::UnixStream::connect(socket).await?;
+        let mut uid = 0;
+        let mut gid = 0;
+        let mut peer = 0 as libc::pid_t;
+        let mut peer_len = std::mem::size_of_val(&peer) as libc::socklen_t;
+        // SAFETY: Both system calls write into live stack objects of the expected types.
+        let owned = unsafe {
+            libc::getpeereid(client.as_raw_fd(), &mut uid, &mut gid) == 0
+                && libc::getsockopt(
+                    client.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERPID,
+                    (&mut peer as *mut libc::pid_t).cast(), &mut peer_len,
+                ) == 0
+        };
+        if !owned || uid != euid() || peer <= 0 || peer as u32 != pid
+            || peer_len as usize != std::mem::size_of_val(&peer)
+        {
+            return Ok(false);
+        }
+        let request = format!(
+            "POST {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{BODY}",
+            BODY.len()
+        );
+        client.write_all(request.as_bytes()).await?;
+        let mut status = Vec::new();
+        BufReader::new(client.take(256)).read_until(b'\n', &mut status).await?;
+        Ok(unauthorized_status(&status))
+    }).await.map_err(|_| fail("hosted socket probe timed out"))?
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_hosted_socket(
+    plist: &Path,
+    socket: &Path,
+    port: u16,
+    routes: &[String],
+) -> io::Result<()> {
+    use std::time::{Duration, Instant};
+    if !plist.is_absolute()
+        || !socket.is_absolute()
+        || port == 0
+        || routes.is_empty()
+        || routes
+            .iter()
+            .any(|route| !pigeonmq::mailbox_catalog::valid_mcp_route(route))
+    {
+        return Err(fail("invalid hosted socket readiness plan"));
+    }
+    let end = Instant::now() + Duration::from_secs(12);
+    let target = format!("gui/{}/{HUB_LABEL}", euid());
+    let print = ["print".as_ref(), target.as_ref()];
+    while Instant::now() < end {
+        let budget = || {
+            end.saturating_duration_since(Instant::now())
+                .min(Duration::from_secs(2))
+        };
+        let status = capture("/bin/launchctl", &print, budget()).await?;
+        if let Some(pid) = inspect_from_print(&status, plist)?.and_then(|job| job.pid) {
+            let mut ready = true;
+            for route in routes {
+                if Instant::now() >= end
+                    || !probe_hosted_socket(socket, pid, port, route)
+                        .await
+                        .unwrap_or(false)
+                {
+                    ready = false;
+                    break;
+                }
+            }
+            if ready {
+                let status = capture("/bin/launchctl", &print, budget()).await?;
+                if inspect_from_print(&status, plist)?.and_then(|job| job.pid) == Some(pid) {
+                    return Ok(());
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(fail("managed hub did not prove hosted socket identity"))
+}
+
+#[cfg(target_os = "macos")]
+impl SystemLaunchctl {
+    pub(crate) fn owns_running_job(label: &str, plist: &Path, pid: u32) -> io::Result<bool> {
+        check_label(label)?;
+        let target = format!("gui/{}/{label}", euid());
+        let output = launchctl(&["print".as_ref(), target.as_ref()])?;
+        Ok(inspect_from_print(&output, plist)?.and_then(|job| job.pid) == Some(pid))
+    }
+}
+
+#[cfg(target_os = "macos")]
 impl LaunchControl for SystemLaunchctl {
     fn loaded(&self, label: &str, expected_plist: &Path) -> io::Result<bool> {
         check_label(label)?;
@@ -463,7 +572,11 @@ impl LaunchControl for SystemLaunchctl {
         if !path.is_absolute()
             || !matches!(
                 path.file_name().and_then(|name| name.to_str()),
-                Some("pigeonmq.hub.plist" | "pigeonmq.email-relay.plist")
+                Some(
+                    "pigeonmq.hub.plist"
+                        | "pigeonmq.email-relay.plist"
+                        | "pigeonmq.hosted-connector.plist"
+                )
             )
         {
             return Err(fail("invalid PigeonMQ LaunchAgent path"));
@@ -501,6 +614,18 @@ impl LaunchControl for SystemLaunchctl {
             .build()?
             .block_on(wait_for_hub(plist, port, routes))
     }
+    fn hosted_ready(
+        &self,
+        plist: &Path,
+        socket: &Path,
+        port: u16,
+        routes: &[String],
+    ) -> io::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(wait_for_hosted_socket(plist, socket, port, routes))
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -520,6 +645,53 @@ impl LaunchControl for SystemLaunchctl {
     fn hub_ready(&self, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
         Err(fail("PigeonMQ LaunchAgents require macOS"))
     }
+    fn hosted_ready(&self, _: &Path, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
+        Err(fail("PigeonMQ hosted LaunchAgents require macOS"))
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[tokio::test]
+async fn hosted_probe_checks_kernel_pid_before_using_http() {
+    use std::os::unix::net::UnixListener;
+    let root = tempfile::Builder::new()
+        .prefix("po")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let path = root.path().join("hub.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let worker = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut foreign, _) = listener.accept().unwrap();
+        foreign
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut body = [0; 512];
+        // A wrong PID cannot trick the probe into sending HTTP.
+        assert_eq!(foreign.read(&mut body).unwrap(), 0);
+        let (mut expected, _) = listener.accept().unwrap();
+        expected
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let n = expected.read(&mut body).unwrap();
+        let request = std::str::from_utf8(&body[..n]).unwrap();
+        assert!(request.starts_with("POST /dot/mcp HTTP/1.1\r\nHost: 127.0.0.1:54843\r\n"));
+        expected
+            .write_all(b"HTTP/1.1 401 Unauthorized\r\n\r\n")
+            .unwrap();
+    });
+    let own = std::process::id();
+    assert!(
+        !probe_hosted_socket(&path, own + 1, 54843, "/dot/mcp")
+            .await
+            .unwrap()
+    );
+    assert!(
+        probe_hosted_socket(&path, own, 54843, "/dot/mcp")
+            .await
+            .unwrap()
+    );
+    worker.join().unwrap();
 }
 
 #[cfg(test)]

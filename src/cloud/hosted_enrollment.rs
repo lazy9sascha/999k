@@ -183,7 +183,6 @@ if (!$.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString({quoted}))) thr
 #[derive(PartialEq, Eq)]
 enum OriginIntent {
     Legacy,
-    #[allow(dead_code)] // No public Unix enrollment or activation switch yet.
     UnixV1,
 }
 
@@ -328,7 +327,29 @@ fn enroll(
     }
 }
 
-pub(crate) fn run(home: &Path) -> Result<(), String> {
+pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor)>, String> {
+    let Some(saved) = load(&home.join(FILE))? else {
+        return Ok(None);
+    };
+    let Some(descriptor) = saved.unix_descriptor else {
+        return Ok(None);
+    };
+    let binding = saved.binding.ok_or("missing hosted installation binding")?;
+    let id = Uuid::parse_str(&binding.installation_id)
+        .map_err(|_| "invalid hosted installation binding")?;
+    if id.is_nil() || id.to_string() != binding.installation_id {
+        return Err("invalid hosted installation binding".into());
+    }
+    let staged = crate::hosted_connector::load_connection(home)?;
+    if staged.as_ref() != Some(&(binding.public_url, binding.installation_id)) {
+        return Err("hosted credentials do not belong to this enrollment".into());
+    }
+    private_file::open_private_file(&home.join(crate::hosted_connector::TOKEN_FILE))
+        .map_err(|_| "hosted connector credential is unavailable")?;
+    Ok(Some((id, descriptor)))
+}
+
+pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
     let configured =
         std::env::var("PIGEONMQ_REGISTRATION_URL").map_err(|_| "registration_url_required")?;
     let origin = https_origin(&configured)?;
@@ -348,15 +369,64 @@ pub(crate) fn run(home: &Path) -> Result<(), String> {
         origin.as_str(),
         Duration::from_secs(90),
         Duration::from_secs(2),
-        OriginIntent::Legacy,
+        if unix {
+            OriginIntent::UnixV1
+        } else {
+            OriginIntent::Legacy
+        },
         open_browser,
         |url, id, token| crate::hosted_connector::stage(&home, url, id, token),
     )?;
     println!("reserved_address={public_url}");
-    println!("hosted_connector=staged");
+    let scheduled = if unix {
+        match crate::lifecycle::schedule_hosted_unix(&home) {
+            Ok(value) => value,
+            Err(err) => {
+                println!("hosted_connector=staged");
+                println!("hosted_public_route=unverified");
+                return Err(format!("The hosted credential is still staged: {err}"));
+            }
+        }
+    } else {
+        false
+    };
+    println!(
+        "hosted_connector={}",
+        if scheduled { "scheduled" } else { "staged" }
+    );
     println!("hosted_public_route=unverified");
-    eprintln!("The connector credential is saved. This preview does not start a hosted connector.");
+    if !scheduled {
+        if unix {
+            eprintln!("Activate the required managed profiles, then run the same reserve command.");
+        } else {
+            eprintln!(
+                "The connector credential is saved. This preview does not start a hosted connector."
+            );
+        }
+    }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn stage_unix_fixture(home: &Path, id: Uuid, port: u16, paths: &[&str]) {
+    let origin = https_origin("https://init.example.test").unwrap();
+    let mut saved = new_enrollment(&origin);
+    let nonce = hosted_origin_local::new_origin().unwrap();
+    let public_url = "https://u-fixture.example.test";
+    saved.binding = Some(Binding {
+        installation_id: id.to_string(),
+        public_url: public_url.into(),
+        expires_at: "2026-01-01T00:00:00Z".into(),
+    });
+    saved.unix_nonce = Some(nonce.nonce().to_owned());
+    saved.unix_descriptor = Some(
+        serde_json::from_value(serde_json::json!({
+            "kind":"unix_v1", "nonce":nonce.nonce(), "hub_port":port, "mcp_paths":paths
+        }))
+        .unwrap(),
+    );
+    save(&home.join(FILE), &saved).unwrap();
+    crate::hosted_connector::stage(home, public_url, &id.to_string(), "synthetic-token").unwrap();
 }
 
 #[cfg(test)]

@@ -4,16 +4,6 @@ mod auth;
 mod cloud_credentials;
 #[path = "cloud/cloud_service.rs"]
 mod cloud_service;
-#[path = "cloud/hosted_connector.rs"]
-mod hosted_connector;
-#[path = "cloud/hosted_enrollment.rs"]
-mod hosted_enrollment;
-#[path = "cloud/hosted_origin.rs"]
-mod hosted_origin;
-#[path = "cloud/hosted_origin_local.rs"]
-mod hosted_origin_local;
-#[path = "cloud/hosted_registration.rs"]
-mod hosted_registration;
 #[path = "cloud/cloud_setup.rs"]
 mod cloud_setup;
 #[path = "cloud/cloud_transport.rs"]
@@ -30,6 +20,16 @@ mod codex_events;
 mod codex_mcp;
 #[path = "adapters/codex/setup.rs"]
 mod codex_setup;
+#[path = "cloud/hosted_connector.rs"]
+mod hosted_connector;
+#[path = "cloud/hosted_enrollment.rs"]
+mod hosted_enrollment;
+#[path = "cloud/hosted_origin.rs"]
+mod hosted_origin;
+#[path = "cloud/hosted_origin_local.rs"]
+mod hosted_origin_local;
+#[path = "cloud/hosted_registration.rs"]
+mod hosted_registration;
 #[path = "cloud/lifecycle.rs"]
 mod lifecycle;
 #[path = "cloud/lifecycle_profile.rs"]
@@ -176,6 +176,9 @@ enum Command {
         /// Reserve a hosted HTTPS address for this installation (experimental).
         #[arg(long, hide = true, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
         reserve_address: bool,
+        /// Use a private Unix origin for a new hosted enrollment.
+        #[arg(long, hide = true, requires = "reserve_address")]
+        hosted_unix: bool,
         /// Set the managed hub's loopback port at first staging.
         #[arg(long, requires = "agent", conflicts_with = "operational", value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
@@ -191,6 +194,11 @@ enum Command {
     },
     #[command(hide = true)]
     ServeManaged {
+        #[arg(long)]
+        home: PathBuf,
+    },
+    #[command(hide = true)]
+    ServeHostedConnector {
         #[arg(long)]
         home: PathBuf,
     },
@@ -360,10 +368,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             email_recipient,
             relay_command,
             reserve_address,
+            hosted_unix,
             port,
         } => {
             if *reserve_address {
-                return cloud_setup::reserve_address(home).map_err(Into::into);
+                return cloud_setup::reserve_address(home, *hosted_unix).map_err(Into::into);
             }
             if *operational {
                 let mailbox = agent.as_deref().ok_or("mailbox name required")?;
@@ -413,6 +422,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "macos")]
             disable_daemon_keychain_ui()?;
             lifecycle::serve(home).map_err(Into::into)
+        }
+        Command::ServeHostedConnector { home } => {
+            lifecycle::serve_hosted_connector(home).map_err(Into::into)
         }
         Command::SetupMuse { home, peer } => cloud_setup::setup_muse(home, peer),
         Command::SetupGrok { home, token_sha256 } => {

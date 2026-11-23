@@ -57,6 +57,53 @@ pub(super) fn bind_system(
     bind_in(root, origin, installation)
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn attest_system_path(
+    origin: &UnixOrigin,
+    installation: uuid::Uuid,
+) -> io::Result<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let root = Path::new("/private/tmp");
+    let state = root.symlink_metadata()?;
+    if !state.is_dir()
+        || state.uid() != 0
+        || state.mode() & 0o1000 == 0
+        || root.canonicalize()? != root
+    {
+        return Err(failure("unsafe system root for hosted origin"));
+    }
+    let dir = root.join(origin.directory_name());
+    verify_custody(&dir, &installation.to_string())?;
+    let path = PathBuf::from(origin.socket_path());
+    let state = path.symlink_metadata()?;
+    // SAFETY: geteuid has no arguments or preconditions.
+    if !state.file_type().is_socket()
+        || state.uid() != unsafe { libc::geteuid() }
+        || state.nlink() != 1
+    {
+        return Err(failure("unexpected file at hosted origin"));
+    }
+    Ok(path)
+}
+
+fn verify_custody(dir: &Path, expected: &str) -> io::Result<()> {
+    let state = dir.symlink_metadata()?;
+    // SAFETY: geteuid has no arguments or preconditions.
+    let uid = unsafe { libc::geteuid() };
+    if !state.is_dir() || state.uid() != uid || state.mode() & 0o777 != 0o700 {
+        return Err(failure("hosted origin directory is not private"));
+    }
+    let mut existing = String::new();
+    private_file::open_private_file(&dir.join(CUSTODY))
+        .map_err(|_| failure("hosted origin is not owned by this installation"))?
+        .take(37)
+        .read_to_string(&mut existing)?;
+    if existing != expected {
+        return Err(failure("hosted origin is not owned by this installation"));
+    }
+    Ok(())
+}
+
 fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     use std::ffi::CString;
     let from = CString::new(from.as_os_str().as_bytes())?;
@@ -127,21 +174,9 @@ pub(crate) fn bind_in(
         Err(err) => return Err(err),
         Ok(_) => {}
     }
-    let state = dir.symlink_metadata()?;
+    verify_custody(&dir, &expected)?;
     // SAFETY: geteuid has no arguments or preconditions.
     let uid = unsafe { libc::geteuid() };
-    if !state.is_dir() || state.uid() != uid || state.mode() & 0o777 != 0o700 {
-        return Err(failure("hosted origin directory is not private"));
-    }
-    let marker = dir.join(CUSTODY);
-    let mut existing = String::new();
-    private_file::open_private_file(&marker)
-        .map_err(|_| failure("hosted origin is not owned by this installation"))?
-        .take(37)
-        .read_to_string(&mut existing)?;
-    if existing != expected {
-        return Err(failure("hosted origin is not owned by this installation"));
-    }
     let guard = arrival_notify::lock_state(&dir.join("socket.state"))
         .map_err(|_| failure("hosted origin is already in use"))?;
     match path.symlink_metadata() {

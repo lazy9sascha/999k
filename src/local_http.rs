@@ -2267,7 +2267,13 @@ fn serve_hub_on(
         }
         // The existing queue lock has already been acquired. Hold socket custody
         // until this hub and its accepted connection workers have stopped.
-        Some(socket.bind()?)
+        match socket.bind() {
+            Ok(listener) => Some(listener),
+            Err(_) => {
+                tracing::warn!("hosted Unix origin unavailable; local hub stays active");
+                None
+            }
+        }
     } else {
         None
     };

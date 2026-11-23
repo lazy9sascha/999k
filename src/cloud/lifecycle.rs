@@ -2,7 +2,8 @@
 use crate::{
     lifecycle_profile,
     lifecycle_service::{
-        HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist, verify_plist,
+        HOSTED_LABEL, HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist,
+        verify_plist,
     },
     mailbox_startup::{Binding, Manifest, QUEUE, REGISTRATION, bindings, valid_route},
 };
@@ -28,6 +29,7 @@ const DIRECTORY: &str = ".pigeonmq-lifecycle";
 const STATE: &str = "profiles.json";
 const RELAY_CONFIG: &str = "relay-profiles.json";
 const RELAY_STATE: &str = "relay-state.json";
+const HOSTED_OWNER: &str = "hosted-unix-owner.json";
 const DEFAULT_PORT: u16 = 54843;
 
 fn error(reason: &'static str) -> io::Error {
@@ -501,6 +503,78 @@ fn path_arg(path: &Path) -> io::Result<String> {
         .ok_or_else(|| error("lifecycle path must be UTF-8"))
 }
 
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct HostedOwner {
+    installation: String,
+    binary: PathBuf,
+    cloudflared: PathBuf,
+}
+
+fn read_hosted_owner(home: &Path) -> io::Result<Option<HostedOwner>> {
+    let path = home.join(DIRECTORY).join(HOSTED_OWNER);
+    if absent(&path)? {
+        Ok(None)
+    } else {
+        read_json(&path).map(Some)
+    }
+}
+
+fn hosted_scope(
+    home: &Path,
+    owner: &HostedOwner,
+) -> io::Result<(uuid::Uuid, crate::hosted_registration::OriginDescriptor)> {
+    let (id, scope) = crate::hosted_enrollment::staged_unix(home)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| error("hosted Unix enrollment is not staged"))?;
+    if id.to_string() != owner.installation {
+        return Err(error("hosted ownership does not match the installation"));
+    }
+    Ok((id, scope))
+}
+
+fn scope_matches(state: &Registry, scope: &crate::hosted_registration::OriginDescriptor) -> bool {
+    let active = active_routes(state);
+    state.port == scope.hub_port && scope.mcp_paths.iter().all(|route| active.contains(route))
+}
+
+fn hosted_job(jobs: &Jobs<'_>, home: &Path) -> io::Result<Job> {
+    Job::inspect(
+        jobs,
+        HOSTED_LABEL,
+        vec![
+            "serve-hosted-connector".into(),
+            "--home".into(),
+            path_arg(home)?,
+        ],
+    )
+}
+
+fn managed_hub_job(jobs: &Jobs<'_>, home: &Path) -> io::Result<Job> {
+    Job::inspect(
+        jobs,
+        HUB_LABEL,
+        vec!["serve-managed".into(), "--home".into(), path_arg(home)?],
+    )
+}
+
+fn stop_hosted(jobs: &Jobs<'_>, home: &Path, owner: &HostedOwner) -> io::Result<()> {
+    if owner.binary != jobs.executable {
+        return Err(error("hosted LaunchAgent belongs to another installation"));
+    }
+    let job = hosted_job(jobs, home)?;
+    if job.loaded {
+        jobs.service.bootout(HOSTED_LABEL)?;
+    }
+    if job.exists {
+        fs::remove_file(job.path)?;
+        File::open(jobs.directory)?.sync_all()?;
+    }
+    let dir = home.join(DIRECTORY);
+    fs::remove_file(dir.join(HOSTED_OWNER))?;
+    File::open(dir)?.sync_all()
+}
+
 fn relay_config(state: &Registry) -> io::Result<RelayConfig> {
     state
         .profiles
@@ -626,6 +700,12 @@ fn change(
     } else {
         None
     };
+    if next.profiles[name].phase == Phase::Retired
+        && let Some(owner) = read_hosted_owner(home)?
+        && !hosted_scope(home, &owner).is_ok_and(|(_, scope)| scope_matches(&next, &scope))
+    {
+        stop_hosted(jobs, home, &owner)?;
+    }
     if phase_changed && hub.loaded {
         jobs.service.bootout(HUB_LABEL)?;
     }
@@ -834,6 +914,147 @@ fn system_jobs() -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
     };
     let executable = installation.require_executable(&std::env::current_exe()?)?;
     Ok((directory, executable, installation))
+}
+
+pub(crate) fn schedule_hosted_unix(home: &Path) -> io::Result<bool> {
+    let dir = home.join(DIRECTORY);
+    if absent(&dir)? {
+        return Ok(false);
+    }
+    let dir = private_dir(&dir)?;
+    let state = dir.join(STATE);
+    if absent(&state)? {
+        return Ok(false);
+    }
+    let Some((_, scope)) = crate::hosted_enrollment::staged_unix(home).map_err(io::Error::other)?
+    else {
+        return Ok(false);
+    };
+    if !scope_matches(&read_json(&state)?, &scope) {
+        return Ok(false);
+    }
+    let (directory, executable, installation) = system_jobs()?;
+    let cloudflared = crate::hosted_connector::preflight(None).map_err(io::Error::other)?;
+    let cloudflared = installation.require_executable(&cloudflared)?;
+    let jobs = Jobs {
+        service: &SystemLaunchctl,
+        directory: &directory,
+        executable: &executable,
+        installation: Some(&installation),
+    };
+    schedule_hosted_with(&jobs, home, &cloudflared)
+}
+
+fn schedule_hosted_with(jobs: &Jobs<'_>, home: &Path, cloudflared: &Path) -> io::Result<bool> {
+    let dir = private_dir(&home.join(DIRECTORY))?;
+    let _guard = lock(&dir)?;
+    let state: Registry = read_json(&dir.join(STATE))?;
+    let Some((id, scope)) =
+        crate::hosted_enrollment::staged_unix(home).map_err(io::Error::other)?
+    else {
+        return Ok(false);
+    };
+    if !scope_matches(&state, &scope) {
+        return Ok(false);
+    }
+    let owner = HostedOwner {
+        installation: id.to_string(),
+        binary: jobs.executable.into(),
+        cloudflared: cloudflared.into(),
+    };
+    let previous = read_hosted_owner(home)?;
+    if previous.as_ref().is_some_and(|old| old != &owner) {
+        return Err(error("hosted LaunchAgent belongs to another installation"));
+    }
+    let hosted = hosted_job(jobs, home)?;
+    if previous.is_none() && hosted.exists {
+        return Err(error(
+            "hosted LaunchAgent is not owned by the selected home",
+        ));
+    }
+    let hub = managed_hub_job(jobs, home)?;
+    let origin = scope.origin().map_err(io::Error::other)?;
+    let socket = origin.socket_path();
+    let was_hosted = previous.is_some();
+    if !was_hosted {
+        write_json(&dir.join(HOSTED_OWNER), &owner)?;
+    }
+    let readiness = || {
+        jobs.service.hosted_ready(
+            &hub.path,
+            Path::new(&socket),
+            scope.hub_port,
+            &scope.mcp_paths,
+        )
+    };
+    if !hub.loaded {
+        hub.start(jobs)?;
+    } else if !was_hosted || (!hosted.loaded && readiness().is_err()) {
+        // An interrupted first apply may have saved the receipt before restarting
+        // the former TCP-only hub. Reload only the verified hub job.
+        jobs.service.bootout(HUB_LABEL)?;
+        hub.start(jobs)?;
+    }
+    readiness()?;
+    if !hosted.loaded {
+        hosted.start(jobs)?;
+    }
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn serve_hosted_connector(home: &Path) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let home = private_dir(home)?;
+    let dir = private_dir(&home.join(DIRECTORY))?;
+    let owner = read_hosted_owner(&home)?
+        .ok_or_else(|| error("hosted LaunchAgent is not owned by this home"))?;
+    let (id, scope) = hosted_scope(&home, &owner)?;
+    let (directory, executable, installation) = system_jobs()?;
+    if owner.binary != executable
+        || owner.cloudflared != installation.require_executable(&owner.cloudflared)?
+    {
+        return Err(error("hosted LaunchAgent executable changed"));
+    }
+    let jobs = Jobs {
+        service: &SystemLaunchctl,
+        directory: &directory,
+        executable: &executable,
+        installation: Some(&installation),
+    };
+    let hosted = hosted_job(&jobs, &home)?;
+    if !hosted.loaded
+        || !SystemLaunchctl::owns_running_job(HOSTED_LABEL, &hosted.path, std::process::id())?
+    {
+        return Err(error(
+            "connector process is not the owned hosted LaunchAgent",
+        ));
+    }
+    let hub = managed_hub_job(&jobs, &home)?;
+    if !hub.loaded {
+        return Err(error("owned managed hub is not loaded"));
+    }
+    let origin = scope.origin().map_err(io::Error::other)?;
+    let socket = crate::hosted_origin_local::attest_system_path(&origin, id)?;
+    jobs.service
+        .hosted_ready(&hub.path, &socket, scope.hub_port, &scope.mcp_paths)?;
+    // An in-progress retirement still owns this lock. Do not start within it.
+    let _owner = lock(&dir)?;
+    if read_hosted_owner(&home)?.as_ref() != Some(&owner)
+        || !scope_matches(&read_json(&dir.join(STATE))?, &scope)
+        || hosted_scope(&home, &owner)? != (id, scope)
+    {
+        return Err(error("hosted LaunchAgent scope changed"));
+    }
+    Err(std::process::Command::new(&owner.cloudflared)
+        .args(["tunnel", "run", "--token-file"])
+        .arg(home.join(crate::hosted_connector::TOKEN_FILE))
+        .exec())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn serve_hosted_connector(_: &Path) -> io::Result<()> {
+    Err(error("PigeonMQ hosted LaunchAgents require macOS"))
 }
 
 pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result<Value> {
@@ -1118,13 +1339,22 @@ pub(crate) fn serve(home: &Path) -> io::Result<()> {
     let state: Registry = read_json(&home.join(DIRECTORY).join(STATE))?;
     let queue = home.join(QUEUE);
     let ports = state.port;
+    let hosted = (|| {
+        let owner = read_hosted_owner(&home).ok()??;
+        let (id, scope) = hosted_scope(&home, &owner).ok()?;
+        scope_matches(&state, &scope).then_some((id, scope))
+    })();
     let routes = state
         .profiles
         .into_iter()
         .filter(|(_, p)| p.phase == Phase::Active)
         .map(|(name, profile)| profile.binding(&name, &state.registration))
         .collect::<io::Result<Vec<_>>>()?;
-    crate::local_http::serve_managed_hub(queue, routes, ports)
+    if let Some((id, scope)) = hosted {
+        crate::local_http::serve_managed_hosted_hub(queue, routes, ports, id, &scope)
+    } else {
+        crate::local_http::serve_managed_hub(queue, routes, ports)
+    }
 }
 
 #[cfg(test)]
