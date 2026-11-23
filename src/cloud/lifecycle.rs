@@ -854,24 +854,6 @@ fn change(
                 jobs.service.stdio_ready(&hub.path, home, &routes)?;
             }
         }
-        let current_relay = relay_config(&next)?;
-        if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
-            write_json(&relay_path, &current_relay)?;
-        }
-        drop(dispatch_guard);
-        if let Some(relay) = relay.as_ref() {
-            if current_relay.is_empty() {
-                if relay.loaded {
-                    jobs.service.bootout(RELAY_LABEL)?;
-                }
-                if relay.exists {
-                    fs::remove_file(&relay.path)?;
-                    File::open(jobs.directory)?.sync_all()?;
-                }
-            } else if !relay.loaded {
-                relay.start(jobs)?;
-            }
-        }
         Ok::<_, io::Error>(())
     })();
     if let Err(err) = transition {
@@ -921,6 +903,26 @@ fn change(
         return Err(err);
     }
 
+    if !stdio_changed {
+        let current_relay = relay_config(&next)?;
+        if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
+            write_json(&relay_path, &current_relay)?;
+        }
+        if let Some(relay) = relay {
+            if current_relay.is_empty() {
+                if relay.loaded {
+                    jobs.service.bootout(RELAY_LABEL)?;
+                }
+                if relay.exists {
+                    fs::remove_file(&relay.path)?;
+                    File::open(jobs.directory)?.sync_all()?;
+                }
+            } else if !relay.loaded {
+                relay.start(jobs)?;
+            }
+        }
+    }
+    drop(dispatch_guard);
     Ok(())
 }
 
