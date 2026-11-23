@@ -1,0 +1,9 @@
+# Orca PigeonMQ demo
+
+This folder is a local development plugin for Orca 1.4.268. It adds one panel to the **right** sidebar. It does not add entries to Orca's left Bots list or create bots.
+
+If you want to try it, open Orca Settings → Plugins. Enable plugins, add this folder under **Development folders**, then review and enable it. Open a workspace and select **PigeonMQ Demo** in the right sidebar. Choose a test contact, queue the fixed test message, then select **Simulate reply** to see its link. No live agent is contacted. The panel resets when it reloads.
+
+This panel requests no host capabilities. It has no connection to the hub, no network or persistent storage, and no `pigeonmq init` integration. A live adapter still needs an approved authenticated local stdio client. It must resolve permitted contacts through `pigeonmq_recipients`, use stable IDs, handle send receipt and reply correlation separately, and leave connection status unknown until there is evidence. Do not put credentials in the panel.
+
+Check the fixture with `node --test plugins/orca-pigeonmq-demo/demo.test.mjs`. Validate the manifest with Orca’s `orca plugin validate plugins/orca-pigeonmq-demo` command. These checks do not install or enable the plugin.

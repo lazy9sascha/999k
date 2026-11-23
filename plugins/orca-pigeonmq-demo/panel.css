@@ -1,0 +1,17 @@
+html { color-scheme: light dark; }
+body { margin: 0; font: 14px/1.45 system-ui, sans-serif; }
+main { padding: 16px; }
+h1, h2, p { margin: 0 0 8px; }
+h1 { font-size: 22px; }
+h2 { font-size: 16px; }
+.badge { color: Highlight; font-size: 11px; font-weight: bold; letter-spacing: .08em; }
+header, section { margin-bottom: 16px; }
+label { display: block; font-weight: bold; }
+select, button { box-sizing: border-box; font: inherit; margin: 4px 0; min-height: 32px; }
+select { width: 100%; }
+button { padding: 4px 8px; }
+ol { list-style: none; margin: 0; padding: 0; }
+li { border: 1px solid GrayText; border-radius: 6px; margin: 8px 0; padding: 8px; overflow-wrap: anywhere; }
+li small { display: block; }
+#connection, #empty { font-size: 13px; }
+#status { margin-top: 8px; }

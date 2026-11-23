@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PigeonMQ Demo</title>
+<link rel="stylesheet" href="./panel.css">
+<main>
+  <header><p class="badge">LOCAL DEMO</p><h1>PigeonMQ</h1>
+    <p>Test contacts only. No real agents receive messages. This panel resets when it reloads.</p></header>
+  <label for="contact">Test contact</label>
+  <select id="contact" disabled><option value="">Choose a contact</option></select>
+  <button id="refresh" type="button">Refresh contacts</button>
+  <p id="connection">Connection status: unknown</p>
+  <section aria-labelledby="conversation-title">
+    <h2 id="conversation-title">Conversation</h2>
+    <ol id="messages" aria-label="Messages"></ol>
+    <p id="empty">Choose a contact to see its conversation.</p>
+  </section>
+  <button id="send" type="button" disabled>Queue test message</button>
+  <button id="reply" type="button" disabled>Simulate reply</button>
+  <p id="status" role="status" aria-live="polite"></p>
+</main>
+<script type="module" src="./panel.mjs"></script>
+</html>
