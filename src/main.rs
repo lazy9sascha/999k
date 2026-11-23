@@ -517,7 +517,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &cloud_setup::resolve_home(home.clone()),
             *probe_public,
         )),
-        Command::Quickstart { home } => cloud_setup::quickstart(home).map_err(Into::into),
+        Command::Quickstart { home } => cloud_setup::quickstart(home),
         Command::NotifyArrivals {
             queue,
             registration,

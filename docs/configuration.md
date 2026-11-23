@@ -2,6 +2,11 @@
 
 Everything lives in one private runtime folder (the "home"). Pass it with `--home`. Keep it outside the repository. The folder must be owned by you with no group/other access, and files are mode 600.
 
+With no `--home`, `init`, `run`, and `health` use an absolute
+`PIGEONMQ_HOME` if set. Otherwise they look for `~/.pigeonmq`, then for an
+existing `.local` in the working directory. New setups default to `~/.pigeonmq`.
+Pass the existing installation's absolute path when both directories exist.
+
 ## Commands
 
 Run `pigeonmq <command> --help` for exact flags.
@@ -25,6 +30,7 @@ Run `pigeonmq <command> --help` for exact flags.
 | `credentials --home DIR --app APP reissue --token-file PATH [--use-stored-token]` | Explicit token repair. Save a private repair token and change only its policy digest. |
 | `credentials --home DIR --app APP export --token-file PATH [--format token\|authorization-header]` | Create a private credential file for an explicit client reference. |
 | `dot-tunnel-status --home DIR` | Show the local Dot tunnel state. |
+| `quickstart --home DIR` | Stage Instinct in a new local-only demo home. The command prints the loopback URL, the token file path, and how to start the hub. Use a new directory. |
 | `health --home DIR` | Check whether the supervised loopback hub answers. |
 | `dlq-inspect --queue PATH --id ID` | Inspect one quarantined request without writing. See [dead-letter inspection](#dead-letter-inspection). |
 
