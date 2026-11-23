@@ -621,7 +621,7 @@ For a new managed home on macOS, add `--stdio-socket` to its first managed apply
 pigeonmq init cue --apply --stdio-socket --home <private-hub-home>
 ```
 
-The setting stays with that home. An already-active managed home can gain a socket once by rerunning the same command with `--apply --stdio-socket`. This migration uses the existing queue and does not create a second hub. It restarts the managed hub once; if activation fails, the previous configuration remains in place. This command does not start hosted registration. If you later enable
+The setting stays with that home. To enable the socket on an existing managed home, use its installed executable path, the same home, and the name of an already-active profile. Run `init <active-profile> --apply --stdio-socket --home <existing-home>`. This migration uses the existing queue and does not create a second hub. It restarts the managed hub once; if activation fails, the previous configuration remains in place. This command does not start hosted registration. If you later enable
 hosted Unix access, the same managed hub can serve both sockets. They are separate
 endpoints with the same existing mailbox policies.
 

@@ -54,7 +54,7 @@ Use `cue` instead to serve `/cue/mcp`.
 Keep an existing home on its current absolute path and configuration.
 If `$HOME/.pigeonmq-cloud` already holds a managed installation, keep that directory and choose another absolute home for this example.
 These commands opt in on the first active profile of a new managed Cue or Instinct home.
-An existing managed installation without a socket does not gain one from this flag. That upgrade path is still under verification.
+For an existing managed home, run the candidate from the installed service’s executable path. Use the existing home and an already-active profile with `init <active-profile> --home <existing-home> --apply --stdio-socket`. The running hub restarts once.
 
 ```sh
 export CLOUD_HOME="$HOME/.pigeonmq-stdio"
@@ -70,7 +70,7 @@ fi
 The first named command stages the policy and bearer file. Use the private `token_file` path it prints.
 The command does not print the bearer.
 The apply command registers and starts the managed loopback hub and binds the private stdio socket for that home.
-`--stdio-socket` belongs on that first managed apply. The setting stays with the home.
+The socket setting stays with the home.
 This command does not start hosted registration.
 Repeating an active setup keeps its bearer.
 See [managed profiles](configuration.md#manage-built-in-profiles) for other profiles, email, and removal.

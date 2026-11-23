@@ -16,7 +16,7 @@ The foreground hub runs on macOS and Linux. Managed setup, Keychain, and native 
 
 On macOS, a new managed Cue or Instinct home can opt in to a private stdio socket on its first managed apply. A local MCP client on that machine then runs `stdio-mcp` with the absolute `pigeonmq` path and the private bearer file path. That client needs no email and no reverse tunnel.
 
-Keep an existing home on its current path. An existing managed installation without a socket needs an upgrade path that is still under verification.
+Keep an existing managed home on its current path. To enable stdio with the candidate, apply the socket setting to an already-active profile. The running hub restarts once.
 
 Follow the [Quickstart](docs/quickstart.md) for this local macOS setup. Reverse tunnels remain available for remote agents.
 

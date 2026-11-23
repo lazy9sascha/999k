@@ -777,16 +777,23 @@ fn existing_managed_home_stdio_activation_preserves_relay() {
     )
     .unwrap();
     let file = fixture.home.join(DIRECTORY).join(STATE);
-    let relay_path_before = fixture.fake.loaded.borrow().get(RELAY_LABEL).cloned();
+    assert!(
+        fixture
+            .fake
+            .loaded
+            .borrow_mut()
+            .remove(RELAY_LABEL)
+            .is_some()
+    );
+    let relay_path = fixture.home.join(DIRECTORY).join(RELAY_CONFIG);
+    let relay_before = fs::read(&relay_path).unwrap();
 
     let mut opt_in = fixture.options(true, email);
     opt_in.local_stdio = true;
-    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_ok());
+    init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).unwrap();
     assert!(read_json::<Registry>(&file).unwrap().local_stdio);
-    assert_eq!(
-        fixture.fake.loaded.borrow().get(RELAY_LABEL).cloned(),
-        relay_path_before
-    );
+    assert!(!fixture.fake.loaded.borrow().contains_key(RELAY_LABEL));
+    assert_eq!(fs::read(relay_path).unwrap(), relay_before);
 }
 
 #[test]
@@ -825,7 +832,7 @@ fn existing_managed_home_can_enable_stdio_once_with_explicit_opt_in() {
     let mut opt_in = fixture.options(true, None);
     opt_in.local_stdio = true;
     let before_actions = fixture.fake.actions.borrow().len();
-    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_ok());
+    init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).unwrap();
     assert!(read_json::<Registry>(&file).unwrap().local_stdio);
     assert!(fixture.fake.actions.borrow().len() > before_actions);
 
