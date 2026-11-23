@@ -2,6 +2,23 @@
 
 The registration service manages the address and Cloudflare Tunnel for each approved installation. It listens on loopback. User Macs serve their own MCP endpoints and store their own queues.
 
+## Responsibilities and installer handoff
+
+- The PigeonMQ registration service asks Cloudflare to provision one hostname, route, and tunnel per installation. It keeps the Cloudflare management credential on the operator Mac. Cloudflare serves public HTTPS and forwards only the configured routes. The operator uses the registration service to revoke one installation while the operator Mac is running.
+- The PigeonMQ hub owns mailbox identities, mailbox credentials, message delivery, linked replies, and acknowledgments. The user Mac stores the queue and mailbox credentials. Supabase sign-in approves registration only. It does not authorize mailbox access.
+
+The installer sends a request ID and user code with a private installation proof.
+Begin returns an installation ID, assigned public URL, private browser link, and expiry.
+Cloudflare provisioning starts after approval. Status returns the registration
+state and public URL. Only finish returns the connector token.
+After approval, finish returns the ready state, public URL, and connector token.
+Keep the same request ID, proof, and code on a begin retry. Use the same
+installation ID and proof to retry status or finish. Do not request a new address
+after a temporary error.
+
+The operator preview uses `pigeonmq init --reserve-address` for browser approval
+and retry. Verify the tunnel and an authenticated MCP exchange after finish.
+
 ## Prepare a private pilot
 
 1. Create an owner-only directory with mode 0700 on the operator Mac.
@@ -129,4 +146,9 @@ Revoke removes the installation's Cloudflare route and tunnel. The command repor
 
 The serving process checks for expired tunnels every 15 minutes. It starts removal at 12 hours after issue only if Cloudflare reports that the tunnel never connected. The service keeps installations with a recorded connection and skips unknown states. Cloudflare does not offer an atomic check for prior connection at deletion. The expiry path never forces a disconnect.
 
-Check the Mac installer, live provider behavior, and each real cloud client before starting hosted service.
+Before enabling automated provisioning, use a manually provisioned pilot
+installation with a real off-host Dot client. Use its own public HTTPS URL and
+mailbox authentication. Verify that the sender receives a reply linked to the
+original message and that PigeonMQ acknowledges the original. With the operator
+Mac running, revoke that installation. Verify that its managed URL no longer
+reaches its mailbox and that a separate installation still works.
