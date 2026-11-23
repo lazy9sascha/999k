@@ -1,10 +1,12 @@
 //! Local custody for a new hosted Unix origin. It never forwards to TCP.
+#![allow(dead_code)] // The connector activation path is not exposed yet.
 use crate::hosted_origin::UnixOrigin;
 use pigeonmq::{arrival_notify, private_file};
 use std::{
     fs::{self, DirBuilder, File},
     io::{self, Read},
     os::unix::{
+        ffi::OsStrExt,
         fs::{DirBuilderExt, FileTypeExt, MetadataExt},
         net::{UnixListener, UnixStream},
     },
@@ -55,7 +57,56 @@ pub(super) fn bind_system(
     bind_in(root, origin, installation)
 }
 
-fn bind_in(
+fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: Paths are NUL-terminated and remain valid for the call.
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let result = -1;
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn publish_custody(root: &Path, target: &Path, expected: &str) -> io::Result<()> {
+    // Prepare below an independent name. A crash cannot leave an unmarked
+    // directory at the reserved socket path, and an existing entry is never replaced.
+    let random = new_origin()?;
+    let stage = root.join(format!(".pigeonmq-origin-{}", random.nonce()));
+    DirBuilder::new().mode(0o700).create(&stage)?;
+    let outcome = private_file::replace_private(&stage.join(CUSTODY), expected.as_bytes())
+        .and_then(|()| publish_new(&stage, target));
+    match outcome {
+        // After rename, the old staging pathname is no longer ours.
+        Ok(()) => File::open(root)?.sync_all(),
+        Err(err) => {
+            let _ = fs::remove_file(stage.join(CUSTODY));
+            let _ = fs::remove_dir(&stage);
+            if err.kind() == io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+pub(crate) fn bind_in(
     root: &Path,
     origin: &UnixOrigin,
     installation: uuid::Uuid,
@@ -68,11 +119,14 @@ fn bind_in(
     if path.as_os_str().as_encoded_bytes().len() > MAC_SOCKET_MAX {
         return Err(failure("hosted origin path exceeds the macOS socket limit"));
     }
-    let created = match DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => true,
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => false,
+    let expected = installation.to_string();
+    match dir.symlink_metadata() {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            publish_custody(root, &dir, &expected)?
+        }
         Err(err) => return Err(err),
-    };
+        Ok(_) => {}
+    }
     let state = dir.symlink_metadata()?;
     // SAFETY: geteuid has no arguments or preconditions.
     let uid = unsafe { libc::geteuid() };
@@ -80,10 +134,6 @@ fn bind_in(
         return Err(failure("hosted origin directory is not private"));
     }
     let marker = dir.join(CUSTODY);
-    let expected = installation.to_string();
-    if created {
-        private_file::replace_private(&marker, expected.as_bytes())?;
-    }
     let mut existing = String::new();
     private_file::open_private_file(&marker)
         .map_err(|_| failure("hosted origin is not owned by this installation"))?
@@ -177,6 +227,27 @@ mod tests {
         assert!(bind_in(root.path(), &origin, id).is_err());
         assert!(path.symlink_metadata().unwrap().file_type().is_symlink());
         assert_eq!(fs::read(&foreign).unwrap(), b"unrelated");
+    }
+
+    #[test]
+    fn cut_before_publication_keeps_reserved_name_available() {
+        let root = fixture();
+        let origin = new_origin().unwrap();
+        let id = uuid::Uuid::new_v4();
+        let stage = root.path().join(".pigeonmq-origin-mock-crash");
+        fs::create_dir(&stage).unwrap(); // Process died before writing the marker.
+        let target = root.path().join(origin.directory_name());
+        assert!(!target.exists());
+        let holder = bind_in(root.path(), &origin, id).unwrap();
+        assert!(stage.is_dir());
+        assert!(
+            holder
+                .listener
+                .local_addr()
+                .unwrap()
+                .as_pathname()
+                .is_some()
+        );
     }
 
     #[test]

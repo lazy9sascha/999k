@@ -12,7 +12,6 @@ impl UnixOrigin {
         .then(|| Self(nonce.into()))
     }
 
-    #[allow(dead_code)] // The operator uses this field; the local fixture does not.
     pub(crate) fn nonce(&self) -> &str {
         &self.0
     }
