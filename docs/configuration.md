@@ -602,15 +602,25 @@ HTTP authentication failures remain separate from tool results.
 
 For the wake, see [quickstart step 5](quickstart.md#5-optional-grok-bot-wake).
 
-## Local foreground MCP over stdio (preview)
+## Local MCP over stdio
 
 Use stdio for a local MCP client that runs under the same OS user as your hub.
 It needs no Cloudflare Tunnel or installation email. It uses the mailbox policy
 already mounted in the hub. It does not create a queue, grant access, or start or
-stop the hub. The preview applies only to a foreground hub started with
-`serve-hub`. It does not enable stdio for an installed managed or hosted hub.
+stop the hub.
 
-Add `--stdio-socket` to your existing `pigeonmq serve-hub` command. Keep the same
+For a new managed home on macOS, add `--stdio-socket` to its first managed apply:
+
+```sh
+pigeonmq init cue --apply --stdio-socket --home <private-hub-home>
+```
+
+The setting stays with that home. Existing managed homes do not gain a socket
+on upgrade. This command does not start hosted registration. If you later enable
+hosted Unix access, the same managed hub can serve both sockets. They are separate
+endpoints with the same existing mailbox policies.
+
+For a foreground hub, add `--stdio-socket` to your existing `pigeonmq serve-hub` command. Keep the same
 private queue and profile options. When the hub starts, it binds a private Unix socket
 next to the queue. Do not run it alongside an installed managed service on the same queue. Run the
 foreground preview with `serve-hub`.

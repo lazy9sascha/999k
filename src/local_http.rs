@@ -1956,7 +1956,12 @@ pub fn serve_hub(
 }
 
 /// The managed hub keeps its loopback listener after the last profile is removed.
-pub(crate) fn serve_managed_hub(db: PathBuf, bindings: Vec<Binding>, port: u16) -> io::Result<()> {
+pub(crate) fn serve_managed_hub(
+    db: PathBuf,
+    bindings: Vec<Binding>,
+    port: u16,
+    local_stdio: bool,
+) -> io::Result<()> {
     serve_hub_on(
         db,
         None,
@@ -1964,7 +1969,7 @@ pub(crate) fn serve_managed_hub(db: PathBuf, bindings: Vec<Binding>, port: u16) 
         Vec::new(),
         Some("managed"),
         (port, None, HubMode::Managed),
-        false,
+        local_stdio,
         None,
         None,
     )
@@ -2067,6 +2072,7 @@ pub(crate) fn serve_managed_hosted_hub(
     port: u16,
     installation: uuid::Uuid,
     scope: &crate::hosted_registration::OriginDescriptor,
+    local_stdio: bool,
 ) -> io::Result<()> {
     serve_hub_on(
         db,
@@ -2075,7 +2081,7 @@ pub(crate) fn serve_managed_hosted_hub(
         Vec::new(),
         Some("managed"),
         (port, None, HubMode::Managed),
-        false,
+        local_stdio,
         None,
         Some(HostedSocket {
             installation,
@@ -2299,7 +2305,16 @@ fn serve_hub_on(
         let home = db
             .parent()
             .ok_or_else(|| io::Error::other("queue parent required"))?;
-        Some(crate::stdio_mcp::bind(home, &stdio_routes)?)
+        match crate::stdio_mcp::bind(home, &stdio_routes) {
+            Ok(listener) => Some(listener),
+            Err(_) if managed => {
+                tracing::warn!(
+                    "managed stdio socket unavailable; other hub transports stay active"
+                );
+                None
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         None
     };
@@ -2400,7 +2415,7 @@ fn serve_hub_on(
         .expect("readiness object")
         .extend(enabled);
     if local_stdio {
-        ready["local_stdio_socket"] = json!(true);
+        ready["local_stdio_socket"] = json!(stdio_listener.is_some());
     }
     if let Some(fingerprint) = manifest_fingerprint {
         ready["profiles_fingerprint"] = json!(fingerprint);

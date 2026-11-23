@@ -112,6 +112,12 @@ struct Registry {
     registration: PathBuf,
     relay_command: Option<PathBuf>,
     profiles: BTreeMap<String, Profile>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    local_stdio: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl Profile {
@@ -141,6 +147,7 @@ pub(crate) struct Options<'a> {
     pub(crate) email_recipient: Option<&'a str>,
     pub(crate) relay_command: Option<&'a Path>,
     pub(crate) port: Option<u16>,
+    pub(crate) local_stdio: bool,
     pub(crate) apply: bool,
 }
 
@@ -743,6 +750,9 @@ fn change(
                 hub.start(jobs)?;
             }
             jobs.service.hub_ready(&hub.path, next.port, &routes)?;
+            if next.local_stdio {
+                jobs.service.stdio_ready(&hub.path, home, &routes)?;
+            }
         }
         Ok::<_, io::Error>(())
     })();
@@ -1120,10 +1130,18 @@ fn init_with(
             registration,
             relay_command: None,
             profiles: BTreeMap::new(),
+            local_stdio: false,
         }
     } else {
         read_json::<Registry>(&state_path)?
     };
+    if options.local_stdio
+        && (!options.apply || (!state.local_stdio && !active_routes(&state).is_empty()))
+    {
+        return Err(error(
+            "enable managed stdio on the first active profile in this home",
+        ));
+    }
     if options.port.is_some_and(|value| value != state.port)
         || options.relay_command.is_some_and(|value| {
             state
@@ -1256,6 +1274,7 @@ fn init_with(
     }
     if let Some(jobs) = jobs {
         let mut next = state.clone();
+        next.local_stdio |= options.local_stdio;
         let row = next
             .profiles
             .get_mut(name)
@@ -1344,6 +1363,7 @@ pub(crate) fn serve(home: &Path) -> io::Result<()> {
         let (id, scope) = hosted_scope(&home, &owner).ok()?;
         scope_matches(&state, &scope).then_some((id, scope))
     })();
+    let local_stdio = state.local_stdio && !active_routes(&state).is_empty();
     let routes = state
         .profiles
         .into_iter()
@@ -1351,9 +1371,9 @@ pub(crate) fn serve(home: &Path) -> io::Result<()> {
         .map(|(name, profile)| profile.binding(&name, &state.registration))
         .collect::<io::Result<Vec<_>>>()?;
     if let Some((id, scope)) = hosted {
-        crate::local_http::serve_managed_hosted_hub(queue, routes, ports, id, &scope)
+        crate::local_http::serve_managed_hosted_hub(queue, routes, ports, id, &scope, local_stdio)
     } else {
-        crate::local_http::serve_managed_hub(queue, routes, ports)
+        crate::local_http::serve_managed_hub(queue, routes, ports, local_stdio)
     }
 }
 

@@ -1279,6 +1279,12 @@ fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect::<Vec<_>>()
     };
+    let ping = json!({"jsonrpc":"2.0","id":"ping-before-init","method":"ping"});
+    let reply = run("unmounted", &dot_token, &[ping]);
+    assert_eq!(
+        reply,
+        [json!({"jsonrpc":"2.0","id":"ping-before-init","result":{}})]
+    );
     let init = json!({"jsonrpc":"2.0","id":"init","method":"initialize","params":{
         "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}
     }});

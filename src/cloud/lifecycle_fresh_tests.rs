@@ -45,6 +45,7 @@ fn fresh_options<'a>(
         email_recipient,
         relay_command,
         port: None,
+        local_stdio: false,
         apply: false,
     }
 }

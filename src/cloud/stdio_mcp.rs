@@ -58,9 +58,13 @@ fn metadata(path: &Path) -> io::Result<Metadata> {
     }
 }
 
+pub(crate) fn socket_path(home: &Path) -> std::path::PathBuf {
+    home.join(SOCKET)
+}
+
 pub(crate) fn bind(home: &Path, routes: &[String]) -> io::Result<LocalSocket> {
     let home = crate::cloud_setup::require_home(home)?;
-    let socket = home.join(SOCKET);
+    let socket = socket_path(&home);
     if socket.as_os_str().as_encoded_bytes().len() > 103 {
         return Err(fail(
             "local MCP socket path is too long; use a shorter private hub home",
@@ -172,7 +176,7 @@ fn connect(home: &Path, route: &str) -> io::Result<UnixStream> {
             "selected mailbox is not mounted on the local MCP socket",
         ));
     }
-    let socket = home.join(SOCKET);
+    let socket = socket_path(&home);
     let pinned = (owner.device, owner.inode);
     let checked = metadata(&socket)?;
     if (checked.dev(), checked.ino()) != pinned {
@@ -355,14 +359,15 @@ fn serve(
                                 }
                             }
                         }
-                        "ping" | "tools/list" | "tools/call" if session == Session::Ready => {
+                        "ping" => json!({"jsonrpc":"2.0", "id":id, "result":{}}),
+                        "tools/list" | "tools/call" if session == Session::Ready => {
                             exchange(home, route, token, &request).unwrap_or_else(|err| {
                                 eprintln!("Local MCP request failed: {err}");
 
                                 error(id, -32000, "Local MCP hub unavailable or unauthorized")
                             })
                         }
-                        "ping" | "tools/list" | "tools/call" | "initialize" => {
+                        "tools/list" | "tools/call" | "initialize" => {
                             error(id, -32000, "Invalid initialization state")
                         }
                         _ => error(id, -32601, "Method not found"),

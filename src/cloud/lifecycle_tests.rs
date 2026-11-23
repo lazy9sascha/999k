@@ -193,6 +193,7 @@ impl Fixture {
             email_recipient,
             relay_command: email_recipient.map(|_| self.relay_command.as_path()),
             port: None,
+            local_stdio: false,
             apply,
         }
     }
@@ -681,4 +682,55 @@ fn hosted_unix_refuses_foreign_job_before_touching_hub_and_recovers_after_interr
     assert!(!fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
     assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
     assert!(fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+}
+
+#[test]
+fn managed_stdio_is_explicit_at_first_activation_and_persists_without_restart() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    let mut first = fixture.options(true, None);
+    first.local_stdio = true;
+    init_with(&fixture.home, "cue", &first, Some(&jobs)).unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    let saved: Registry = read_json(&file).unwrap();
+    assert!(saved.local_stdio);
+    let n = fixture.fake.actions.borrow().len();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    assert_eq!(fixture.fake.actions.borrow().len(), n);
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(!fixture.home.join(DIRECTORY).join(HOSTED_OWNER).exists());
+}
+
+#[test]
+fn existing_managed_home_does_not_silently_enable_stdio_or_restart() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    let saved = fs::read(&file).unwrap();
+    assert!(
+        !serde_json::from_slice::<Value>(&saved)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("local_stdio")
+    );
+    let mut opt_in = fixture.options(true, None);
+    opt_in.local_stdio = true;
+    let n = fixture.fake.actions.borrow().len();
+    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_err());
+    assert_eq!(fixture.fake.actions.borrow().len(), n);
+    assert_eq!(fs::read(file).unwrap(), saved);
 }

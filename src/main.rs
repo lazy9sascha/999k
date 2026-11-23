@@ -180,6 +180,9 @@ enum Command {
         relay_command: Option<PathBuf>,
         /// Reserve a hosted HTTPS address for this installation (experimental).
         #[arg(long, hide = true, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
+        /// Enable the private stdio socket on a home's first managed apply.
+        #[arg(long, requires = "apply", conflicts_with = "reserve_address")]
+        stdio_socket: bool,
         reserve_address: bool,
         /// Use a private Unix origin for a new hosted enrollment.
         #[arg(long, hide = true, requires = "reserve_address")]
@@ -382,6 +385,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             email_recipient,
             relay_command,
             reserve_address,
+            stdio_socket,
             hosted_unix,
             port,
         } => {
@@ -395,6 +399,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             if let Some(name) = agent {
+                if *stdio_socket && !lifecycle::supported(name) {
+                    return Err("managed stdio requires a supported managed profile".into());
+                }
                 let result = if lifecycle::supported(name) {
                     lifecycle::init(
                         home,
@@ -404,6 +411,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             email_recipient: email_recipient.as_deref(),
                             relay_command: relay_command.as_deref(),
                             port: *port,
+                            local_stdio: *stdio_socket,
                             apply: *apply,
                         },
                     )?

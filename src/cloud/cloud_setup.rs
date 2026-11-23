@@ -706,6 +706,7 @@ mod tests {
             email_recipient: None,
             relay_command: None,
             port: None,
+            local_stdio: false,
             apply: false,
         };
         let staged = crate::lifecycle::init(&home, "cue", &options).unwrap();

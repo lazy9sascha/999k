@@ -34,6 +34,12 @@ pub(crate) trait LaunchControl {
     fn hosted_ready(&self, plist: &Path, _: &Path, port: u16, routes: &[String]) -> io::Result<()> {
         self.hub_ready(plist, port, routes)
     }
+    #[cfg(not(test))]
+    fn stdio_ready(&self, plist: &Path, home: &Path, routes: &[String]) -> io::Result<()>;
+    #[cfg(test)]
+    fn stdio_ready(&self, _: &Path, _: &Path, _: &[String]) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub(crate) struct SystemLaunchctl;
@@ -461,7 +467,12 @@ async fn wait_for_hub(plist: &Path, port: u16, routes: &[String]) -> io::Result<
 }
 
 #[cfg(target_os = "macos")]
-async fn probe_hosted_socket(socket: &Path, pid: u32, port: u16, route: &str) -> io::Result<bool> {
+async fn probe_private_socket(
+    socket: &Path,
+    pid: u32,
+    authority: &str,
+    route: &str,
+) -> io::Result<bool> {
     use std::{os::fd::AsRawFd, time::Duration};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     const BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
@@ -485,7 +496,7 @@ async fn probe_hosted_socket(socket: &Path, pid: u32, port: u16, route: &str) ->
             return Ok(false);
         }
         let request = format!(
-            "POST {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{BODY}",
+            "POST {route} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{BODY}",
             BODY.len()
         );
         client.write_all(request.as_bytes()).await?;
@@ -496,16 +507,16 @@ async fn probe_hosted_socket(socket: &Path, pid: u32, port: u16, route: &str) ->
 }
 
 #[cfg(target_os = "macos")]
-async fn wait_for_hosted_socket(
+async fn wait_for_private_socket(
     plist: &Path,
     socket: &Path,
-    port: u16,
+    authority: &str,
     routes: &[String],
 ) -> io::Result<()> {
     use std::time::{Duration, Instant};
     if !plist.is_absolute()
         || !socket.is_absolute()
-        || port == 0
+        || authority.is_empty()
         || routes.is_empty()
         || routes
             .iter()
@@ -526,7 +537,7 @@ async fn wait_for_hosted_socket(
             let mut ready = true;
             for route in routes {
                 if Instant::now() >= end
-                    || !probe_hosted_socket(socket, pid, port, route)
+                    || !probe_private_socket(socket, pid, authority, route)
                         .await
                         .unwrap_or(false)
                 {
@@ -543,7 +554,7 @@ async fn wait_for_hosted_socket(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Err(fail("managed hub did not prove hosted socket identity"))
+    Err(fail("managed hub did not prove private socket identity"))
 }
 
 #[cfg(target_os = "macos")]
@@ -624,7 +635,25 @@ impl LaunchControl for SystemLaunchctl {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(wait_for_hosted_socket(plist, socket, port, routes))
+            .block_on(wait_for_private_socket(
+                plist,
+                socket,
+                &format!("127.0.0.1:{port}"),
+                routes,
+            ))
+    }
+
+    fn stdio_ready(&self, plist: &Path, home: &Path, routes: &[String]) -> io::Result<()> {
+        let socket = crate::stdio_mcp::socket_path(home);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(wait_for_private_socket(
+                plist,
+                &socket,
+                crate::stdio_mcp::AUTHORITY,
+                routes,
+            ))
     }
 }
 
@@ -648,6 +677,9 @@ impl LaunchControl for SystemLaunchctl {
     fn hosted_ready(&self, _: &Path, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
         Err(fail("PigeonMQ hosted LaunchAgents require macOS"))
     }
+    fn stdio_ready(&self, _: &Path, _: &Path, _: &[String]) -> io::Result<()> {
+        Err(fail("managed stdio LaunchAgents require macOS"))
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -663,9 +695,8 @@ async fn hosted_probe_checks_kernel_pid_before_using_http() {
     let worker = std::thread::spawn(move || {
         use std::io::{Read, Write};
         let (mut foreign, _) = listener.accept().unwrap();
-        foreign
-            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-            .unwrap();
+        // The negative probe can close before accept returns. Do not change
+        // the timeout on its already-closed endpoint on Darwin.
         let mut body = [0; 512];
         // A wrong PID cannot trick the probe into sending HTTP.
         assert_eq!(foreign.read(&mut body).unwrap(), 0);
@@ -682,12 +713,12 @@ async fn hosted_probe_checks_kernel_pid_before_using_http() {
     });
     let own = std::process::id();
     assert!(
-        !probe_hosted_socket(&path, own + 1, 54843, "/dot/mcp")
+        !probe_private_socket(&path, own + 1, "127.0.0.1:54843", "/dot/mcp")
             .await
             .unwrap()
     );
     assert!(
-        probe_hosted_socket(&path, own, 54843, "/dot/mcp")
+        probe_private_socket(&path, own, "127.0.0.1:54843", "/dot/mcp")
             .await
             .unwrap()
     );
