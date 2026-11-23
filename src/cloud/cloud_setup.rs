@@ -393,6 +393,18 @@ fn settings_result(
     )
 }
 
+pub(crate) fn quickstart(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if home.exists() {
+        return Err("quickstart_home_exists".into());
+    }
+    let (home, _) = initialize_home(home)?;
+    let result = crate::reply_mailbox_setup::stage(&home, "instinct")?;
+    println!("quickstart_home={}", home.display());
+    println!("mcp_url=http://127.0.0.1:54843/instinct/mcp");
+    println!("token_file={}", result["token_file"]);
+    println!("next: pigeonmq run --home {} --local-only", home.display());
+    Ok(())
+}
 pub(crate) fn initialize_home(path: &Path) -> Result<(PathBuf, bool), Box<dyn std::error::Error>> {
     match fs::DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => {}

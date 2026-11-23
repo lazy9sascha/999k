@@ -118,6 +118,11 @@ enum Command {
         #[arg(long)]
         probe_public: bool,
     },
+    /// Stage a local-only quickstart home and print next steps.
+    Quickstart {
+        #[arg(long, default_value = ".local-quickstart")]
+        home: PathBuf,
+    },
     /// Inspect one dead-lettered request in an owner-private queue without writing.
     DlqInspect {
         #[arg(long)]
@@ -426,6 +431,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Health { home, probe_public } => {
             std::process::exit(cloud_service::health(home, *probe_public))
+        }
+        Command::Quickstart { home } => {
+            cloud_setup::quickstart(home).map_err(Into::into)
         }
         Command::NotifyArrivals {
             queue,
