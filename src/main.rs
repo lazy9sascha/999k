@@ -8,11 +8,8 @@ mod cloud_service;
 mod hosted_connector;
 #[path = "cloud/hosted_enrollment.rs"]
 mod hosted_enrollment;
-// Origin custody is tested separately until the managed hub can serve it directly.
-#[cfg(test)]
 #[path = "cloud/hosted_origin.rs"]
 mod hosted_origin;
-#[cfg(test)]
 #[path = "cloud/hosted_origin_local.rs"]
 mod hosted_origin_local;
 #[path = "cloud/hosted_registration.rs"]

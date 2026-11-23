@@ -1,5 +1,10 @@
 //! Resume a single hosted enrollment without exposing browser or machine secrets.
-use crate::{cloud_setup, hosted_registration};
+use crate::{
+    cloud_setup,
+    hosted_origin::UnixOrigin,
+    hosted_origin_local,
+    hosted_registration::{self, OriginDescriptor},
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use pigeonmq::{arrival_notify::lock_state, private_file};
 use serde::{Deserialize, Serialize};
@@ -24,6 +29,10 @@ struct Enrollment {
     user_code: String,
     proof: String,
     binding: Option<Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unix_nonce: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unix_descriptor: Option<OriginDescriptor>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -73,6 +82,8 @@ fn new_enrollment(origin: &Url) -> Enrollment {
         user_code: Uuid::new_v4().simple().to_string()[..8].to_uppercase(),
         proof: URL_SAFE_NO_PAD.encode(bytes),
         binding: None,
+        unix_nonce: None,
+        unix_descriptor: None,
     }
 }
 
@@ -104,6 +115,14 @@ fn load(path: &Path) -> Result<Option<Enrollment>, String> {
             .all(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase())
     {
         return Err("invalid hosted enrollment state".into());
+    }
+    let unix = saved
+        .unix_nonce
+        .as_deref()
+        .map(|value| UnixOrigin::parse(value).ok_or("invalid hosted Unix origin intent"))
+        .transpose()?;
+    if let Some(descriptor) = &saved.unix_descriptor {
+        descriptor.validate(unix.as_ref().ok_or("missing hosted Unix origin intent")?)?;
     }
     Ok(Some(saved))
 }
@@ -161,26 +180,43 @@ if (!$.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString({quoted}))) thr
     }
 }
 
+#[derive(PartialEq, Eq)]
+enum OriginIntent {
+    Legacy,
+    #[allow(dead_code)] // No public Unix enrollment or activation switch yet.
+    UnixV1,
+}
+
 fn enroll(
     home: &Path,
     origin: &Url,
     api: &str,
     wait: Duration,
     poll: Duration,
+    intent: OriginIntent,
     open: impl FnOnce(&Url) -> Result<(), String>,
     finalize: impl FnOnce(&str, &str, &str) -> Result<(), String>,
 ) -> Result<String, String> {
     let path = home.join(FILE);
     let _lock = lock_state(&path).map_err(|_| "hosted enrollment is busy or its lock is unsafe")?;
     let mut saved = match load(&path)? {
-        Some(saved) if saved.origin == origin.as_str() => saved,
-        Some(_) => return Err("use the original HTTPS registration origin for this home".into()),
+        Some(saved) if saved.origin != origin.as_str() => {
+            return Err("use the original HTTPS registration origin for this home".into());
+        }
+        Some(saved) if saved.unix_nonce.is_some() == (intent == OriginIntent::UnixV1) => saved,
+        Some(_) => return Err("use the original hosted origin mode for this home".into()),
         None => {
-            let enrollment = new_enrollment(origin);
+            let mut enrollment = new_enrollment(origin);
+            if intent == OriginIntent::UnixV1 {
+                let nonce = hosted_origin_local::new_origin()
+                    .map_err(|_| "cannot select a hosted Unix origin")?;
+                enrollment.unix_nonce = Some(nonce.nonce().to_owned());
+            }
             save(&path, &enrollment)?;
             enrollment
         }
     };
+    let unix = saved.unix_nonce.as_deref().and_then(UnixOrigin::parse);
 
     // Retry the same begin even if the last call reached the server but lost its response.
     let procedure = (|| -> Result<String, String> {
@@ -241,8 +277,15 @@ fn enroll(
             }
             std::thread::sleep(remaining.min(poll));
         }
-        let (public_url, token) =
-            hosted_registration::finish(api, &reg.installation_id, &saved.proof)?;
+        let (public_url, token, descriptor) = if let Some(origin) = unix.as_ref() {
+            let (url, token, scope) =
+                hosted_registration::finish_unix(api, &reg.installation_id, &saved.proof, origin)?;
+            (url, token, Some(scope))
+        } else {
+            let (url, token) =
+                hosted_registration::finish(api, &reg.installation_id, &saved.proof)?;
+            (url, token, None)
+        };
         if public_url != binding.public_url
             || token.is_empty()
             || token.len() as u64 > private_file::MAX_PRIVATE_CONFIG_BYTES
@@ -251,6 +294,19 @@ fn enroll(
                 .any(|ch| ch.is_control() || ch.is_whitespace())
         {
             return Err("invalid hosted finish response".into());
+        }
+        if let Some(descriptor) = descriptor {
+            if saved
+                .unix_descriptor
+                .as_ref()
+                .is_some_and(|previous| previous != &descriptor)
+            {
+                return Err("hosted Unix origin binding changed".into());
+            }
+            if saved.unix_descriptor.is_none() {
+                saved.unix_descriptor = Some(descriptor);
+                save(&path, &saved)?;
+            }
         }
         finalize(&public_url, &reg.installation_id, &token)?;
         Ok(public_url)
@@ -292,6 +348,7 @@ pub(crate) fn run(home: &Path) -> Result<(), String> {
         origin.as_str(),
         Duration::from_secs(90),
         Duration::from_secs(2),
+        OriginIntent::Legacy,
         open_browser,
         |url, id, token| crate::hosted_connector::stage(&home, url, id, token),
     )?;
@@ -373,6 +430,14 @@ mod tests {
         home: &Path,
         responses: Vec<(&'static str, Option<(u16, Value)>)>,
     ) -> (String, thread::JoinHandle<()>) {
+        operator_with_intent(home, responses, false)
+    }
+
+    fn operator_with_intent(
+        home: &Path,
+        responses: Vec<(&'static str, Option<(u16, Value)>)>,
+        expected_unix: bool,
+    ) -> (String, thread::JoinHandle<()>) {
         let path = home.join(FILE);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -401,12 +466,17 @@ mod tests {
                 assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
                 assert!(authorization == format!("Bearer {}", saved.proof));
                 if request == "POST /v1/enrollments HTTP/1.1" {
+                    assert_eq!(saved.unix_nonce.is_some(), expected_unix);
                     let body: Value = serde_json::from_slice(&body).unwrap();
                     assert!(
                         body == json!({"request_id":saved.request_id, "user_code":saved.user_code})
                     );
                 } else {
                     assert!(saved.binding.is_some());
+                }
+                if request.ends_with("/finish-unix HTTP/1.1") {
+                    let body: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body, json!({"kind":"unix_v1", "nonce":saved.unix_nonce}));
                 }
                 if let Some((status, value)) = response {
                     let body = value.to_string();
@@ -435,9 +505,100 @@ mod tests {
             api,
             Duration::ZERO,
             Duration::ZERO,
+            OriginIntent::Legacy,
             open,
             finalize,
         )
+    }
+
+    #[test]
+    fn unix_intent_survives_dropped_begin_and_refuses_downgrade_or_changed_reply() {
+        let home = temp_home();
+        let path = home.path().join(FILE);
+        let origin = https_origin(ORIGIN).unwrap();
+        let (drop_api, drop_server) = operator_with_intent(home.path(), vec![(BEGIN, None)], true);
+        let run = |api: &str, intent| {
+            enroll(
+                home.path(),
+                &origin,
+                api,
+                Duration::ZERO,
+                Duration::ZERO,
+                intent,
+                |_| panic!("unexpected opener"),
+                |_, _, _| Ok(()),
+            )
+        };
+        assert!(
+            run(&drop_api, OriginIntent::UnixV1)
+                .unwrap_err()
+                .contains(RESUME)
+        );
+        drop_server.join().unwrap();
+        let first = load(&path).unwrap().unwrap();
+        let nonce = first.unix_nonce.as_deref().unwrap();
+        assert!(UnixOrigin::parse(nonce).is_some());
+        assert!(!fs::read_to_string(&path).unwrap().contains("hub.sock"));
+        assert!(
+            run(&drop_api, OriginIntent::Legacy)
+                .unwrap_err()
+                .contains("origin mode")
+        );
+        let finish =
+            "POST /v1/enrollments/11111111-1111-4111-8111-111111111111/finish-unix HTTP/1.1";
+        let provider = |nonce: &str, route: &str| {
+            json!({
+                "state":"ready", "public_url":PUBLIC, "connector_token":"fixture-token",
+                "origin":{"kind":"unix_v1","nonce":nonce,"hub_port":54843,"mcp_paths":[route]}
+            })
+        };
+        let (api, server) = operator_with_intent(
+            home.path(),
+            vec![
+                (BEGIN, Some((200, begin(ORIGIN, ID, None)))),
+                (
+                    STATUS,
+                    Some((200, json!({"state":"approved","public_url":PUBLIC}))),
+                ),
+                (
+                    finish,
+                    Some((
+                        200,
+                        provider("00000000000000000000000000000000", "/muse/mcp"),
+                    )),
+                ),
+                (BEGIN, Some((200, begin(ORIGIN, ID, None)))),
+                (
+                    STATUS,
+                    Some((200, json!({"state":"approved","public_url":PUBLIC}))),
+                ),
+                (finish, Some((200, provider(nonce, "/muse/mcp")))),
+                (BEGIN, Some((200, begin(ORIGIN, ID, None)))),
+                (
+                    STATUS,
+                    Some((200, json!({"state":"ready","public_url":PUBLIC}))),
+                ),
+                (finish, Some((200, provider(nonce, "/dot/mcp")))),
+            ],
+            true,
+        );
+        assert!(
+            run(&api, OriginIntent::UnixV1)
+                .unwrap_err()
+                .contains("binding changed")
+        );
+        assert!(load(&path).unwrap().unwrap().unix_descriptor.is_none());
+        assert_eq!(run(&api, OriginIntent::UnixV1).unwrap(), PUBLIC);
+        assert!(
+            run(&api, OriginIntent::UnixV1)
+                .unwrap_err()
+                .contains("binding changed")
+        );
+        let stored = load(&path).unwrap().unwrap();
+        assert_eq!(stored.request_id, first.request_id);
+        assert!(stored.proof == first.proof && stored.unix_nonce == first.unix_nonce);
+        assert_eq!(stored.unix_descriptor.unwrap().mcp_paths, ["/muse/mcp"]);
+        server.join().unwrap();
     }
 
     #[test]

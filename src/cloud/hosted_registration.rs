@@ -1,5 +1,6 @@
 //! Local HTTP client for the hosted registration service.
-use serde::Deserialize;
+use crate::hosted_origin::UnixOrigin;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Clone)]
@@ -39,6 +40,85 @@ struct FinishResponse {
     state: String,
     public_url: String,
     connector_token: String,
+}
+
+/// Scope returned under the same installation proof as the connector credential.
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OriginDescriptor {
+    kind: String,
+    nonce: String,
+    pub(crate) hub_port: u16,
+    pub(crate) mcp_paths: Vec<String>,
+}
+
+impl OriginDescriptor {
+    pub(crate) fn validate(&self, expected: &UnixOrigin) -> Result<(), String> {
+        let mut unique = std::collections::HashSet::new();
+        if self.kind != "unix_v1"
+            || self.nonce != expected.nonce()
+            || self.hub_port == 0
+            || self.mcp_paths.is_empty()
+            || !self.mcp_paths.iter().all(|route| {
+                pigeonmq::mailbox_catalog::valid_mcp_route(route)
+                    && !matches!(route.as_str(), "/receiver/mcp" | "/admin/mcp" | "/rpc/mcp")
+                    && unique.insert(route)
+            })
+        {
+            return Err("hosted Unix origin binding changed or is unsafe".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn origin(&self) -> Result<UnixOrigin, String> {
+        let origin = UnixOrigin::parse(&self.nonce).ok_or("invalid hosted Unix origin")?;
+        self.validate(&origin)?;
+        Ok(origin)
+    }
+}
+
+#[derive(Deserialize)]
+struct FinishUnixResponse {
+    state: String,
+    public_url: String,
+    connector_token: String,
+    origin: OriginDescriptor,
+}
+
+pub(crate) fn finish_unix(
+    base: &str,
+    id: &str,
+    proof: &str,
+    origin: &UnixOrigin,
+) -> Result<(String, String, OriginDescriptor), String> {
+    if !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id) {
+        return Err("invalid_installation_id".into());
+    }
+    let response = client()
+        .post(format!(
+            "{}/v1/enrollments/{id}/finish-unix",
+            base.trim_end_matches('/')
+        ))
+        .bearer_auth(proof)
+        .json(&json!({"kind":"unix_v1", "nonce":origin.nonce()}))
+        .send()
+        .map_err(|_| "registration_service_unavailable".to_owned())?;
+    let status = response.status();
+    let body = read_body(response)?;
+    if !status.is_success() {
+        return Err(map_error(status, &body));
+    }
+    let response: FinishUnixResponse =
+        serde_json::from_str(&body).map_err(|_| "invalid hosted Unix finish response")?;
+    if response.state != "ready" {
+        return Err("unexpected_state".into());
+    }
+    response.origin.validate(origin)?;
+    Ok((
+        response.public_url,
+        response.connector_token,
+        response.origin,
+    ))
 }
 
 fn client() -> reqwest::blocking::Client {
