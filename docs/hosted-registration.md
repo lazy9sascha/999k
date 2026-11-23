@@ -60,26 +60,12 @@ Approve the installation in your browser. If setup stops waiting or you close th
 run the same command to resume. Do not copy the browser link or the installation files to a
 different machine.
 
-If the home has no active managed profile, PigeonMQ reports `hosted_connector=staged`.
-It saves the address and the private connector credential. It does not create a mailbox or
-start a service. Apply your chosen managed profile with `pigeonmq init <agent> --apply --home <hub-home>`.
-Use a durable installed PigeonMQ binary and install a compatible `cloudflared` in your PATH.
-Run the reserve command again with the same origin and home.
-
-The registration service returns the loopback port and MCP paths it assigned to the tunnel.
-PigeonMQ starts the separate `pigeonmq.hosted-connector` job only when those settings
-match the active managed hub and the hub passes its loopback checks. If the settings are
-missing or do not match, PigeonMQ stages the credential without starting a connector.
-Ask the pilot operator to confirm the settings before you retry.
-
-`hosted_connector=scheduled` and `hosted_public_route=unverified` report local launchd
-setup only. Verify the public path from the intended client after activation.
-
-A connector restart does not restart the hub. The installer does not modify a self-managed
-connector. It refuses a conflicting hosted job rather than replacing it. If
-`remove <agent> --apply --home <hub-home>` retires a profile that supplies a required
-public path, PigeonMQ stops and removes only the hosted connector job it owns. It keeps the enrollment files
-for later use. This does not revoke the public route.
+PigeonMQ reports `hosted_connector=staged` and `hosted_public_route=unverified`.
+It saves the address and private connector credential in the owner-private hub home.
+It does not create a mailbox, change a local hub, or start a connector. The registration
+service can assign a loopback port and MCP paths, but those settings do not prove local
+origin identity across restarts. Automatic connector activation is not available in
+this preview.
 
 ### Connect Dot and Codex Cloud through Cloudflare
 

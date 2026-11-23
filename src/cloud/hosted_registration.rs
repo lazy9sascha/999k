@@ -1,5 +1,5 @@
 //! Local HTTP client for the hosted registration service.
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 
 #[derive(Clone)]
@@ -35,19 +35,10 @@ pub(crate) struct StatusResponse {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct FinishResponse {
+struct FinishResponse {
     state: String,
-    pub(crate) public_url: String,
-    pub(crate) connector_token: String,
-    pub(crate) hub_target: Option<HubTarget>,
-}
-
-// This scope comes from the same operator settings used to build Cloudflare ingress.
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct HubTarget {
-    pub(crate) port: u16,
-    pub(crate) mcp_paths: Vec<String>,
+    public_url: String,
+    connector_token: String,
 }
 
 fn client() -> reqwest::blocking::Client {
@@ -56,6 +47,20 @@ fn client() -> reqwest::blocking::Client {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("http client")
+}
+
+fn read_body(response: reqwest::blocking::Response) -> Result<String, String> {
+    use std::io::Read;
+    const LIMIT: u64 = 16 * 1024;
+    let mut body = String::new();
+    response
+        .take(LIMIT + 1)
+        .read_to_string(&mut body)
+        .map_err(|_| "registration_service_unavailable".to_owned())?;
+    if body.len() as u64 > LIMIT {
+        return Err("invalid registration response".into());
+    }
+    Ok(body)
 }
 
 fn map_error(status: reqwest::StatusCode, body: &str) -> String {
@@ -86,9 +91,7 @@ pub fn begin(
         .send()
         .map_err(|_| "registration_service_unavailable".to_owned())?;
     let status = resp.status();
-    let body = resp
-        .text()
-        .map_err(|_| "registration_service_unavailable".to_owned())?;
+    let body = read_body(resp)?;
     if !status.is_success() {
         return Err(map_error(status, &body));
     }
@@ -122,9 +125,7 @@ pub fn status(
         .send()
         .map_err(|_| "registration_service_unavailable".to_owned())?;
     let status = resp.status();
-    let body = resp
-        .text()
-        .map_err(|_| "registration_service_unavailable".to_owned())?;
+    let body = read_body(resp)?;
     if !status.is_success() {
         return Err(map_error(status, &body));
     }
@@ -137,7 +138,7 @@ pub fn finish(
     base_url: &str,
     installation_id: &str,
     proof: &str,
-) -> Result<FinishResponse, String> {
+) -> Result<(String, String), String> {
     // Validate installation_id to prevent path injection.
     if uuid::Uuid::parse_str(installation_id).is_err() {
         return Err("invalid_installation_id".to_string());
@@ -153,9 +154,7 @@ pub fn finish(
         .send()
         .map_err(|_| "registration_service_unavailable".to_owned())?;
     let status = resp.status();
-    let body = resp
-        .text()
-        .map_err(|_| "registration_service_unavailable".to_owned())?;
+    let body = read_body(resp)?;
     if !status.is_success() {
         return Err(map_error(status, &body));
     }
@@ -164,7 +163,7 @@ pub fn finish(
     if parsed.state != "ready" {
         return Err("unexpected_state".to_string());
     }
-    Ok(parsed)
+    Ok((parsed.public_url, parsed.connector_token))
 }
 
 #[cfg(test)]
@@ -210,10 +209,9 @@ mod tests {
     fn finish_returns_token() {
         let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u-fixture.example.com\",\"connector_token\":\"tok-123\"}";
         let base = mock_server(resp);
-        let result = finish(&base, "11111111-1111-4111-8111-111111111111", "proof").unwrap();
-        assert_eq!(result.public_url, "https://u-fixture.example.com");
-        assert_eq!(result.connector_token, "tok-123");
-        assert!(result.hub_target.is_none());
+        let (url, token) = finish(&base, "11111111-1111-4111-8111-111111111111", "proof").unwrap();
+        assert_eq!(url, "https://u-fixture.example.com");
+        assert_eq!(token, "tok-123");
     }
 
     #[test]

@@ -170,6 +170,47 @@ mod tests {
     }
 
     #[test]
+    fn stages_credentials_without_queue_plist_or_process() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let url = "https://u.example.test";
+        let id = "11111111-1111-4111-8111-111111111111";
+        stage(home, url, id, "fixture-token").unwrap();
+        let files = std::fs::read_dir(home)
+            .unwrap()
+            .map(|file| file.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            files,
+            ["hosted-connection.json".into(), TOKEN_FILE.into()].into()
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(home.join("hosted-connection.json")).unwrap())
+                .unwrap();
+        assert!(metadata.get("connector_token").is_none());
+        assert_eq!(
+            load_connection(home).unwrap(),
+            Some((url.into(), id.into()))
+        );
+        assert_eq!(
+            home.join(TOKEN_FILE)
+                .metadata()
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(stage(home, "https://other.example.test", id, "different").is_err());
+        assert_eq!(
+            std::fs::read(home.join(TOKEN_FILE)).unwrap(),
+            b"fixture-token"
+        );
+    }
+
+    #[test]
     fn load_missing_returns_none() {
         let dir = tempdir().unwrap();
         assert!(load_connection(dir.path()).unwrap().is_none());

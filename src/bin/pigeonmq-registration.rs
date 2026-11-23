@@ -261,8 +261,7 @@ impl Operator {
             StatusCode::OK,
             json!({
                 "state": "ready", "public_url": public_url,
-                "connector_token": provisioned.into_connector_token(),
-                "hub_target": {"port": self.hub_port, "mcp_paths": self.mcp_paths}
+                "connector_token": provisioned.into_connector_token()
             }),
         ))
     }

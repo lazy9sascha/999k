@@ -1,4 +1,4 @@
-//! Install and inspect only the owner-selected PigeonMQ LaunchAgents.
+//! Install and inspect only the two owner-selected PigeonMQ LaunchAgents.
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, DirBuilder, File, OpenOptions},
@@ -9,7 +9,6 @@ use std::{
 
 pub(crate) const HUB_LABEL: &str = "pigeonmq.hub";
 pub(crate) const RELAY_LABEL: &str = "pigeonmq.email-relay";
-pub(crate) const HOSTED_LABEL: &str = "pigeonmq.hosted-connector";
 const PLIST_LIMIT: u64 = 32 * 1024;
 
 pub(crate) trait LaunchControl {
@@ -40,7 +39,7 @@ fn fail(message: &'static str) -> io::Error {
 }
 
 fn check_label(label: &str) -> io::Result<()> {
-    if matches!(label, HUB_LABEL | RELAY_LABEL | HOSTED_LABEL) {
+    if matches!(label, HUB_LABEL | RELAY_LABEL) {
         return Ok(());
     }
     Err(fail("invalid PigeonMQ service label"))
@@ -464,11 +463,7 @@ impl LaunchControl for SystemLaunchctl {
         if !path.is_absolute()
             || !matches!(
                 path.file_name().and_then(|name| name.to_str()),
-                Some(
-                    "pigeonmq.hub.plist"
-                        | "pigeonmq.email-relay.plist"
-                        | "pigeonmq.hosted-connector.plist"
-                )
+                Some("pigeonmq.hub.plist" | "pigeonmq.email-relay.plist")
             )
         {
             return Err(fail("invalid PigeonMQ LaunchAgent path"));

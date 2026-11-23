@@ -168,12 +168,7 @@ fn enroll(
     wait: Duration,
     poll: Duration,
     open: impl FnOnce(&Url) -> Result<(), String>,
-    finalize: impl FnOnce(
-        &str,
-        &str,
-        &str,
-        Option<&hosted_registration::HubTarget>,
-    ) -> Result<(), String>,
+    finalize: impl FnOnce(&str, &str, &str) -> Result<(), String>,
 ) -> Result<String, String> {
     let path = home.join(FILE);
     let _lock = lock_state(&path).map_err(|_| "hosted enrollment is busy or its lock is unsafe")?;
@@ -246,9 +241,9 @@ fn enroll(
             }
             std::thread::sleep(remaining.min(poll));
         }
-        let finish = hosted_registration::finish(api, &reg.installation_id, &saved.proof)?;
-        let token = &finish.connector_token;
-        if finish.public_url != binding.public_url
+        let (public_url, token) =
+            hosted_registration::finish(api, &reg.installation_id, &saved.proof)?;
+        if public_url != binding.public_url
             || token.is_empty()
             || token.len() as u64 > private_file::MAX_PRIVATE_CONFIG_BYTES
             || token
@@ -257,13 +252,8 @@ fn enroll(
         {
             return Err("invalid hosted finish response".into());
         }
-        finalize(
-            &finish.public_url,
-            &reg.installation_id,
-            token,
-            finish.hub_target.as_ref(),
-        )?;
-        Ok(finish.public_url)
+        finalize(&public_url, &reg.installation_id, &token)?;
+        Ok(public_url)
     })();
 
     match procedure {
@@ -296,9 +286,6 @@ pub(crate) fn run(home: &Path) -> Result<(), String> {
     }
     let home =
         cloud_setup::require_home(home).map_err(|_| "hosted hub home must be owner-private")?;
-    let services =
-        crate::lifecycle::HostedServices::inspect(&home).map_err(|err| err.to_string())?;
-    let mut scheduled = false;
     let public_url = enroll(
         &home,
         &origin,
@@ -306,32 +293,12 @@ pub(crate) fn run(home: &Path) -> Result<(), String> {
         Duration::from_secs(90),
         Duration::from_secs(2),
         open_browser,
-        |url, id, token, target| match services.as_ref() {
-            Some(services) => {
-                scheduled = services
-                    .finish(&home, url, id, token, target)
-                    .map_err(|err| err.to_string())?;
-                Ok(())
-            }
-            None => crate::hosted_connector::stage(&home, url, id, token),
-        },
+        |url, id, token| crate::hosted_connector::stage(&home, url, id, token),
     )?;
     println!("reserved_address={public_url}");
-    if scheduled {
-        println!("hosted_connector=scheduled");
-        println!("hosted_public_route=unverified");
-    } else {
-        println!("hosted_connector=staged");
-        if services.is_none() {
-            eprintln!(
-                "Activate a supported mailbox with init <agent> --apply using the same --home. Then run init --reserve-address again."
-            );
-        } else {
-            eprintln!(
-                "No connector started. Ask your pilot operator to confirm the active hub port and MCP paths, then run init --reserve-address again."
-            );
-        }
-    }
+    println!("hosted_connector=staged");
+    println!("hosted_public_route=unverified");
+    eprintln!("The connector credential is saved. This preview does not start a hosted connector.");
     Ok(())
 }
 
@@ -460,12 +427,7 @@ mod tests {
         home: &Path,
         api: &str,
         open: impl FnOnce(&Url) -> Result<(), String>,
-        finalize: impl FnOnce(
-            &str,
-            &str,
-            &str,
-            Option<&hosted_registration::HubTarget>,
-        ) -> Result<(), String>,
+        finalize: impl FnOnce(&str, &str, &str) -> Result<(), String>,
     ) -> Result<String, String> {
         enroll(
             home,
@@ -501,15 +463,13 @@ mod tests {
                     FINISH,
                     Some((
                         200,
-                        json!({"state":"ready","public_url":PUBLIC,"connector_token":"fixture-token","hub_target":{"port":54843,"mcp_paths":["/muse/mcp"]}}),
+                        json!({"state":"ready","public_url":PUBLIC,"connector_token":"fixture-token"}),
                     )),
                 ),
             ],
         );
         let no_open = |_: &Url| panic!("unexpected opener");
-        let no_finish = |_: &str, _: &str, _: &str, _: Option<&hosted_registration::HubTarget>| {
-            panic!("unexpected finalize")
-        };
+        let no_finish = |_: &str, _: &str, _: &str| panic!("unexpected finalize");
         let error = fixture(home.path(), &api, no_open, no_finish).unwrap_err();
         assert!(error.contains(RESUME), "{error}");
         let original = fs::read(&path).unwrap();
@@ -538,10 +498,7 @@ mod tests {
                 home.path(),
                 &api,
                 |_| panic!("consumed link opened"),
-                |url, id, token, target| {
-                    let target = target.unwrap();
-                    assert_eq!(target.port, 54843);
-                    assert_eq!(target.mcp_paths, ["/muse/mcp"]);
+                |url, id, token| {
                     assert_eq!((url, id, token), (PUBLIC, ID, "fixture-token"));
                     Ok(())
                 }
@@ -575,7 +532,7 @@ mod tests {
                 home.path(),
                 &api,
                 |_| panic!("unexpected opener"),
-                |_, _, _, _| panic!("unexpected finalize"),
+                |_, _, _| panic!("unexpected finalize"),
             )
             .unwrap_err()
         };
@@ -605,7 +562,7 @@ mod tests {
                 home.path(),
                 &api,
                 |_| panic!("unexpected opener"),
-                |_, _, _, _| panic!("unexpected finalize"),
+                |_, _, _| panic!("unexpected finalize"),
             )
             .unwrap_err()
         };

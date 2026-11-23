@@ -1,10 +1,8 @@
 //! Staged registration of existing built-in profiles and explicit launchd activation.
 use crate::{
-    hosted_registration::HubTarget,
     lifecycle_profile,
     lifecycle_service::{
-        HOSTED_LABEL, HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist,
-        verify_plist,
+        HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist, verify_plist,
     },
     mailbox_startup::{Binding, Manifest, QUEUE, REGISTRATION, bindings, valid_route},
 };
@@ -30,7 +28,6 @@ const DIRECTORY: &str = ".pigeonmq-lifecycle";
 const STATE: &str = "profiles.json";
 const RELAY_CONFIG: &str = "relay-profiles.json";
 const RELAY_STATE: &str = "relay-state.json";
-const HOSTED_OWNER: &str = "hosted-owner.json";
 const DEFAULT_PORT: u16 = 54843;
 
 fn error(reason: &'static str) -> io::Error {
@@ -504,69 +501,6 @@ fn path_arg(path: &Path) -> io::Result<String> {
         .ok_or_else(|| error("lifecycle path must be UTF-8"))
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct HostedOwner {
-    cloudflared: PathBuf,
-    target: HubTarget,
-}
-
-fn hosted_target_matches(state: &Registry, target: &HubTarget) -> bool {
-    let active = active_routes(state);
-    target.port != 0
-        && state.port == target.port
-        && !target.mcp_paths.is_empty()
-        && target
-            .mcp_paths
-            .iter()
-            .all(|path| pigeonmq::mailbox_catalog::valid_mcp_route(path) && active.contains(path))
-}
-
-fn hosted_owner(home: &Path) -> io::Result<Option<HostedOwner>> {
-    let path = home.join(DIRECTORY).join(HOSTED_OWNER);
-    if absent(&path)? {
-        Ok(None)
-    } else {
-        Ok(Some(read_json(&path)?))
-    }
-}
-
-fn hosted_job(jobs: &Jobs<'_>, home: &Path, cloudflared: &Path) -> io::Result<Job> {
-    let connector_jobs = Jobs {
-        executable: cloudflared,
-        ..*jobs
-    };
-    Job::inspect(
-        &connector_jobs,
-        HOSTED_LABEL,
-        vec![
-            "tunnel".into(),
-            "run".into(),
-            "--token-file".into(),
-            path_arg(&home.join(crate::hosted_connector::TOKEN_FILE))?,
-        ],
-    )
-}
-
-/// Stop only the verified hosted job for this home. Keep its enrollment and credential.
-fn stop_hosted(jobs: &Jobs<'_>, home: &Path) -> io::Result<()> {
-    let Some(owner) = hosted_owner(home)? else {
-        return Ok(());
-    };
-    let connector = hosted_job(jobs, home, &owner.cloudflared)?;
-    if connector.loaded {
-        jobs.service.bootout(HOSTED_LABEL)?;
-    }
-    if connector.exists {
-        fs::remove_file(connector.path)?;
-        File::open(jobs.directory)?.sync_all()?;
-    }
-    let dir = home.join(DIRECTORY);
-    fs::remove_file(dir.join(HOSTED_OWNER))?;
-    File::open(dir)?.sync_all()?;
-    Ok(())
-}
-
 fn relay_config(state: &Registry) -> io::Result<RelayConfig> {
     state
         .profiles
@@ -692,11 +626,6 @@ fn change(
     } else {
         None
     };
-    if next.profiles[name].phase == Phase::Retired
-        && hosted_owner(home)?.is_some_and(|owner| !hosted_target_matches(&next, &owner.target))
-    {
-        stop_hosted(jobs, home)?;
-    }
     if phase_changed && hub.loaded {
         jobs.service.bootout(HUB_LABEL)?;
     }
@@ -905,159 +834,6 @@ fn system_jobs() -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
     };
     let executable = installation.require_executable(&std::env::current_exe()?)?;
     Ok((directory, executable, installation))
-}
-
-/// The hosted connector uses launchd directly. It does not supervise the hub.
-pub(crate) struct HostedServices {
-    directory: PathBuf,
-    executable: PathBuf,
-    cloudflared: PathBuf,
-}
-
-impl HostedServices {
-    pub(crate) fn inspect(home: &Path) -> io::Result<Option<Self>> {
-        let dir = home.join(DIRECTORY);
-        if absent(&dir)? {
-            return Ok(None);
-        }
-        let dir = private_dir(&dir)?;
-        let state_path = dir.join(STATE);
-        if absent(&state_path)? || active_routes(&read_json(&state_path)?).is_empty() {
-            return Ok(None);
-        }
-        let (directory, executable, installation) = system_jobs()?;
-        let cloudflared = crate::hosted_connector::preflight(None).map_err(io::Error::other)?;
-        let cloudflared = installation.require_executable(&cloudflared)?;
-        let services = Self {
-            directory,
-            executable,
-            cloudflared,
-        };
-        services.with_jobs(&SystemLaunchctl, home, |_, _, _, _| Ok(()))?;
-        Ok(Some(services))
-    }
-
-    fn with_jobs<T>(
-        &self,
-        service: &dyn LaunchControl,
-        home: &Path,
-        operation: impl FnOnce(&Jobs<'_>, Job, Job, Registry) -> io::Result<T>,
-    ) -> io::Result<T> {
-        let dir = private_dir(&home.join(DIRECTORY)).map_err(|_| {
-            error("hosted enrollment requires a managed hub with an active profile")
-        })?;
-        let _owner = lock(&dir)?;
-        let state: Registry = read_json(&dir.join(STATE))?;
-        if active_routes(&state).is_empty() {
-            return Err(error(
-                "hosted enrollment requires a managed hub with an active profile",
-            ));
-        }
-        open_private(&home.join(QUEUE))?;
-        let jobs = Jobs {
-            service,
-            directory: &self.directory,
-            executable: &self.executable,
-            installation: None,
-        };
-        let hub = Job::inspect(
-            &jobs,
-            HUB_LABEL,
-            vec!["serve-managed".into(), "--home".into(), path_arg(home)?],
-        )?;
-        let owner = hosted_owner(home)?;
-        if owner
-            .as_ref()
-            .is_some_and(|row| row.cloudflared != self.cloudflared)
-        {
-            return Err(error(
-                "hosted connector executable differs from the owned LaunchAgent",
-            ));
-        }
-        let connector = hosted_job(&jobs, home, &self.cloudflared)?;
-        if owner.is_none() && connector.exists {
-            return Err(error(
-                "hosted LaunchAgent is not owned by the selected home",
-            ));
-        }
-        operation(&jobs, hub, connector, state)
-    }
-
-    pub(crate) fn finish(
-        &self,
-        home: &Path,
-        url: &str,
-        id: &str,
-        token: &str,
-        target: Option<&HubTarget>,
-    ) -> io::Result<bool> {
-        self.finish_with(&SystemLaunchctl, home, url, id, token, target)
-    }
-
-    fn finish_with(
-        &self,
-        service: &dyn LaunchControl,
-        home: &Path,
-        url: &str,
-        id: &str,
-        token: &str,
-        target: Option<&HubTarget>,
-    ) -> io::Result<bool> {
-        self.with_jobs(service, home, |jobs, hub, connector, state| {
-            let Some(target) = target.filter(|target| hosted_target_matches(&state, target)) else {
-                stop_hosted(jobs, home)?;
-                crate::hosted_connector::stage(home, url, id, token).map_err(io::Error::other)?;
-                return Ok(false);
-            };
-            if !hub.loaded {
-                hub.start(jobs)?;
-            }
-            jobs.service
-                .hub_ready(&hub.path, state.port, &active_routes(&state))?;
-            crate::hosted_connector::check_binding(home, url, id).map_err(io::Error::other)?;
-            let token_path = home.join(crate::hosted_connector::TOKEN_FILE);
-            let existing = if absent(&token_path)? {
-                None
-            } else {
-                Some(read_hosted_token(&token_path)?)
-            };
-            // A running cloudflared needs a restart to read a changed token.
-            let changed = existing.as_deref() != Some(token.as_bytes());
-            if changed && connector.loaded {
-                jobs.service.bootout(HOSTED_LABEL)?;
-            }
-            if changed {
-                crate::hosted_connector::save_token(home, token).map_err(io::Error::other)?;
-            }
-            crate::hosted_connector::save_connection(home, url, id).map_err(io::Error::other)?;
-            write_json(
-                &home.join(DIRECTORY).join(HOSTED_OWNER),
-                &HostedOwner {
-                    cloudflared: self.cloudflared.clone(),
-                    target: HubTarget {
-                        port: target.port,
-                        mcp_paths: target.mcp_paths.clone(),
-                    },
-                },
-            )?;
-            if !connector.loaded || changed {
-                connector.start(jobs)?;
-            }
-            Ok(true)
-        })
-    }
-}
-
-fn read_hosted_token(path: &Path) -> io::Result<Vec<u8>> {
-    let mut value = Vec::new();
-    let limit = private_file::MAX_PRIVATE_CONFIG_BYTES;
-    open_private(path)?
-        .take(limit + 1)
-        .read_to_end(&mut value)?;
-    if value.len() as u64 > limit {
-        return Err(error("hosted connector token exceeds the size limit"));
-    }
-    Ok(value)
 }
 
 pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result<Value> {
