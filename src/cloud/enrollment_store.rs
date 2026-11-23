@@ -1,4 +1,5 @@
 //! Private operator state for hosted registration.
+use super::hosted_origin::UnixOrigin;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -14,7 +15,7 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 const APPLICATION_ID: i64 = 0x504D_5145; // PMQE
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const PENDING_SECONDS: i64 = 15 * 60;
 const BROWSER_SECONDS: i64 = 5 * 60;
 const UNOPENED_SECONDS: i64 = 12 * 60 * 60;
@@ -53,6 +54,13 @@ ALTER TABLE enrollments ADD COLUMN ever_connected INTEGER NOT NULL DEFAULT 0
     CHECK (ever_connected IN (0, 1));
 UPDATE enrollments SET removal = 'revoking' WHERE state = 'revoked';
 ";
+
+const ADD_ORIGIN: &str = "
+CREATE TABLE enrollment_origins (
+    installation_id TEXT PRIMARY KEY REFERENCES enrollments(id),
+    origin TEXT NOT NULL
+);
+CREATE UNIQUE INDEX enrollment_unix_origin ON enrollment_origins(origin) WHERE origin <> 'tcp';";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RegistryError {
@@ -168,6 +176,7 @@ impl Registry {
                 .map_err(|_| RegistryError::Unavailable)?;
             if &header[..16] != b"SQLite format 3\0"
                 || (header[60..64] != 1_u32.to_be_bytes()
+                    && header[60..64] != 2_u32.to_be_bytes()
                     && header[60..64] != (SCHEMA_VERSION as u32).to_be_bytes())
                 || header[68..72] != (APPLICATION_ID as u32).to_be_bytes()
             {
@@ -187,17 +196,21 @@ impl Registry {
         if created {
             tx.execute_batch(SCHEMA)?;
             tx.execute_batch(ADD_LIFECYCLE)?;
+            tx.execute_batch(ADD_ORIGIN)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
             let application: i64 =
                 tx.pragma_query_value(None, "application_id", |row| row.get(0))?;
             let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-            if application != APPLICATION_ID || !matches!(version, 1 | SCHEMA_VERSION) {
+            if application != APPLICATION_ID || !matches!(version, 1 | 2 | SCHEMA_VERSION) {
                 return Err(RegistryError::Unavailable);
             }
             if version == 1 {
                 tx.execute_batch(ADD_LIFECYCLE)?;
+            }
+            if version < SCHEMA_VERSION {
+                tx.execute_batch(ADD_ORIGIN)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
         }
@@ -283,6 +296,68 @@ impl Registry {
             return Err(RegistryError::NotFound);
         }
         unexpired(load(&self.connection, &id)?, now)
+    }
+
+    /// Pin one origin under the verified installation before any provider writes.
+    pub(crate) fn bind_origin(
+        &mut self,
+        id: Uuid,
+        proof: &str,
+        now: i64,
+        unix: Option<&UnixOrigin>,
+    ) -> Result<()> {
+        let digest = proof_digest(proof).ok_or(RegistryError::NotFound)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let id = id.to_string();
+        let expected: Vec<u8> = tx
+            .query_row(
+                "SELECT proof_digest FROM enrollments WHERE id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(RegistryError::NotFound)?;
+        if !bool::from(expected.as_slice().ct_eq(&digest)) {
+            return Err(RegistryError::NotFound);
+        }
+        let record = provisionable(load(&tx, &id)?, now)?;
+        let origin = unix.map_or("tcp", UnixOrigin::nonce);
+        let prior: Option<String> = tx
+            .query_row(
+                "SELECT origin FROM enrollment_origins WHERE installation_id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(prior) = prior {
+            return if prior == origin {
+                Ok(())
+            } else {
+                Err(RegistryError::InvalidRequest)
+            };
+        }
+        if unix.is_some()
+            && (record.resources.is_some() || record.state != EnrollmentState::Approved)
+        {
+            return Err(RegistryError::InvalidRequest);
+        }
+        if unix.is_some()
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM enrollment_origins WHERE origin = ?1)",
+                [origin],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            return Err(RegistryError::InvalidRequest);
+        }
+        tx.execute(
+            "INSERT INTO enrollment_origins (installation_id, origin) VALUES (?1, ?2)",
+            params![id, origin],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Public browser data. No proof, resources, or account data.
@@ -939,6 +1014,57 @@ mod tests {
             .approve(enrollment.id, account, &HashSet::from([account]), 1)
             .unwrap();
         enrollment.id
+    }
+
+    #[test]
+    fn protects_immutable_unix_origins_across_restart_and_legacy_provisioning() {
+        let home = private_home();
+        let path = home.path().join("registry.db");
+        let mut registry = Registry::open(&path).unwrap();
+        let unix_id = approved(&mut registry);
+        let legacy_id = approved(&mut registry);
+        let partial_legacy = approved(&mut registry);
+        registry
+            .save_resources(partial_legacy, b"partial", 2)
+            .unwrap();
+        let nonce = UnixOrigin::parse("0123456789abcdef0123456789abcdef").unwrap();
+        let other = UnixOrigin::parse("0123456789abcdef0123456789abcdee").unwrap();
+        assert_eq!(
+            registry.bind_origin(unix_id, &proof(6), 2, Some(&nonce)),
+            Err(RegistryError::NotFound)
+        );
+        registry
+            .bind_origin(unix_id, &proof(7), 2, Some(&nonce))
+            .unwrap();
+        registry.bind_origin(legacy_id, &proof(7), 2, None).unwrap();
+        assert_eq!(
+            registry.bind_origin(partial_legacy, &proof(7), 2, Some(&other)),
+            Err(RegistryError::InvalidRequest)
+        );
+        let another_id = approved(&mut registry);
+        assert_eq!(
+            registry.bind_origin(another_id, &proof(7), 2, Some(&nonce)),
+            Err(RegistryError::InvalidRequest)
+        );
+        drop(registry);
+
+        let mut registry = Registry::open(&path).unwrap();
+        registry
+            .bind_origin(unix_id, &proof(7), 3, Some(&nonce))
+            .unwrap();
+        registry.bind_origin(legacy_id, &proof(7), 3, None).unwrap();
+        assert_eq!(
+            registry.bind_origin(unix_id, &proof(7), 3, Some(&other)),
+            Err(RegistryError::InvalidRequest)
+        );
+        assert_eq!(
+            registry.bind_origin(unix_id, &proof(7), 3, None),
+            Err(RegistryError::InvalidRequest)
+        );
+        assert_eq!(
+            registry.bind_origin(legacy_id, &proof(7), 3, Some(&other)),
+            Err(RegistryError::InvalidRequest)
+        );
     }
 
     #[test]

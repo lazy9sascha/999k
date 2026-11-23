@@ -463,3 +463,46 @@ async fn publishes_explicit_paths_on_one_tunnel_and_keeps_default_denial() {
     assert_eq!(result.origin, format!("https://{HOST}"));
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn unix_ingress_uses_only_opaque_socket_and_deny_default() {
+    use crate::hosted_origin::UnixOrigin;
+    let origin = UnixOrigin::parse("0123456789abcdef0123456789abcdef").unwrap();
+    let configure = Step::result(
+        "PUT",
+        format!("{}/{ID}/configurations", tunnels_path()),
+        json!({}),
+    )
+    .body(json!({"config":{"ingress":[
+        {"hostname":HOST,"path":"^/dot/mcp$",
+         "service":"unix:/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock",
+         "originRequest":{"httpHostHeader":"127.0.0.1:54843"}},
+        {"hostname":HOST,"path":r"^/\.well-known/oauth-protected-resource/dot/mcp$",
+         "service":"unix:/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock",
+         "originRequest":{"httpHostHeader":"127.0.0.1:54843"}},
+        {"service":"http_status:404"}
+    ]}}));
+    let (provider, server) = fixture(vec![
+        lookup_dns(json!([])),
+        lookup_tunnel(json!([])),
+        create_tunnel(),
+        configure,
+        create_dns(),
+        get_token(),
+    ])
+    .await;
+    let mut resources = CloudflareResources::default();
+    provider
+        .provision_at(
+            installation(),
+            HOST,
+            54843,
+            Some(&origin),
+            &["/dot/mcp"],
+            &mut resources,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    server.await.unwrap();
+}

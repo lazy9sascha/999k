@@ -11,7 +11,10 @@ mod hosted_supabase;
 
 use clap::Parser;
 use enrollment_store::{Enrollment, EnrollmentState, Registry, RegistryError};
+#[path = "../cloud/hosted_origin.rs"]
+mod hosted_origin;
 use hosted_cloudflare::{CloudflareProvisioner, CloudflareResources, valid_public_mcp_path};
+use hosted_origin::UnixOrigin;
 use hosted_registration_http::{
     RegistrationHttpError as HttpError, RegistrationResponse, RequestKind, approval_result,
     json_response, login_form, otp_form, parse_request,
@@ -226,7 +229,17 @@ impl Operator {
         true
     }
 
+    #[cfg(test)]
     async fn finish(&self, id: Uuid, proof: String) -> Result<RegistrationResponse, HttpError> {
+        self.finish_at(id, proof, None).await
+    }
+
+    async fn finish_at(
+        &self,
+        id: Uuid,
+        proof: String,
+        unix: Option<UnixOrigin>,
+    ) -> Result<RegistrationResponse, HttpError> {
         let now = epoch_seconds()?;
         let record = self.record(|reg| reg.get(id, &proof, now))?;
         require_approved(&record)?;
@@ -239,15 +252,17 @@ impl Operator {
 
         self.check_finish_lifecycle(id)
             .map_err(|_| HttpError::TemporarilyUnavailable)?;
+        self.record(|reg| reg.bind_origin(id, &proof, now, unix.as_ref()))?;
         let mut resources = self
             .bound_resources(record.resources.as_deref())
             .map_err(|_| HttpError::TemporarilyUnavailable)?;
         let provisioned = self
             .cloudflare
-            .provision(
+            .provision_at(
                 id,
                 &self.hostname(id),
                 self.hub_port,
+                unix.as_ref(),
                 &self.mcp_paths,
                 &mut resources,
                 |resources| self.persist_resources(id, resources),
@@ -257,13 +272,17 @@ impl Operator {
         let now = epoch_seconds()?;
         self.record(|reg| reg.mark_ready(id, now))?;
         let public_url = provisioned.origin.clone();
-        Ok(json_response(
-            StatusCode::OK,
-            json!({
-                "state": "ready", "public_url": public_url,
-                "connector_token": provisioned.into_connector_token()
-            }),
-        ))
+        let mut response = json!({
+            "state": "ready", "public_url": public_url,
+            "connector_token": provisioned.into_connector_token()
+        });
+        if let Some(unix) = unix {
+            response["origin"] = json!({
+                "kind": "unix_v1", "nonce": unix.nonce(),
+                "hub_port": self.hub_port, "mcp_paths": self.mcp_paths,
+            });
+        }
+        Ok(json_response(StatusCode::OK, response))
     }
 
     async fn dispatch<B: hyper::body::Body<Data = bytes::Bytes>>(
@@ -323,7 +342,12 @@ impl Operator {
             RequestKind::Finish {
                 installation_id,
                 proof,
-            } => self.finish(installation_id, proof).await,
+            } => self.finish_at(installation_id, proof, None).await,
+            RequestKind::FinishUnix {
+                installation_id,
+                proof,
+                origin,
+            } => self.finish_at(installation_id, proof, Some(origin)).await,
             RequestKind::RegisterPage { installation_id } => {
                 let login = self.record(|reg| reg.login(installation_id, now))?;
                 if login.expires_at <= now {

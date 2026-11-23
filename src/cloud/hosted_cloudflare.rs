@@ -327,13 +327,36 @@ impl CloudflareProvisioner {
         Ok(id)
     }
 
-    /// The operator must hold the installation lock through this request and its state writes.
-    /// The host, port, and MCP paths come from the operator, and the installation UUID is server-issued.
+    #[cfg(test)]
     pub(crate) async fn provision(
         &self,
         installation_id: Uuid,
         hostname: &str,
         loopback_port: u16,
+        approved_mcp_paths: &[impl AsRef<str>],
+        resources: &mut CloudflareResources,
+        persist: impl FnMut(&CloudflareResources) -> io::Result<()>,
+    ) -> Result<ProvisionedTunnel, ProvisionError> {
+        self.provision_at(
+            installation_id,
+            hostname,
+            loopback_port,
+            None,
+            approved_mcp_paths,
+            resources,
+            persist,
+        )
+        .await
+    }
+
+    /// The operator must hold the installation lock through this request and its state writes.
+    /// The host, port, and MCP paths come from the operator, and the installation UUID is server-issued.
+    pub(crate) async fn provision_at(
+        &self,
+        installation_id: Uuid,
+        hostname: &str,
+        loopback_port: u16,
+        unix: Option<&super::hosted_origin::UnixOrigin>,
         approved_mcp_paths: &[impl AsRef<str>],
         resources: &mut CloudflareResources,
         mut persist: impl FnMut(&CloudflareResources) -> io::Result<()>,
@@ -388,10 +411,14 @@ impl CloudflareProvisioner {
         }
 
         let origin_host = format!("127.0.0.1:{loopback_port}");
+        let service = match unix {
+            Some(origin) => format!("unix:{}", origin.socket_path()),
+            None => format!("http://{origin_host}"),
+        };
         let mut ingress = Vec::new();
         // The route validator limits MCP paths to literal regex characters.
         let route = |path| {
-            json!({"hostname": hostname, "path": path, "service": format!("http://{origin_host}"),
+            json!({"hostname": hostname, "path": path, "service": service,
                    "originRequest": {"httpHostHeader": origin_host}})
         };
         for path in approved_mcp_paths {

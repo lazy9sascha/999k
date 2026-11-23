@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::hosted_origin::UnixOrigin;
 use super::hosted_supabase::{normalized_email, valid_otp};
 use base64::{
     Engine as _,
@@ -34,6 +35,11 @@ pub(crate) enum RequestKind {
     Finish {
         installation_id: Uuid,
         proof: String,
+    },
+    FinishUnix {
+        installation_id: Uuid,
+        proof: String,
+        origin: UnixOrigin,
     },
     RegisterPage {
         installation_id: Uuid,
@@ -131,6 +137,27 @@ where
             Ok(RequestKind::Finish {
                 installation_id,
                 proof,
+            })
+        }
+        (Method::POST, ["", "v1", "enrollments", installation_id, "finish-unix"]) => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct UnixInput {
+                kind: String,
+                nonce: String,
+            }
+            let installation_id = path_uuid(installation_id)?;
+            let proof = installation_proof(&parts.headers).ok_or(RegistrationNotFound)?;
+            let payload: UnixInput =
+                serde_json::from_slice(&bounded_body(body).await?).map_err(|_| InvalidRequest)?;
+            if payload.kind != "unix_v1" {
+                return Err(InvalidRequest);
+            }
+            let origin = UnixOrigin::parse(&payload.nonce).ok_or(InvalidRequest)?;
+            Ok(RequestKind::FinishUnix {
+                installation_id,
+                proof,
+                origin,
             })
         }
         (Method::GET, ["", "register", installation_id]) => {
@@ -434,6 +461,33 @@ mod tests {
             .header(header::AUTHORIZATION, format!("Bearer {proof}"))
             .body(Full::new(body.into()))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn accepts_only_opaque_unix_v1_nonce_on_separate_finish_route() {
+        let path = format!("/v1/enrollments/{ID}/finish-unix");
+        let good = r#"{"kind":"unix_v1","nonce":"0123456789abcdef0123456789abcdef"}"#;
+        assert!(matches!(
+            parse_request(installer_request(Method::POST, &path, PROOF, good)).await,
+            Ok(RequestKind::FinishUnix { installation_id, proof, origin })
+                if installation_id.to_string() == ID && proof == PROOF
+                    && origin.socket_path() == "/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock"
+        ));
+        for bad in [
+            r#"{"kind":"unix_v1","nonce":"/private/tmp/other"}"#,
+            r#"{"kind":"unix_v1","nonce":"0123456789ABCDEF0123456789ABCDEF"}"#,
+            r#"{"kind":"tcp","nonce":"0123456789abcdef0123456789abcdef"}"#,
+            r#"{"kind":"unix_v1","nonce":"0123456789abcdef0123456789abcdef","path":"/Users/somebody"}"#,
+        ] {
+            assert!(matches!(
+                parse_request(installer_request(Method::POST, &path, PROOF, bad)).await,
+                Err(InvalidRequest)
+            ));
+        }
+        assert!(matches!(
+            parse_request(installer_request(Method::POST, &path, "wrong", good)).await,
+            Err(RegistrationNotFound)
+        ));
     }
 
     #[tokio::test]
