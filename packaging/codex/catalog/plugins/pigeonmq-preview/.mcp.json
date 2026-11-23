@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pigeonmq": {
+      "type": "stdio",
+      "command": "${PLUGIN_ROOT}/bin/pigeonmq",
+      "args": ["codex-preview-stdio"]
+    }
+  }
+}

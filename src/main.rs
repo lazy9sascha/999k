@@ -303,6 +303,8 @@ enum Command {
         auth_policy: PathBuf,
     },
     ServeHub(Box<ServeHubOptions>),
+    #[command(hide = true)]
+    CodexPreviewStdio,
     /// Serve one configured local mailbox over MCP standard input and output.
     StdioMcp {
         #[arg(long)]
@@ -576,6 +578,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             cloud_credentials::provision(auth_policy, cloud_credentials::App::GrokBot)?;
             local_http::prepare_grok(queue, auth_policy).map_err(Into::into)
         }
+        Command::CodexPreviewStdio => lifecycle::codex_preview_stdio().map_err(Into::into),
         Command::StdioMcp {
             home,
             mailbox,
