@@ -205,6 +205,9 @@ fn exchange(home: &Path, route: &str, token: &str, request: &Value) -> io::Resul
     let mut stream = connect(home, route)?;
     let body = serde_json::to_vec(request)?;
     stream.set_write_timeout(Some(TIMEOUT))?;
+    // Set this before publishing the request. Darwin can reject changing a
+    // socket's timeout after the server has already closed its end.
+    stream.set_read_timeout(Some(Duration::from_secs(1)))?;
     write!(
         stream,
         "POST {route} HTTP/1.1\r\nHost: {AUTHORITY}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMcp-Protocol-Version: {PROTOCOL}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
@@ -214,15 +217,24 @@ fn exchange(home: &Path, route: &str, token: &str, request: &Value) -> io::Resul
     let end = Instant::now() + TIMEOUT;
     let mut response = Vec::new();
     loop {
-        let remaining = end
-            .checked_duration_since(Instant::now())
-            .filter(|left| !left.is_zero())
-            .ok_or_else(|| fail("local MCP hub response timed out"))?;
-        // Darwin rejects some sub-microsecond values near a second boundary.
-        let timeout = Duration::from_millis(remaining.as_millis().max(1) as u64);
-        stream.set_read_timeout(Some(timeout))?;
+        if Instant::now() >= end {
+            return Err(fail("local MCP hub response timed out"));
+        }
         let mut chunk = [0; 4096];
-        let n = stream.read(&mut chunk)?;
+        let n = match stream.read(&mut chunk) {
+            Ok(n) => n,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if n == 0 {
             break;
         }
@@ -261,6 +273,13 @@ fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message}})
 }
 
+#[derive(PartialEq, Eq)]
+enum Session {
+    AwaitInitialize,
+    AwaitInitialized,
+    Ready,
+}
+
 fn serve(
     home: &Path,
     route: &str,
@@ -269,7 +288,7 @@ fn serve(
     mut output: impl Write,
 ) -> io::Result<()> {
     let mut line = Vec::new();
-    let mut initialized = false;
+    let mut session = Session::AwaitInitialize;
     loop {
         line.clear();
         if input
@@ -292,6 +311,11 @@ fn serve(
                 let id = request.get("id");
                 if id.is_none() && method.is_some_and(|method| method.starts_with("notifications/"))
                 {
+                    if method == Some("notifications/initialized")
+                        && session == Session::AwaitInitialized
+                    {
+                        session = Session::Ready;
+                    }
                     continue;
                 }
                 if !id.is_some_and(|id| id.is_i64() || id.is_string()) || method.is_none() {
@@ -299,7 +323,7 @@ fn serve(
                 } else {
                     let id = id.unwrap().clone();
                     match method.unwrap() {
-                        "initialize" if !initialized => {
+                        "initialize" if session == Session::AwaitInitialize => {
                             let mut init = request;
                             if let Some(params) =
                                 init.get_mut("params").and_then(Value::as_object_mut)
@@ -314,7 +338,7 @@ fn serve(
                                     if value["protocolVersion"] != PROTOCOL {
                                         error(id, -32000, "Unsupported local MCP protocol")
                                     } else {
-                                        initialized = true;
+                                        session = Session::AwaitInitialized;
                                         if let Some(capabilities) = value
                                             .get_mut("capabilities")
                                             .and_then(Value::as_object_mut)
@@ -331,7 +355,7 @@ fn serve(
                                 }
                             }
                         }
-                        "ping" | "tools/list" | "tools/call" if initialized => {
+                        "ping" | "tools/list" | "tools/call" if session == Session::Ready => {
                             exchange(home, route, token, &request).unwrap_or_else(|err| {
                                 eprintln!("Local MCP request failed: {err}");
 

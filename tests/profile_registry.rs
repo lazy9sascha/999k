@@ -1320,7 +1320,9 @@ fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
         "dot",
         &dot_token,
         &[
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             init.clone(),
+            json!({"jsonrpc":"2.0","id":"early","method":"tools/list","params":{}}),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             json!({"jsonrpc":"2.0","id":"list","method":"tools/list","params":{}}),
             rpc("read", "pigeonmq_read", json!({"message_id":original})),
@@ -1332,26 +1334,31 @@ fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
             ),
         ],
     );
-    assert_eq!(frames.len(), 5);
+    assert_eq!(frames.len(), 6);
     assert_eq!(frames[0]["result"]["protocolVersion"], "2025-03-26");
     assert!(frames[0]["result"]["capabilities"]["events"].is_null());
+    assert_eq!(frames[1]["id"], "early");
+    assert_eq!(
+        frames[1]["error"]["message"],
+        "Invalid initialization state"
+    );
     assert!(
-        frames[1]["result"]["tools"]
+        frames[2]["result"]["tools"]
             .as_array()
-            .unwrap_or_else(|| panic!("invalid list response: {}", frames[1]))
+            .unwrap_or_else(|| panic!("invalid list response: {}", frames[2]))
             .iter()
             .any(|tool| tool["name"] == "pigeonmq_reply")
     );
-    let read = extract(&frames[2]);
+    let read = extract(&frames[3]);
     assert_eq!(
         read.get("envelope").unwrap_or(&read)["body"],
         "fixture request"
     );
     assert!(
-        frames[3]["error"].is_object() || frames[3]["result"]["isError"] == true,
+        frames[4]["error"].is_object() || frames[4]["result"]["isError"] == true,
         "cross-mailbox request must fail"
     );
-    let reply = extract(&frames[4]);
+    let reply = extract(&frames[5]);
     let reply_id = reply["reply_id"].as_str().unwrap();
     let (status, result) = hub.request(
         "/muse/mcp",
