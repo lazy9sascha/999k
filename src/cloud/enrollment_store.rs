@@ -1017,6 +1017,38 @@ mod tests {
     }
 
     #[test]
+    fn migrates_schema_two_without_changing_a_ready_tcp_registration() {
+        let home = private_home();
+        let path = home.path().join("registry.db");
+        let mut registry = Registry::open(&path).unwrap();
+        let id = approved(&mut registry);
+        registry
+            .save_resources(id, b"original-resources", 2)
+            .unwrap();
+        registry.mark_ready(id, 3).unwrap();
+        registry
+            .connection
+            .execute_batch("DROP TABLE enrollment_origins; PRAGMA user_version = 2;")
+            .unwrap();
+        drop(registry);
+
+        let mut registry = Registry::open(&path).unwrap();
+        let record = registry.get(id, &proof(7), 4).unwrap();
+        assert_eq!(record.state, EnrollmentState::Ready);
+        assert_eq!(
+            record.resources.as_deref(),
+            Some(b"original-resources".as_slice())
+        );
+        assert_eq!(record.issued_at, Some(3));
+        let nonce = UnixOrigin::parse("0123456789abcdef0123456789abcdef").unwrap();
+        assert_eq!(
+            registry.bind_origin(id, &proof(7), 4, Some(&nonce)),
+            Err(RegistryError::InvalidRequest)
+        );
+        registry.bind_origin(id, &proof(7), 4, None).unwrap();
+    }
+
+    #[test]
     fn protects_immutable_unix_origins_across_restart_and_legacy_provisioning() {
         let home = private_home();
         let path = home.path().join("registry.db");

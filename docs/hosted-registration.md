@@ -92,6 +92,17 @@ hub checks the signed assertion before applying the existing mailbox policy. Tes
 connection and its Events subscription on the target OpenAI surface before
 switching users. Cloudflare Access serves the discovery URLs from its challenge.
 
+## Back up the operator registry before an upgrade
+
+Stop the registration service. Back up its private home and the operator binary before
+you open the registry with a newer build. The Unix origin preview adds a private
+origin-binding table and upgrades the SQLite schema to version 3. Version 2 binaries
+refuse to open an upgraded registry. Existing TCP registrations are not converted.
+
+To roll back before the upgraded service accepts work, restore the matching backup and
+binary together. If the upgraded service accepted work, do not replace its registry
+with an older copy. Quiesce the service and reconcile the affected installations first.
+
 ## Manage a registration
 
 Run these commands on the operator Mac with the same private home:
