@@ -3,7 +3,7 @@
 use crate::mcp_sdk;
 use rmcp::{ErrorData, model::ErrorCode};
 use serde_json::{Value, json};
-use std::{net::TcpStream, sync::Mutex};
+use std::sync::Mutex;
 
 pub use crate::mcp_request::{Context, Fault, strict_json};
 
@@ -316,8 +316,7 @@ pub fn tool_definitions() -> Value {
 }
 
 /// Shared single-request HTTP cancellation probe. Does not change socket mode.
-pub fn peer_closed(stream: &TcpStream) -> bool {
-    use std::os::fd::AsRawFd;
+pub fn peer_closed(stream: &impl std::os::fd::AsRawFd) -> bool {
     let mut byte = 0u8;
     // MSG_DONTWAIT avoids changing the shared descriptor's blocking mode.
     let n = unsafe {

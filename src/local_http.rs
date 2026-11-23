@@ -33,7 +33,10 @@ mod cloudflare_access;
 mod transport;
 #[cfg(test)]
 use std::io::Read;
-use transport::{Fault, Input, MAX_HEADERS, ProfileHandler, WireResponse, serve_profile_listeners};
+use transport::{
+    Fault, Input, MAX_HEADERS, ProfileHandler, ProfileListener, ProfileStream, WireResponse,
+    serve_profile_listeners,
+};
 const MAX_HTTP_CONNECTION_WORKERS: usize = 8;
 const MAX_BODY: usize = 16384;
 // JSON may encode one body byte as six ASCII bytes (\uXXXX).
@@ -409,6 +412,7 @@ mod tests {
                 None,
                 (addr.port(), Some(1), HubMode::Explicit),
                 Some(listener.try_clone().unwrap()),
+                None,
             )
             .unwrap_err()
             .to_string(),
@@ -425,6 +429,7 @@ mod tests {
                 Some("managed"),
                 (addr.port(), Some(1), HubMode::Managed),
                 Some(listener),
+                None,
             )
         });
         for route in ["/dot/mcp", "/mcp", "/receiver", "/rpc/request"] {
@@ -1895,11 +1900,25 @@ fn dispatch_dot(
     )
 }
 
-fn handle_hub_connection(stream: TcpStream, authority: &str, state: &HubState) {
+fn handle_hub_connection(stream: impl Into<ProfileStream>, authority: &str, state: &HubState) {
+    handle_hub_routes(stream.into(), authority, state, None)
+}
+
+fn handle_hub_routes(
+    stream: ProfileStream,
+    authority: &str,
+    state: &HubState,
+    allowed: Option<&[String]>,
+) {
     transport::handle_connection(
         stream,
         authority,
-        |path| state.routes.get(path).map(|route| route.body_limit),
+        |path| {
+            if allowed.is_some_and(|allowed| !allowed.iter().any(|route| route == path)) {
+                return Err((404, "route_not_found"));
+            }
+            state.routes.get(path).map(|route| route.body_limit)
+        },
         |input, body, peer_closed| dispatch_hub_request(state, authority, input, body, peer_closed),
     );
 }
@@ -1926,6 +1945,7 @@ pub fn serve_hub(
         manifest_fingerprint,
         (port, seconds, HubMode::Explicit),
         None,
+        None,
     )
 }
 
@@ -1938,6 +1958,7 @@ pub(crate) fn serve_managed_hub(db: PathBuf, bindings: Vec<Binding>, port: u16) 
         Vec::new(),
         Some("managed"),
         (port, None, HubMode::Managed),
+        None,
         None,
     )
 }
@@ -1965,6 +1986,7 @@ pub(crate) fn serve_dot_on(
         None,
         (addr.port(), None, HubMode::Explicit),
         Some(listener),
+        None,
     )
 }
 
@@ -2011,6 +2033,50 @@ fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
     Ok((owner, db))
 }
 
+/// Hosted transport uses the existing managed hub, queue lock, and route state.
+struct HostedSocket<'a> {
+    installation: uuid::Uuid,
+    scope: &'a crate::hosted_registration::OriginDescriptor,
+    #[cfg(test)]
+    fixture_root: Option<&'a Path>,
+}
+
+impl HostedSocket<'_> {
+    fn bind(&self) -> io::Result<crate::hosted_origin_local::OriginListener> {
+        let origin = self.scope.origin().map_err(io::Error::other)?;
+        #[cfg(test)]
+        if let Some(root) = self.fixture_root {
+            return crate::hosted_origin_local::bind_in(root, &origin, self.installation);
+        }
+        crate::hosted_origin_local::bind_system(&origin, self.installation)
+    }
+}
+
+#[allow(dead_code)] // No exposed activation path until isolated launchd acceptance.
+pub(crate) fn serve_managed_hosted_hub(
+    db: PathBuf,
+    bindings: Vec<Binding>,
+    port: u16,
+    installation: uuid::Uuid,
+    scope: &crate::hosted_registration::OriginDescriptor,
+) -> io::Result<()> {
+    serve_hub_on(
+        db,
+        None,
+        bindings,
+        Vec::new(),
+        Some("managed"),
+        (port, None, HubMode::Managed),
+        None,
+        Some(HostedSocket {
+            installation,
+            scope,
+            #[cfg(test)]
+            fixture_root: None,
+        }),
+    )
+}
+
 fn serve_hub_on(
     db: PathBuf,
     generic_policy: Option<PathBuf>,
@@ -2019,6 +2085,7 @@ fn serve_hub_on(
     manifest_fingerprint: Option<&str>,
     (port, seconds, mode): (u16, Option<u64>, HubMode),
     prebound: Option<TcpListener>,
+    hosted: Option<HostedSocket<'_>>,
 ) -> io::Result<()> {
     let managed = matches!(mode, HubMode::Managed);
     if port == 0
@@ -2185,6 +2252,25 @@ fn serve_hub_on(
     if !local_mailbox_enabled && prebound.is_none() {
         access::mount(&db, &mut routes)?;
     }
+    let hosted_listener = if let Some(socket) = &hosted {
+        if !managed
+            || socket.scope.hub_port != port
+            || socket
+                .scope
+                .mcp_paths
+                .iter()
+                .any(|path| routes.get(path).is_err())
+        {
+            return Err(io::Error::other(
+                "hosted Unix origin does not match the managed hub",
+            ));
+        }
+        // The existing queue lock has already been acquired. Hold socket custody
+        // until this hub and its accepted connection workers have stopped.
+        Some(socket.bind()?)
+    } else {
+        None
+    };
     let listener = match prebound {
         Some(listener) => listener,
         None => TcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
@@ -2228,12 +2314,22 @@ fn serve_hub_on(
         deadline,
     });
     let public_state = state.clone();
-    let listeners: Vec<(TcpListener, Arc<ProfileHandler>)> = vec![(
-        listener,
+    let mut listeners: Vec<(ProfileListener, Arc<ProfileHandler>)> = vec![(
+        ProfileListener::Tcp(listener),
         Arc::new(move |stream, authority| {
             handle_hub_connection(stream, authority, &public_state);
         }),
     )];
+    if let (Some(holder), Some(socket)) = (&hosted_listener, &hosted) {
+        let allowed = socket.scope.mcp_paths.clone();
+        let hosted_state = state.clone();
+        listeners.push((
+            ProfileListener::Unix(holder.listener.try_clone()?, format!("127.0.0.1:{port}")),
+            Arc::new(move |stream, authority| {
+                handle_hub_routes(stream, authority, &hosted_state, Some(&allowed));
+            }),
+        ));
+    }
     let dot_events_enabled = dot_events.is_some();
     let _dot_events_worker = dot_events
         .map(|events| events.start(deadline))
@@ -2360,6 +2456,103 @@ mod dot_wire {
         } else {
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
         }
+    }
+
+    #[test]
+    fn hosted_unix_uses_same_queue_and_auth_without_targeting_tcp() {
+        use std::os::unix::net::UnixStream;
+        let (home, _, state) = fixture();
+        let root = tempfile::Builder::new()
+            .prefix("po")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let root_path = root.path().to_owned();
+        let origin = crate::hosted_origin_local::new_origin().unwrap();
+        let socket = root_path.join(origin.directory_name()).join("hub.sock");
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let installation = uuid::Uuid::new_v4();
+        let scope: crate::hosted_registration::OriginDescriptor = serde_json::from_value(json!({
+            "kind":"unix_v1", "nonce":origin.nonce(), "hub_port":port, "mcp_paths":["/dot/mcp"],
+        }))
+        .unwrap();
+        let dot = Binding::bundled(
+            catalog::by_adapter(catalog::Adapter::Dot),
+            home.path().join("pigeonmq-cloud-dot-policy.json"),
+            home.path(),
+        );
+        let database = state.db.clone();
+        let worker = std::thread::spawn(move || {
+            serve_hub_on(
+                database,
+                None,
+                vec![dot],
+                Vec::new(),
+                Some("managed"),
+                (port, Some(2), HubMode::Managed),
+                None,
+                Some(HostedSocket {
+                    installation,
+                    scope: &scope,
+                    fixture_root: Some(&root_path),
+                }),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !socket.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let authority = format!("127.0.0.1:{port}");
+        let post = |route: &str, host: &str, bearer: &str| {
+            let mut client = UnixStream::connect(&socket).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pigeonmq_recipients","arguments":{}}}"#;
+            write!(
+                client,
+                "POST {route} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {bearer}\r\nMcp-Method: tools/call\r\nMcp-Name: pigeonmq_recipients\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            let (header, body) = response.split_once("\r\n\r\n").unwrap();
+            (
+                header
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .parse::<u16>()
+                    .unwrap(),
+                serde_json::from_str::<Value>(body).unwrap(),
+            )
+        };
+        assert_eq!(
+            post("/dot/mcp", &authority, "fixture-connector-token").0,
+            401
+        );
+        assert_eq!(post("/dot/mcp", "wrong.example.test", TOKEN).0, 403);
+        assert_eq!(post("/instinct/mcp", &authority, TOKEN).0, 404);
+        let (status, response) = post("/dot/mcp", &authority, TOKEN);
+        assert_eq!(status, 200);
+        assert!(response.get("result").is_some());
+        assert!(lock_hub_queue(&state.db).is_err());
+        worker.join().unwrap().unwrap();
+
+        let foreign = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+        foreign.set_nonblocking(true).unwrap();
+        assert_eq!(
+            UnixStream::connect(&socket).err().unwrap().kind(),
+            io::ErrorKind::ConnectionRefused
+        );
+        assert_eq!(
+            foreign.accept().err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]
