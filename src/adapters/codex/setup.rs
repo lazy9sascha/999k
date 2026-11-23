@@ -215,6 +215,7 @@ fn setup_with(
         )?;
     }
     let profile = crate::codex_mcp::Profile {
+        hosted: None,
         identity: crate::codex_mcp::Identity::BuiltIn(pigeonmq::mailbox_catalog::codex().mailbox),
         db: home.join(QUEUE),
         policy: home.join(catalog::codex_http().policy_file),

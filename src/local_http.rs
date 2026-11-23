@@ -349,7 +349,7 @@ mod tests {
                 deadline: None,
             };
             let dispatch =
-                || dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false);
+                || dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false, None);
             assert!(matches!(
                 dispatch(),
                 WireResponse::Json((Err((404, "profile_disabled")), 200))
@@ -484,7 +484,7 @@ mod tests {
             );
             let input = parse_head(head.as_bytes(), "127.0.0.1:1234").unwrap();
             assert!(matches!(
-                dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false),
+                dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false, None),
                 transport::WireResponse::Json((Err((404, "profile_disabled")), 200))
             ));
         }
@@ -565,7 +565,7 @@ mod tests {
             let input = transport::parse_head(head.as_bytes(), authority, |p| {
                 state.routes.get(p).map(|route| route.body_limit)
             })?;
-            match dispatch_hub_request(state, authority, &input, body.as_bytes(), &|| false) {
+            match dispatch_hub_request(state, authority, &input, body.as_bytes(), &|| false, None) {
                 transport::WireResponse::Json((result, 200)) => result.map(Option::unwrap),
                 _ => panic!("expected generic JSON response"),
             }
@@ -1787,11 +1787,32 @@ fn dispatch_hub_request(
     input: &Input,
     body: &[u8],
     peer_closed: &(dyn Fn() -> bool + Sync),
+    hosted: Option<uuid::Uuid>,
 ) -> transport::WireResponse {
     let route = match state.routes.get(&input.path) {
         Ok(route) => route,
         Err(error) => return (Err(error), 200).into(),
     };
+    // Only the managed hosted Unix listener provides an installation ID.
+    // The shared guard also fences switching opt-in mode and rotating the grant.
+    let mut hosted_guard = None;
+    let mut scoped_cue = None;
+    if let Some(installation) = hosted.filter(|_| input.path == "/cue/mcp") {
+        let Some(home) = state.db.parent() else {
+            return (Err((401, "unauthorized")), 200).into();
+        };
+        let scope = crate::hosted_mailbox_bearer::Scope::new(home, installation);
+        let Ok(guard) = scope.lock(false) else {
+            return (Err((401, "unauthorized")), 200).into();
+        };
+        hosted_guard = Some(guard);
+        match crate::lifecycle::hosted_cue_mode(home, installation) {
+            Ok(true) => scoped_cue = Some(scope),
+            Ok(false) => {}
+            Err(_) => return (Err((401, "unauthorized")), 200).into(),
+        }
+    }
+    let _hosted_guard = hosted_guard;
     let projected;
     let authorization = match &route.access {
         Some(access) if !input.access_assertions.is_empty() => {
@@ -1864,12 +1885,22 @@ fn dispatch_hub_request(
             };
         }
         RouteHandler::Mailbox(profile, events) => {
+            let scoped_profile;
+            let (profile, events) = if let Some(scope) = scoped_cue {
+                scoped_profile = match profile.hosted_cue(scope) {
+                    Ok(value) => value,
+                    Err(fault) => return (Err(fault), 200).into(),
+                };
+                (&scoped_profile, None)
+            } else {
+                (profile, events.as_deref())
+            };
             return match profile.dispatch_streamable_http(
                 (authority, &input.path),
                 &input.sdk_headers,
                 authorization,
                 body,
-                events.as_deref(),
+                events,
                 (route.body_limit, &context),
             ) {
                 Ok(response) => transport::WireResponse::Sdk(response),
@@ -1905,7 +1936,7 @@ fn dispatch_dot(
 }
 
 fn handle_hub_connection(stream: impl Into<ProfileStream>, authority: &str, state: &HubState) {
-    handle_hub_routes(stream.into(), authority, state, None)
+    handle_hub_routes(stream.into(), authority, state, None, None)
 }
 
 fn handle_hub_routes(
@@ -1913,6 +1944,7 @@ fn handle_hub_routes(
     authority: &str,
     state: &HubState,
     allowed: Option<&[String]>,
+    hosted: Option<uuid::Uuid>,
 ) {
     transport::handle_connection(
         stream,
@@ -1923,7 +1955,9 @@ fn handle_hub_routes(
             }
             state.routes.get(path).map(|route| route.body_limit)
         },
-        |input, body, peer_closed| dispatch_hub_request(state, authority, input, body, peer_closed),
+        |input, body, peer_closed| {
+            dispatch_hub_request(state, authority, input, body, peer_closed, hosted)
+        },
     );
 }
 
@@ -2010,7 +2044,7 @@ pub(crate) fn hub_queue_lock_path(db: &Path) -> PathBuf {
 }
 
 // Keep the sibling file. Unlinking a live lock lets another hub lock a new file.
-fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
+pub(crate) fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
     use pigeonmq::private_file::open_private_file;
     let private_db = |path: &Path| {
         open_private_file(path).map_err(|_| io::Error::other("private database required"))
@@ -2369,11 +2403,18 @@ fn serve_hub_on(
     )];
     if let (Some(holder), Some(socket)) = (&hosted_listener, &hosted) {
         let allowed = socket.scope.mcp_paths.clone();
+        let installation = socket.installation;
         let hosted_state = state.clone();
         listeners.push((
             ProfileListener::Unix(holder.listener.try_clone()?, format!("127.0.0.1:{port}")),
             Arc::new(move |stream, authority| {
-                handle_hub_routes(stream, authority, &hosted_state, Some(&allowed));
+                handle_hub_routes(
+                    stream,
+                    authority,
+                    &hosted_state,
+                    Some(&allowed),
+                    Some(installation),
+                );
             }),
         ));
     }
@@ -2385,7 +2426,7 @@ fn serve_hub_on(
                 crate::stdio_mcp::AUTHORITY.into(),
             ),
             Arc::new(move |stream, authority| {
-                handle_hub_routes(stream, authority, &stdio_state, Some(&stdio_routes));
+                handle_hub_routes(stream, authority, &stdio_state, Some(&stdio_routes), None);
             }),
         ));
     }
@@ -2518,6 +2559,143 @@ mod dot_wire {
         } else {
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
         }
+    }
+
+    #[test]
+    fn hosted_cue_bearer_rotation_isolated_from_local_stdio() {
+        use std::os::unix::net::UnixStream;
+        let home = tempfile::Builder::new()
+            .prefix("hc")
+            .tempdir_in("/tmp")
+            .unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let db = home.path().join("queue.sqlite3");
+        drop(Queue::open(&db).unwrap());
+        fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
+        let local = "test-local-cue";
+        let policy = home.path().join("pigeonmq-cloud-cue-policy.json");
+        let registration = home.path().join("pigeonmq-cloud-registration.json");
+        let digest: String = Sha256::digest(local)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        private_json(
+            &policy,
+            json!({"principals":[{
+                "id":"cue","token_sha256":digest,"operations":["read","reply"],
+                "send_to":[],"mailboxes":["cue"],"revoked":false
+            }]}),
+        );
+        private_json(
+            &registration,
+            json!({"cue":{"mailbox":"cue","revoked":false}}),
+        );
+        let root = tempfile::Builder::new()
+            .prefix("hp")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let origin = crate::hosted_origin_local::new_origin().unwrap();
+        let socket = root.path().join(origin.directory_name()).join("hub.sock");
+        let stdio = crate::stdio_mcp::socket_path(home.path());
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let installation = uuid::Uuid::new_v4();
+        let life = home.path().join(".pigeonmq-lifecycle");
+        fs::create_dir(&life).unwrap();
+        fs::set_permissions(&life, fs::Permissions::from_mode(0o700)).unwrap();
+        let state = life.join("profiles.json");
+        let baseline =
+            json!({"port":port,"registration":registration,"relay_command":null,"profiles":{}});
+        private_json(&state, baseline.clone());
+        let descriptor: crate::hosted_registration::OriginDescriptor =
+            serde_json::from_value(json!({
+                "kind":"unix_v1","nonce":origin.nonce(),"hub_port":port,"mcp_paths":["/cue/mcp"],
+            }))
+            .unwrap();
+        let cue = Binding::bundled(
+            catalog::http_by_id("cue").unwrap(),
+            policy.clone(),
+            home.path(),
+        );
+        let root_path = root.path().to_owned();
+        let worker = std::thread::spawn(move || {
+            serve_hub_on(
+                db,
+                None,
+                vec![cue],
+                Vec::new(),
+                Some("managed"),
+                (port, Some(4), HubMode::Managed),
+                true,
+                None,
+                Some(HostedSocket {
+                    installation,
+                    scope: &descriptor,
+                    fixture_root: Some(&root_path),
+                }),
+            )
+        });
+        let ready = Instant::now() + Duration::from_secs(2);
+        while !(socket.exists() && stdio.exists()) && Instant::now() < ready {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let post = |socket: &Path, host: &str, route: &str, bearer: &str| -> u16 {
+            let mut client = UnixStream::connect(socket).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+            write!(client,"POST {route} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {bearer}\r\nContent-Length: {}\r\n\r\n{body}",body.len()).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            response.split_whitespace().nth(1).unwrap().parse().unwrap()
+        };
+        let authority = format!("127.0.0.1:{port}");
+        let hosted = |token| post(&socket, &authority, "/cue/mcp", token);
+        let local_post = |token| post(&stdio, crate::stdio_mcp::AUTHORITY, "/cue/mcp", token);
+        assert_eq!(hosted(local), 200); // Legacy installations have not enabled C22.
+        assert_eq!(local_post(local), 200);
+        let scope = crate::hosted_mailbox_bearer::Scope::new(home.path(), installation);
+        let transfer = tempfile::tempdir().unwrap();
+        fs::set_permissions(transfer.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let first = transfer.path().join("remote-first");
+        let second = transfer.path().join("remote-second");
+        {
+            let _write = scope.lock(true).unwrap();
+            scope
+                .rotate_locked(60, &first, || {
+                    let mut state_data = baseline.clone();
+                    state_data["finite_cue_installation"] = json!(installation.to_string());
+                    private_json(&state, state_data);
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let older = fs::read_to_string(&first).unwrap();
+        assert_eq!(hosted(local), 401);
+        assert_eq!(hosted(&older), 200);
+        assert_eq!(local_post(&older), 401);
+        assert_eq!(post(&socket, &authority, "/instinct/mcp", &older), 404);
+        {
+            let _write = scope.lock(true).unwrap();
+            scope.rotate_locked(60, &second, || Ok(())).unwrap();
+        }
+        let newer = fs::read_to_string(&second).unwrap();
+        assert_eq!(hosted(&older), 401);
+        assert_eq!(hosted(&newer), 200);
+        {
+            let _write = scope.lock(true).unwrap();
+            scope.revoke_locked().unwrap();
+        }
+        assert_eq!(hosted(&newer), 401);
+        assert_eq!(hosted(local), 401);
+        fs::remove_file(home.path().join("hosted-cue-bearer.json")).unwrap();
+        assert_eq!(hosted(local), 401);
+        assert_eq!(local_post(local), 200);
+        worker.join().unwrap().unwrap();
     }
 
     #[test]
@@ -2657,7 +2835,7 @@ mod dot_wire {
                 state.routes.get(path).map(|route| route.body_limit)
             })
             .unwrap();
-            dispatch_hub_request(&state, authority, &input, body, &|| false)
+            dispatch_hub_request(&state, authority, &input, body, &|| false, None)
         };
         let valid = signed(&claims);
         let WireResponse::Sdk(response) = call("opaque-fixture", std::slice::from_ref(&valid))

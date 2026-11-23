@@ -46,6 +46,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let profile = Profile {
+            hosted: None,
             identity: crate::codex_mcp::Identity::BuiltIn(
                 pigeonmq::mailbox_catalog::codex().mailbox,
             ),

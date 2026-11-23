@@ -231,6 +231,23 @@ pub(crate) fn presented_token_digest(authorization: &[Vec<u8>]) -> Result<[u8; 3
 pub fn authenticate_private(path: &Path, authorization: &[Vec<u8>]) -> Result<Principal, Fault> {
     authenticate_generic(load_generic_policy(path)?, authorization)
 }
+/// Preserve the live Cue policy without accepting its local Bearer on the hosted route.
+pub(crate) fn active_hosted_cue_policy(path: &Path) -> Result<Principal, Fault> {
+    let (entry, _) = load_generic_policy(path)?
+        .into_iter()
+        .find(|(entry, _)| entry.id == "cue" && !entry.revoked)
+        .ok_or((403, "forbidden"))?;
+    Ok(principal(entry))
+}
+
+fn principal(entry: Entry) -> Principal {
+    Principal {
+        id: entry.id,
+        operations: entry.operations,
+        send_to: entry.send_to,
+        mailboxes: entry.mailboxes,
+    }
+}
 fn authenticate_generic(
     entries: Vec<(Entry, [u8; 32])>,
     authorization: &[Vec<u8>],
@@ -247,12 +264,7 @@ fn authenticate_generic(
     }
     let index = matched.ok_or(bad)?;
     let (entry, _) = entries.into_iter().nth(index).ok_or(bad)?;
-    Ok(Principal {
-        id: entry.id,
-        operations: entry.operations,
-        send_to: entry.send_to,
-        mailboxes: entry.mailboxes,
-    })
+    Ok(principal(entry))
 }
 
 /// Send and Read use the same registered peers at a single write checkpoint.

@@ -19,6 +19,7 @@ pub fn explicit(
     registration: &Path,
 ) -> Profile {
     Profile {
+        hosted: None,
         identity: crate::codex_mcp::Identity::BuiltIn(definition.mailbox),
         db: queue.into(),
         policy: policy.into(),
