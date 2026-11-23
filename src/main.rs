@@ -188,7 +188,7 @@ enum Command {
         /// Reserve a hosted HTTPS address for this installation (experimental).
         #[arg(long, hide = true, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
         reserve_address: bool,
-        /// Enable the private stdio socket on a home's first managed apply.
+        /// Enable the private stdio socket during a managed apply; an already-active home can enable it once.
         #[arg(long, requires = "apply", conflicts_with = "reserve_address")]
         stdio_socket: bool,
         /// Use a private Unix origin for a new hosted enrollment.

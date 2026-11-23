@@ -765,6 +765,41 @@ fn existing_managed_home_stdio_failed_activation_restores_unloaded_hub() {
 }
 
 #[test]
+fn existing_managed_home_stdio_failed_relay_reconciliation_restores() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    let email = Some("cue@example.invalid");
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, email),
+        Some(&jobs),
+    )
+    .unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    assert!(!read_json::<Registry>(&file).unwrap().local_stdio);
+
+    // Simulate an unloaded relay that cannot be reconciled.
+    fixture
+        .fake
+        .loaded
+        .borrow_mut()
+        .insert(RELAY_LABEL.into(), fixture.home.join("foreign-relay.plist"));
+
+    let mut opt_in = fixture.options(true, email);
+    opt_in.local_stdio = true;
+    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_err());
+    assert!(!read_json::<Registry>(&file).unwrap().local_stdio);
+
+    // Remove the conflicting relay registration and retry successfully.
+    fixture.fake.loaded.borrow_mut().remove(RELAY_LABEL);
+    let mut retry = fixture.options(true, email);
+    retry.local_stdio = true;
+    assert!(init_with(&fixture.home, "cue", &retry, Some(&jobs)).is_ok());
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+}
+
+#[test]
 fn existing_managed_home_can_enable_stdio_once_with_explicit_opt_in() {
     let fixture = Fixture::new(false);
     let jobs = fixture.jobs();

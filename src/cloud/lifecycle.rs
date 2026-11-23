@@ -854,6 +854,24 @@ fn change(
                 jobs.service.stdio_ready(&hub.path, home, &routes)?;
             }
         }
+        let current_relay = relay_config(&next)?;
+        if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
+            write_json(&relay_path, &current_relay)?;
+        }
+        drop(dispatch_guard);
+        if let Some(relay) = relay.as_ref() {
+            if current_relay.is_empty() {
+                if relay.loaded {
+                    jobs.service.bootout(RELAY_LABEL)?;
+                }
+                if relay.exists {
+                    fs::remove_file(&relay.path)?;
+                    File::open(jobs.directory)?.sync_all()?;
+                }
+            } else if !relay.loaded {
+                relay.start(jobs)?;
+            }
+        }
         Ok::<_, io::Error>(())
     })();
     if let Err(err) = transition {
@@ -903,24 +921,6 @@ fn change(
         return Err(err);
     }
 
-    let current_relay = relay_config(&next)?;
-    if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
-        write_json(&relay_path, &current_relay)?;
-    }
-    drop(dispatch_guard);
-    if let Some(relay) = relay {
-        if current_relay.is_empty() {
-            if relay.loaded {
-                jobs.service.bootout(RELAY_LABEL)?;
-            }
-            if relay.exists {
-                fs::remove_file(relay.path)?;
-                File::open(jobs.directory)?.sync_all()?;
-            }
-        } else if !relay.loaded {
-            relay.start(jobs)?;
-        }
-    }
     Ok(())
 }
 
@@ -1392,7 +1392,7 @@ fn init_with(
     };
     if options.local_stdio && !options.apply {
         return Err(error(
-            "enable managed stdio on the first active profile in this home",
+            "enable managed stdio with --apply on an active profile in this home",
         ));
     }
     if options.port.is_some_and(|value| value != state.port)
