@@ -542,3 +542,152 @@ fn managed_apply_refuses_a_persisted_disposable_relay_before_launchd_changes() {
         staged
     );
 }
+
+#[test]
+fn hosted_lifecycle_reuses_hub_and_restarts_only_the_owned_connector() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let services = HostedServices {
+        directory: fixture.agents.clone(),
+        executable: fixture.executable.clone(),
+        cloudflared: fixture.home.join("synthetic-cloudflared"),
+    };
+    let self_managed = fixture.agents.join("test.self-managed.plist");
+    fs::write(&self_managed, b"self-managed fixture").unwrap();
+    fixture
+        .fake
+        .loaded
+        .borrow_mut()
+        .insert("test.self-managed".into(), self_managed.clone());
+    let queue = fixture.home.join(QUEUE);
+    let inode = queue.metadata().unwrap().ino();
+    let public = "https://u-fixture.example.test";
+    let id = "11111111-1111-4111-8111-111111111111";
+    let apply = |token| services.finish_with(&fixture.fake, &fixture.home, public, id, token);
+    let before = fixture.fake.actions.borrow().len();
+    apply("synthetic-token-one").unwrap();
+    let plist = fixture.agents.join(format!("{HOSTED_LABEL}.plist"));
+    let args = plist::Value::from_file(&plist).unwrap();
+    let dict = args.as_dictionary().unwrap();
+    let command = dict["ProgramArguments"].as_array().unwrap();
+    assert_eq!(
+        command
+            .iter()
+            .map(|arg| arg.as_string().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            services.cloudflared.to_str().unwrap(),
+            "tunnel",
+            "run",
+            "--token-file",
+            fixture
+                .home
+                .join(crate::hosted_connector::TOKEN_FILE)
+                .to_str()
+                .unwrap()
+        ]
+    );
+    assert_eq!(dict["KeepAlive"].as_boolean(), Some(true));
+    assert_eq!(dict["RunAtLoad"].as_boolean(), Some(true));
+    #[cfg(target_os = "macos")]
+    assert!(
+        std::process::Command::new("/usr/bin/plutil")
+            .arg("-lint")
+            .arg(&plist)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    apply("synthetic-token-one").unwrap();
+    assert_eq!(
+        &fixture.fake.actions.borrow()[before..],
+        [Action::Bootstrap(HOSTED_LABEL.into())]
+    );
+    apply("synthetic-token-two").unwrap();
+    assert_eq!(
+        &fixture.fake.actions.borrow()[before + 1..],
+        [
+            Action::Bootout(HOSTED_LABEL.into()),
+            Action::Bootstrap(HOSTED_LABEL.into()),
+        ]
+    );
+    assert_eq!(queue.metadata().unwrap().ino(), inode);
+    assert_eq!(fs::read(&self_managed).unwrap(), b"self-managed fixture");
+    assert_eq!(
+        fixture.fake.loaded.borrow().get("test.self-managed"),
+        Some(&self_managed)
+    );
+    assert_eq!(
+        crate::hosted_connector::load_connection(&fixture.home).unwrap(),
+        Some((public.into(), id.into()))
+    );
+    assert!(fixture.fake.loaded.borrow().contains_key(HUB_LABEL));
+}
+
+#[test]
+fn hosted_lifecycle_refuses_an_occupied_label_before_writing_credentials() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let services = HostedServices {
+        directory: fixture.agents.clone(),
+        executable: fixture.executable.clone(),
+        cloudflared: fixture.home.join("synthetic-cloudflared"),
+    };
+    let foreign = fixture.home.join("foreign.plist");
+    fixture
+        .fake
+        .loaded
+        .borrow_mut()
+        .insert(HOSTED_LABEL.into(), foreign.clone());
+    let before = fixture.fake.actions.borrow().len();
+    let result = services.finish_with(
+        &fixture.fake,
+        &fixture.home,
+        "https://u-fixture.example.test",
+        "11111111-1111-4111-8111-111111111111",
+        "synthetic-token",
+    );
+    assert!(result.is_err());
+    assert_eq!(fixture.fake.actions.borrow().len(), before);
+    assert!(
+        !fixture
+            .home
+            .join(crate::hosted_connector::TOKEN_FILE)
+            .exists()
+    );
+    assert_eq!(
+        fixture.fake.loaded.borrow().get(HOSTED_LABEL),
+        Some(&foreign)
+    );
+}
+
+#[test]
+fn hosted_lifecycle_is_not_selected_on_a_clean_home() {
+    let home = tempfile::tempdir().unwrap();
+    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(HostedServices::inspect(home.path()).unwrap().is_none());
+    crate::hosted_connector::stage(
+        home.path(),
+        "https://u-fixture.example.test",
+        "11111111-1111-4111-8111-111111111111",
+        "synthetic-token",
+    )
+    .unwrap();
+    assert!(!home.path().join(QUEUE).exists());
+    assert!(!home.path().join(DIRECTORY).exists());
+}

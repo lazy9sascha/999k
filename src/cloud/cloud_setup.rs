@@ -1063,6 +1063,6 @@ mod tests {
     }
 }
 
-pub(crate) fn reserve_address(_home: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    Err("hosted registration is not implemented yet (0.2.0 scope)".into())
+pub(crate) fn reserve_address(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    crate::hosted_enrollment::run(home).map_err(Into::into)
 }

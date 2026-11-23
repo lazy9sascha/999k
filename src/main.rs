@@ -6,6 +6,8 @@ mod cloud_credentials;
 mod cloud_service;
 #[path = "cloud/hosted_connector.rs"]
 mod hosted_connector;
+#[path = "cloud/hosted_enrollment.rs"]
+mod hosted_enrollment;
 #[path = "cloud/hosted_registration.rs"]
 mod hosted_registration;
 #[path = "cloud/cloud_setup.rs"]

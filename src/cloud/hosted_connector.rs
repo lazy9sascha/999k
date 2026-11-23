@@ -1,10 +1,11 @@
 //! Launch one cloudflared connector with a private token file.
 #![allow(dead_code)]
-use base64::Engine;
-use std::path::Path;
 use std::env;
+use std::path::Path;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
+
+pub(crate) const TOKEN_FILE: &str = "hosted-connector.token";
 
 /// Resolve and validate a compatible cloudflared executable.
 pub fn preflight(executable: Option<&Path>) -> Result<PathBuf, String> {
@@ -57,7 +58,7 @@ pub fn save_connection(home: &Path, origin: &str, registration: &str) -> Result<
 
 /// Save the connector token in a separate owner-only file.
 pub fn save_token(home: &Path, token: &str) -> Result<PathBuf, String> {
-    let path = home.join("hosted-connector.token");
+    let path = home.join(TOKEN_FILE);
     pigeonmq::private_file::replace_private(&path, token.as_bytes())
         .map_err(|_| "hosted_config_write_failed".to_string())?;
     Ok(path)
@@ -69,7 +70,10 @@ pub fn load_connection(home: &Path) -> Result<Option<(String, String)>, String> 
     let file = match pigeonmq::private_file::open_private_file(&path) {
         Ok(f) => f,
         Err(e) => {
-            if !path.exists() {
+            if path
+                .symlink_metadata()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
                 return Ok(None);
             }
             return Err(format!("open_private_failed: {} {}", e.0, e.1));
@@ -85,7 +89,10 @@ pub fn load_connection(home: &Path) -> Result<Option<(String, String)>, String> 
     }
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| "hosted_config_invalid".to_string())?;
-    let origin = value["origin"].as_str().ok_or("hosted_config_invalid")?.to_string();
+    let origin = value["origin"]
+        .as_str()
+        .ok_or("hosted_config_invalid")?
+        .to_string();
     let registration = value["registration"]
         .as_str()
         .ok_or("hosted_config_invalid")?
@@ -93,26 +100,26 @@ pub fn load_connection(home: &Path) -> Result<Option<(String, String)>, String> 
     Ok(Some((origin, registration)))
 }
 
-/// Wire a ready registration into local config and launch the connector.
-pub fn finalize_hosted(
-    home: &Path,
-    public_url: &str,
-    installation_id: &str,
-    cloudflared: &Path,
-    token: &str,
-) -> Result<PathBuf, String> {
-    save_connection(home, public_url, installation_id)?;
-    let token_path = save_token(home, token)?;
-    let _child = launch(cloudflared, &token_path)?;
-    Ok(token_path)
+pub(crate) fn check_binding(home: &Path, url: &str, id: &str) -> Result<(), String> {
+    if load_connection(home)?.is_some_and(|(old_url, old_id)| old_url != url || old_id != id) {
+        return Err("existing hosted connection belongs to another registration".into());
+    }
+    Ok(())
 }
+
+pub(crate) fn stage(home: &Path, url: &str, id: &str, token: &str) -> Result<(), String> {
+    check_binding(home, url, id)?;
+    save_token(home, token)?;
+    save_connection(home, url, id)
+}
+
 /// Report hosted connection health without claiming unverified public access.
 pub fn hosted_health(home: &Path) -> serde_json::Value {
     let conn = match load_connection(home) {
         Ok(Some(c)) => c,
         _ => return serde_json::json!({ "hosted": "not_configured" }),
     };
-    let token_path = home.join("hosted-connector.token");
+    let token_path = home.join(TOKEN_FILE);
     let token_present = pigeonmq::private_file::open_private_file(&token_path).is_ok();
     let public_reachable = probe_public(&conn.0);
     serde_json::json!({
@@ -134,158 +141,10 @@ fn probe_public(url: &str) -> bool {
         .map(|r| r.status().as_u16() < 500)
         .unwrap_or(false)
 }
-/// Run the hosted registration flow using a mock/real operator base URL.
-pub fn hosted_flow(home: &Path, base_url: &str, cloudflared: &Path) -> Result<String, String> {
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let mut proof_bytes = [0u8; 32];
-    let u1 = uuid::Uuid::new_v4();
-    let u2 = uuid::Uuid::new_v4();
-    proof_bytes[..16].copy_from_slice(u1.as_bytes());
-    proof_bytes[16..].copy_from_slice(u2.as_bytes());
-    let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(proof_bytes);
-    let user_code = uuid::Uuid::new_v4()
-        .simple()
-        .to_string()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .take(8)
-        .collect::<String>()
-        .to_uppercase();
-    hosted_resume(home, base_url, cloudflared, &request_id, &user_code, &proof)
-}
-
-/// Resume a hosted registration using an existing request ID and proof.
-pub fn hosted_resume(
-    home: &Path,
-    base_url: &str,
-    cloudflared: &Path,
-    _request_id: &str,
-    _user_code: &str,
-    proof: &str,
-) -> Result<String, String> {
-    let exe = preflight(Some(cloudflared))?;
-    // Re-begin (idempotent: same request_id returns existing reservation).
-    // For resume we still call begin; the operator returns the existing reservation.
-    // We don't have request_id/user_code stored, so begin is called by hosted_flow only.
-    // This function assumes the caller passes them; here we accept proof only for simplicity.
-    // In practice, hosted_flow generates them and calls this path.
-    let reg = crate::hosted_registration::begin(base_url, _request_id, _user_code, proof)?;
-    let mut state = String::new();
-    for _ in 0..10 {
-        state = crate::hosted_registration::status(base_url, &reg.installation_id, proof)?;
-        if state == "ready" || state == "approved" {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    if state != "ready" && state != "approved" {
-        return Err("registration_not_approved".to_string());
-    }
-    let (public_url, token) = crate::hosted_registration::finish(base_url, &reg.installation_id, proof)?;
-    finalize_hosted(home, &public_url, &reg.installation_id, &exe, &token)?;
-    Ok(public_url)
-}
-/// Map a registration status to a local action.
-pub fn registration_action(state: &str) -> &'static str {
-    match state {
-        "expired" => "begin_new",
-        "revoked" => "close_connector",
-        "pending" | "approved" | "ready" => "continue",
-        _ => "unknown",
-    }
-}
-/// Generate a launchd plist for the hosted cloudflared connector.
-pub fn launchd_plist(cloudflared: &Path, token_file: &Path) -> String {
-    let cf = xml_escape(&cloudflared.display().to_string());
-    let tf = xml_escape(&token_file.display().to_string());
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.pigeonmq.hosted-connector</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{}</string>
-        <string>tunnel</string>
-        <string>run</string>
-        <string>--token-file</string>
-        <string>{}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-</dict>
-</plist>
-"#,
-        cf, tf
-    )
-}
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-pub fn launch(executable: &Path, token_file: &Path) -> Result<Child, String> {
-    if !executable.is_absolute() {
-        return Err("absolute cloudflared path required".into());
-    }
-    if !token_file.is_absolute() {
-        return Err("absolute token file path required".into());
-    }
-    Command::new(executable)
-        .arg("tunnel")
-        .arg("run")
-        .arg("--token-file")
-        .arg(token_file)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "cloudflared_unavailable".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::tempdir;
-
-    #[test]
-    fn records_expected_command_shape() {
-        let dir = tempdir().unwrap();
-        let fake = dir.path().join("cloudflared");
-        let token = dir.path().join("token");
-        fs::write(&token, "secret").unwrap();
-        // Write a fake executable that records argv to a file.
-        let recorder = dir.path().join("argv.txt");
-        let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nsleep 1\n",
-            recorder.display()
-        );
-        fs::write(&fake, script).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-
-        let mut child = launch(&fake, &token).unwrap();
-        // Give the fake time to write argv.
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        assert!(recorder.exists(), "recorder not created");
-        let recorded = fs::read_to_string(&recorder).unwrap();
-        assert!(recorded.contains("tunnel"));
-        assert!(recorded.contains("run"));
-        assert!(recorded.contains("--token-file"));
-        assert!(recorded.contains(token.to_str().unwrap()));
-        // Secret must not appear in argv.
-        assert!(!recorded.contains("secret"));
-        let _ = child.kill();
-        let _ = child.wait();
-    }
 
     #[test]
     fn saves_and_loads_private_connection() {
@@ -343,9 +202,18 @@ mod tests {
         let parent = path.parent().unwrap();
         let pm = std::fs::metadata(parent).unwrap();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        eprintln!("parent mode: {:o} uid: {}", pm.permissions().mode(), pm.uid());
+        eprintln!(
+            "parent mode: {:o} uid: {}",
+            pm.permissions().mode(),
+            pm.uid()
+        );
         let fm = std::fs::metadata(&path).unwrap();
-        eprintln!("file mode: {:o} uid: {} nlink: {}", fm.permissions().mode(), fm.uid(), fm.nlink());
+        eprintln!(
+            "file mode: {:o} uid: {} nlink: {}",
+            fm.permissions().mode(),
+            fm.uid(),
+            fm.nlink()
+        );
         let res = pigeonmq::private_file::open_private_file(&path);
         eprintln!("open result: {:?}", res.map(|_| "ok"));
     }
@@ -382,92 +250,6 @@ mod tests {
         assert_eq!(h["public_verified"], false);
     }
 
-    #[test]
-    fn hosted_flow_completes_with_mock_operator() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        use std::thread;
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let base = format!("http://{}", addr);
-        thread::spawn(move || {
-            for _ in 0..3 {
-                if let Ok((mut stream, _)) = listener.accept() {
-                    let mut buf = [0u8; 4096];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]);
-                    let first = req.lines().next().unwrap_or("");
-                    let resp = if first.starts_with("POST /v1/enrollments ") {
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"installation_id\":\"11111111-1111-4111-8111-111111111111\",\"public_url\":\"https://u.example.com\",\"login_url\":\"https://login.example.com\",\"expires_at\":\"2030-01-01T00:15:00Z\"}"
-                    } else if first.starts_with("GET /v1/enrollments/") {
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u.example.com\"}"
-                    } else if first.starts_with("POST /v1/enrollments/") && first.contains("/finish") {
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"state\":\"ready\",\"public_url\":\"https://u.example.com\",\"connector_token\":\"tok-xyz\"}"
-                    } else {
-                        "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{\"error\":\"registration_not_found\"}"
-                    };
-                    let _ = stream.write_all(resp.as_bytes());
-                    let _ = stream.flush();
-                }
-            }
-        });
-
-        // Fake cloudflared executable.
-        let dir = tempdir().unwrap();
-        let fake_cf = dir.path().join("cloudflared");
-        let script = "#!/bin/sh\n# token-file arg present; exit 0\nexit 0\n";
-        std::fs::write(&fake_cf, script).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake_cf, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        let url = hosted_flow(&home, &base, &fake_cf).unwrap();
-        assert_eq!(url, "https://u.example.com");
-        // Config saved.
-        let conn = load_connection(&home).unwrap().unwrap();
-        assert_eq!(conn.0, "https://u.example.com");
-        assert!(home.join("hosted-connector.token").exists());
-    }
-
-    #[test]
-    fn missing_executable_errors() {
-        let dir = tempdir().unwrap();
-        let token = dir.path().join("token");
-        std::fs::write(&token, "secret").unwrap();
-        let result = launch(&dir.path().join("nope"), &token);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn registration_action_maps_states() {
-        assert_eq!(registration_action("expired"), "begin_new");
-        assert_eq!(registration_action("revoked"), "close_connector");
-        assert_eq!(registration_action("pending"), "continue");
-        assert_eq!(registration_action("ready"), "continue");
-        assert_eq!(registration_action("garbage"), "unknown");
-    }
-
-    #[test]
-    fn launchd_plist_passes_plutil() {
-        let plist = launchd_plist(Path::new("/opt/homebrew/bin/cloudflared"), Path::new("/tmp/token"));
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("hosted.plist");
-        std::fs::write(&path, &plist).unwrap();
-        // plutil may not be available in all environments; skip if missing.
-        let plutil = std::process::Command::new("plutil")
-            .arg("-lint")
-            .arg(&path)
-            .output();
-        match plutil {
-            Ok(out) => assert!(out.status.success(), "plutil failed: {}", String::from_utf8_lossy(&out.stderr)),
-            Err(_) => {} // skip
-        }
-    }
     #[test]
     fn preflight_rejects_non_absolute() {
         let result = preflight(Some(Path::new("cloudflared")));

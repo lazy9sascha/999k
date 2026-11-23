@@ -2,7 +2,8 @@
 use crate::{
     lifecycle_profile,
     lifecycle_service::{
-        HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist, verify_plist,
+        HOSTED_LABEL, HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist,
+        verify_plist,
     },
     mailbox_startup::{Binding, Manifest, QUEUE, REGISTRATION, bindings, valid_route},
 };
@@ -834,6 +835,135 @@ fn system_jobs() -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
     };
     let executable = installation.require_executable(&std::env::current_exe()?)?;
     Ok((directory, executable, installation))
+}
+
+/// The hosted connector uses launchd directly. It does not supervise the hub.
+pub(crate) struct HostedServices {
+    directory: PathBuf,
+    executable: PathBuf,
+    cloudflared: PathBuf,
+}
+
+impl HostedServices {
+    pub(crate) fn inspect(home: &Path) -> io::Result<Option<Self>> {
+        let dir = home.join(DIRECTORY);
+        if absent(&dir)? {
+            return Ok(None);
+        }
+        let dir = private_dir(&dir)?;
+        let state_path = dir.join(STATE);
+        if absent(&state_path)? || active_routes(&read_json(&state_path)?).is_empty() {
+            return Ok(None);
+        }
+        let (directory, executable, installation) = system_jobs()?;
+        let cloudflared = crate::hosted_connector::preflight(None).map_err(io::Error::other)?;
+        let cloudflared = installation.require_executable(&cloudflared)?;
+        let services = Self {
+            directory,
+            executable,
+            cloudflared,
+        };
+        services.with_jobs(&SystemLaunchctl, home, |_, _, _, _| Ok(()))?;
+        Ok(Some(services))
+    }
+
+    fn with_jobs<T>(
+        &self,
+        service: &dyn LaunchControl,
+        home: &Path,
+        operation: impl FnOnce(&Jobs<'_>, Job, Job, Registry) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let dir = private_dir(&home.join(DIRECTORY)).map_err(|_| {
+            error("hosted enrollment requires a managed hub with an active profile")
+        })?;
+        let _owner = lock(&dir)?;
+        let state: Registry = read_json(&dir.join(STATE))?;
+        if active_routes(&state).is_empty() {
+            return Err(error(
+                "hosted enrollment requires a managed hub with an active profile",
+            ));
+        }
+        open_private(&home.join(QUEUE))?;
+        let jobs = Jobs {
+            service,
+            directory: &self.directory,
+            executable: &self.executable,
+            installation: None,
+        };
+        let hub = Job::inspect(
+            &jobs,
+            HUB_LABEL,
+            vec!["serve-managed".into(), "--home".into(), path_arg(home)?],
+        )?;
+        let connector_jobs = Jobs {
+            executable: &self.cloudflared,
+            ..jobs
+        };
+        let connector = Job::inspect(
+            &connector_jobs,
+            HOSTED_LABEL,
+            vec![
+                "tunnel".into(),
+                "run".into(),
+                "--token-file".into(),
+                path_arg(&home.join(crate::hosted_connector::TOKEN_FILE))?,
+            ],
+        )?;
+        operation(&jobs, hub, connector, state)
+    }
+
+    pub(crate) fn finish(&self, home: &Path, url: &str, id: &str, token: &str) -> io::Result<()> {
+        self.finish_with(&SystemLaunchctl, home, url, id, token)
+    }
+
+    fn finish_with(
+        &self,
+        service: &dyn LaunchControl,
+        home: &Path,
+        url: &str,
+        id: &str,
+        token: &str,
+    ) -> io::Result<()> {
+        self.with_jobs(service, home, |jobs, hub, connector, state| {
+            if !hub.loaded {
+                hub.start(jobs)?;
+            }
+            jobs.service
+                .hub_ready(&hub.path, state.port, &active_routes(&state))?;
+            crate::hosted_connector::check_binding(home, url, id).map_err(io::Error::other)?;
+            let token_path = home.join(crate::hosted_connector::TOKEN_FILE);
+            let existing = if absent(&token_path)? {
+                None
+            } else {
+                Some(read_hosted_token(&token_path)?)
+            };
+            // A running cloudflared needs a restart to read a changed token.
+            let changed = existing.as_deref() != Some(token.as_bytes());
+            if changed && connector.loaded {
+                jobs.service.bootout(HOSTED_LABEL)?;
+            }
+            if changed {
+                crate::hosted_connector::save_token(home, token).map_err(io::Error::other)?;
+            }
+            crate::hosted_connector::save_connection(home, url, id).map_err(io::Error::other)?;
+            if !connector.loaded || changed {
+                connector.start(jobs)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+fn read_hosted_token(path: &Path) -> io::Result<Vec<u8>> {
+    let mut value = Vec::new();
+    let limit = private_file::MAX_PRIVATE_CONFIG_BYTES;
+    open_private(path)?
+        .take(limit + 1)
+        .read_to_end(&mut value)?;
+    if value.len() as u64 > limit {
+        return Err(error("hosted connector token exceeds the size limit"));
+    }
+    Ok(value)
 }
 
 pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result<Value> {

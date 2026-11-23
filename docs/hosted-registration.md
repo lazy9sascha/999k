@@ -47,6 +47,31 @@ PigeonMQ applies approval only to the installation bound to the browser attempt.
 The request page does not show whether it sent an email. Response times can differ.
 If an attempt fails, wait up to five minutes, then reopen registration from PigeonMQ. Use the same pending installation until its reservation expires.
 
+## Reserve an address on your Mac
+
+Use the HTTPS registration origin from your pilot operator. Keep the same private hub home on each run.
+
+```sh
+export PIGEONMQ_REGISTRATION_URL=https://init.example.com
+pigeonmq init --reserve-address --home "$HOME/path/to/private-hub"
+```
+
+Approve the installation in your browser. If setup stops waiting or you close the terminal,
+run the same command to resume. Do not copy the browser link or the installation files to a
+different machine.
+
+If the home has no active managed profile, PigeonMQ reports `hosted_connector=staged`.
+It saves the address and the private connector credential. It does not create a mailbox or
+start a service. Apply your chosen managed profile with `pigeonmq init <agent> --apply --home <hub-home>`.
+Use a durable installed PigeonMQ binary and install a compatible `cloudflared` in your PATH.
+Run the reserve command again with the same origin and home.
+
+For an active managed hub, launchd starts the separate `pigeonmq.hosted-connector` job
+after the existing hub passes its loopback checks. PigeonMQ reports
+`hosted_connector=scheduled`. This does not prove the public endpoint works.
+A connector restart does not restart the hub. The installer does not modify a self-managed
+connector. It refuses a conflicting hosted job rather than replacing it.
+
 ### Connect Dot and Codex Cloud through Cloudflare
 
 Protect each MCP path with its own Cloudflare Access application. Enable Managed

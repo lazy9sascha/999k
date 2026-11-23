@@ -1,5 +1,4 @@
 //! Local HTTP client for the hosted registration service.
-#![allow(dead_code)]
 use serde::Deserialize;
 use serde_json::json;
 
@@ -30,8 +29,9 @@ struct BeginResponse {
 }
 
 #[derive(Deserialize)]
-struct StatusResponse {
-    state: String,
+pub(crate) struct StatusResponse {
+    pub(crate) state: String,
+    pub(crate) public_url: String,
 }
 
 #[derive(Deserialize)]
@@ -44,15 +44,21 @@ struct FinishResponse {
 fn client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("http client")
 }
 
 fn map_error(status: reqwest::StatusCode, body: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(code) = v.get("error").and_then(|e| e.as_str()) {
-            return code.to_string();
-        }
+    let value = serde_json::from_str::<serde_json::Value>(body).ok();
+    match (
+        status.as_u16(),
+        value.as_ref().and_then(|v| v["error"].as_str()),
+    ) {
+        (410, Some("registration_expired")) => return "registration_expired".into(),
+        (410, Some("registration_revoked")) => return "registration_revoked".into(),
+        (409, Some("login_pending")) => return "login_pending".into(),
+        _ => {}
     }
     format!("http_{}", status.as_u16())
 }
@@ -69,13 +75,16 @@ pub fn begin(
         .header("Authorization", format!("Bearer {}", proof))
         .json(&json!({ "request_id": request_id, "user_code": user_code }))
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "registration_service_unavailable".to_owned())?;
     let status = resp.status();
-    let body = resp.text().map_err(|e| e.to_string())?;
+    let body = resp
+        .text()
+        .map_err(|_| "registration_service_unavailable".to_owned())?;
     if !status.is_success() {
         return Err(map_error(status, &body));
     }
-    let parsed: BeginResponse = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let parsed: BeginResponse =
+        serde_json::from_str(&body).map_err(|_| "registration_service_unavailable".to_owned())?;
     Ok(Registration {
         installation_id: parsed.installation_id,
         public_url: parsed.public_url,
@@ -84,7 +93,11 @@ pub fn begin(
     })
 }
 
-pub fn status(base_url: &str, installation_id: &str, proof: &str) -> Result<String, String> {
+pub fn status(
+    base_url: &str,
+    installation_id: &str,
+    proof: &str,
+) -> Result<StatusResponse, String> {
     // Validate installation_id to prevent path injection.
     if uuid::Uuid::parse_str(installation_id).is_err() {
         return Err("invalid_installation_id".to_string());
@@ -98,14 +111,17 @@ pub fn status(base_url: &str, installation_id: &str, proof: &str) -> Result<Stri
         .get(&url)
         .header("Authorization", format!("Bearer {}", proof))
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "registration_service_unavailable".to_owned())?;
     let status = resp.status();
-    let body = resp.text().map_err(|e| e.to_string())?;
+    let body = resp
+        .text()
+        .map_err(|_| "registration_service_unavailable".to_owned())?;
     if !status.is_success() {
         return Err(map_error(status, &body));
     }
-    let parsed: StatusResponse = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-    Ok(parsed.state)
+    let parsed: StatusResponse =
+        serde_json::from_str(&body).map_err(|_| "registration_service_unavailable".to_owned())?;
+    Ok(parsed)
 }
 
 pub fn finish(
@@ -126,13 +142,16 @@ pub fn finish(
         .post(&url)
         .header("Authorization", format!("Bearer {}", proof))
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "registration_service_unavailable".to_owned())?;
     let status = resp.status();
-    let body = resp.text().map_err(|e| e.to_string())?;
+    let body = resp
+        .text()
+        .map_err(|_| "registration_service_unavailable".to_owned())?;
     if !status.is_success() {
         return Err(map_error(status, &body));
     }
-    let parsed: FinishResponse = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let parsed: FinishResponse =
+        serde_json::from_str(&body).map_err(|_| "registration_service_unavailable".to_owned())?;
     if parsed.state != "ready" {
         return Err("unexpected_state".to_string());
     }
@@ -175,7 +194,7 @@ mod tests {
         let base = mock_server(resp);
         // Need installation_id in URL; mock ignores path.
         let state = status(&base, "11111111-1111-4111-8111-111111111111", "proof").unwrap();
-        assert_eq!(state, "approved");
+        assert_eq!(state.state, "approved");
     }
 
     #[test]
