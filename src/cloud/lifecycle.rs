@@ -857,30 +857,21 @@ fn change(
         Ok::<_, io::Error>(())
     })();
     if let Err(err) = transition {
-        if let Some(registration_before) = registration_before {
+        if registration_before.is_some() || (stdio_changed && !phase_changed) {
             // An unsuccessful start leaves the attempted profile staged. If a fresh
             // storage identity was allocated, the same staged Bearer can still retry it.
             // The former generation remains retired and the relay map is still unchanged.
+            // Stdio-only activation reuses this rollback so an unloaded prior hub is
+            // not started and a loaded prior hub is restored.
             if jobs.service.loaded(HUB_LABEL, &hub.path)? {
                 jobs.service.bootout(HUB_LABEL)?;
             }
             write_json(&dir.join(STATE), current)?;
-            if fs::read(&current.registration)? != registration_before {
-                private_file::replace_private(&current.registration, &registration_before)?;
+            if let Some(registration_before) = registration_before.as_ref() {
+                if fs::read(&current.registration)? != *registration_before {
+                    private_file::replace_private(&current.registration, registration_before)?;
+                }
             }
-            if hub.loaded && !active_routes(current).is_empty() {
-                hub.start(jobs)?;
-                jobs.service
-                    .hub_ready(&hub.path, current.port, &active_routes(current))?;
-            } else if !hub.exists && verify_plist(jobs.directory, hub.label, &hub.args)?.is_some() {
-                fs::remove_file(&hub.path)?;
-                File::open(jobs.directory)?.sync_all()?;
-            }
-        } else if stdio_changed && hub.loaded {
-            if jobs.service.loaded(HUB_LABEL, &hub.path)? {
-                jobs.service.bootout(HUB_LABEL)?;
-            }
-            write_json(&dir.join(STATE), current)?;
             if hub.loaded && !active_routes(current).is_empty() {
                 hub.start(jobs)?;
                 jobs.service
