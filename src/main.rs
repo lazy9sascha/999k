@@ -180,10 +180,10 @@ enum Command {
         relay_command: Option<PathBuf>,
         /// Reserve a hosted HTTPS address for this installation (experimental).
         #[arg(long, hide = true, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
+        reserve_address: bool,
         /// Enable the private stdio socket on a home's first managed apply.
         #[arg(long, requires = "apply", conflicts_with = "reserve_address")]
         stdio_socket: bool,
-        reserve_address: bool,
         /// Use a private Unix origin for a new hosted enrollment.
         #[arg(long, hide = true, requires = "reserve_address")]
         hosted_unix: bool,

@@ -1237,6 +1237,23 @@ fn terminal_confirmation_reports_only_in_scope_domain_errors_over_rmcp() {
 
 #[test]
 fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
+    let help = Command::new(BIN).args(["init", "--help"]).output().unwrap();
+    assert!(help.status.success());
+    assert!(
+        String::from_utf8(help.stdout)
+            .unwrap()
+            .contains("--stdio-socket")
+    );
+    let missing_apply = Command::new(BIN)
+        .args(["init", "cue", "--stdio-socket"])
+        .output()
+        .unwrap();
+    assert_eq!(missing_apply.status.code(), Some(2));
+    assert!(
+        String::from_utf8(missing_apply.stderr)
+            .unwrap()
+            .contains("--apply")
+    );
     let fixture = Fixture::new();
     let port = Hub::available_port();
     let mut command = fixture.command(port);
