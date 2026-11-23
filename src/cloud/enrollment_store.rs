@@ -3,8 +3,9 @@ use super::hosted_origin::UnixOrigin;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::collections::HashSet;
 use std::{
-    collections::HashSet,
     fs::OpenOptions,
     io::{ErrorKind, Read},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -124,6 +125,7 @@ pub(crate) struct LoginRecord {
 
 pub(crate) struct BrowserAttempt {
     pub id: Uuid,
+    #[cfg(test)]
     pub installation_id: Uuid,
     pub email: String,
 }
@@ -533,6 +535,7 @@ impl Registry {
         tx.commit()?;
         Ok(BrowserAttempt {
             id: attempt_id,
+            #[cfg(test)]
             installation_id: id,
             email: email.to_owned(),
         })
@@ -604,6 +607,7 @@ impl Registry {
         tx.commit()?;
         Ok(BrowserAttempt {
             id: attempt_id,
+            #[cfg(test)]
             installation_id,
             email,
         })
