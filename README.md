@@ -99,7 +99,7 @@ A reverse tunnel is optional. Use it only for a remote agent.
 
 ## Platform limits
 
-- The foreground hub runs on macOS and Linux.
+- The 0.2.0 binaries target Apple Silicon Macs and Linux on x86-64 and ARM64.
 - Managed setup, Keychain, and native Codex roles need macOS.
 - The Orca plugin needs Orca 1.4.268 or newer. Review the plugin permissions and each bot creation request in Orca.
 - Keep an existing hub on its current path. Read the Quickstart before you add stdio to a home that already runs.

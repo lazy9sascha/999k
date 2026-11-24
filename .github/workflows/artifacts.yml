@@ -27,8 +27,6 @@ jobs:
         include:
           - runner: macos-15
             target: aarch64-apple-darwin
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-22.04-arm
@@ -96,7 +94,6 @@ jobs:
             expected=(
               "999k-$version-aarch64-apple-darwin.tar.gz"
               "999k-$version-aarch64-unknown-linux-gnu.tar.gz"
-              "999k-$version-x86_64-apple-darwin.tar.gz"
               "999k-$version-x86_64-unknown-linux-gnu.tar.gz"
             )
             if [[ "${#archives[@]}" != "${#expected[@]}" ]]; then

@@ -8,6 +8,7 @@ For agent-specific connections, see [agents and capabilities](agents.md).
 
 ## 1. Install
 
+The 0.2.0 installer supports Apple Silicon Macs and Linux on x86-64 and ARM64.
 Use the installer from [GitHub Releases](https://github.com/lazy9sascha/999k/releases) when the release assets are available.
 It installs `999k` and `999k-dot-resolve` in `$HOME/.local/bin` by default. No Rust toolchain is needed.
 

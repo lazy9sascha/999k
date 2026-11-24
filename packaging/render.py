@@ -14,11 +14,9 @@ RELEASE = "https://github.com/lazy9sascha/999k/releases/download"
 BINARIES = ("999k", "999k-dot-resolve")
 TARGETS = {
     "aarch64-apple-darwin": ("Darwin:arm64", "on_macos", "on_arm"),
-    "x86_64-apple-darwin": ("Darwin:x86_64", "on_macos", "on_intel"),
     "x86_64-unknown-linux-gnu": ("Linux:x86_64", "on_linux", "on_intel"),
     "aarch64-unknown-linux-gnu": ("Linux:aarch64", "on_linux", "on_arm"),
 }
-OPTIONAL_TARGET = "aarch64-unknown-linux-gnu"
 
 
 def sha256(stream):
@@ -56,7 +54,7 @@ def read_archives(version, directory):
                     with tar.extractfile(binary) as stream:
                         file_pins.append(sha256(stream))
         pins[target] = (name, digest, *file_pins)
-    missing = TARGETS.keys() - pins.keys() - {OPTIONAL_TARGET}
+    missing = TARGETS.keys() - pins.keys()
     if missing:
         raise ValueError(f"Missing release targets: {', '.join(sorted(missing))}")
     return pins
@@ -65,8 +63,6 @@ def read_archives(version, directory):
 def shell_pins(pins):
     cases = []
     for target, (platform, _, _) in TARGETS.items():
-        if target not in pins:
-            continue
         _, digest, main, resolver = pins[target]
         cases.extend((
             f"        {platform})",
@@ -83,10 +79,10 @@ def brew_sources(version, pins):
     lines = []
     for system in ("on_macos", "on_linux"):
         lines.append(f"  {system} do")
-        if system == "on_linux" and OPTIONAL_TARGET not in pins:
-            lines.append("    depends_on arch: :x86_64")
+        if system == "on_macos":
+            lines.append("    depends_on arch: :arm64")
         for target, (_, target_system, architecture) in TARGETS.items():
-            if target_system != system or target not in pins:
+            if target_system != system:
                 continue
             name, digest, _, _ = pins[target]
             lines.extend((

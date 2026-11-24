@@ -16,7 +16,6 @@ REPO = Path(__file__).resolve().parents[1]
 VERSION = "0.1.6"
 TARGETS = {
     ("Darwin", "arm64"): "aarch64-apple-darwin",
-    ("Darwin", "x86_64"): "x86_64-apple-darwin",
     ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
     ("Linux", "aarch64"): "aarch64-unknown-linux-gnu",
 }
@@ -157,16 +156,19 @@ fi
     fixture.write_bytes(good_archive)
     assert run(*bundled, "999k", "--version", env=env).stdout.strip() == f"{target}:--version"
 
-    # Unsupported targets cannot fetch anything. Missing optional ARM cannot pick an Intel archive.
-    manifest.write_text("\n".join(value for key, value in assets.items()
-                                 if key != "aarch64-unknown-linux-gnu") + "\n")
-    partial = root / "partial"
-    run(*generate, partial, env=env)
-    write_command(scripts / "uname", 'case $1 in -s) echo Linux;; -m) echo aarch64;; esac\n')
+    # Intel Mac must stop before it downloads a binary for a different platform.
+    write_command(scripts / "uname", 'case $1 in -s) echo Darwin;; -m) echo x86_64;; esac\n')
     fetched = downloads.read_bytes()
-    failed = run("sh", partial / "install.sh", env=env, code=1)
+    failed = run("sh", installer, env=env, code=1)
     assert "No 999K" in failed.stderr
     assert downloads.read_bytes() == fetched
+    assert "depends_on arch: :arm64" in formula and "x86_64-apple-darwin" not in formula
+
+    manifest.write_text("\n".join(value for key, value in assets.items()
+                                 if key != "aarch64-unknown-linux-gnu") + "\n")
+    failed = run(*generate, rejected, env=env, code=1)
+    assert "Missing release targets: aarch64-unknown-linux-gnu" in failed.stderr
+    assert not rejected.exists()
 
     manifest.write_bytes(good_manifest + good_manifest.splitlines()[0] + b"\n")
     run(*generate, rejected, env=env, code=1)

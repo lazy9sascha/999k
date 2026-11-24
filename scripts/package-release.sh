@@ -10,7 +10,7 @@ root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 target=$1
 out=${2:-"$root/target/artifacts"}
 case "$target" in
-  aarch64-apple-darwin | x86_64-apple-darwin | aarch64-unknown-linux-gnu | x86_64-unknown-linux-gnu) ;;
+  aarch64-apple-darwin | aarch64-unknown-linux-gnu | x86_64-unknown-linux-gnu) ;;
   *) echo "Unsupported release target: $target" >&2; exit 2 ;;
 esac
 host=$(rustc -vV | sed -n 's/^host: //p')

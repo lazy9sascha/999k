@@ -29,6 +29,8 @@ copies credentials. The installer renderer requires Python.
 Rendering does not publish anything. Publish the archives before enabling the
 npm package or formula so their pinned URLs can resolve.
 
+The release needs three native archives: macOS on Apple Silicon, Linux on x86-64, and Linux on ARM64. Each archive contains both executables.
+
 ## Upgrade an existing installation
 
 The new installer writes `999k` and `999k-dot-resolve`. It leaves older
