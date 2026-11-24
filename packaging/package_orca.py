@@ -30,7 +30,7 @@ def package(version, output):
         if not members[filename]:
             raise ValueError(f"Empty Orca plugin file: {filename}")
     manifest = json.loads(members[MANIFEST])
-    if not isinstance(manifest, dict) or manifest.get("id") != "radio999k" or manifest.get("version") != version:
+    if not isinstance(manifest, dict) or manifest.get("id") != "p-999k" or manifest.get("version") != version:
         raise ValueError("Orca plugin id or version does not match the release.")
     panels = manifest["contributes"]["panels"]
     if [manifest["main"], *[panel["entry"] for panel in panels]] != ["worker.ts", "panel.tsx"]:

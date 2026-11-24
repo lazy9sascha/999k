@@ -21,7 +21,7 @@ test('opens a fresh terminal for the fixed setup command', async () => {
   assert.deepEqual(await mounted.request('setup.open'), { opened: true })
   assert.deepEqual(host.callsOf('terminal.create'), [{
     workspaceId: 'fixture',
-    title: '999K setup',
+    title: 'P-999K setup',
     command: '"$HOME/.local/bin/999k" init --orca'
   }])
   assert.deepEqual(host.refusals, [])

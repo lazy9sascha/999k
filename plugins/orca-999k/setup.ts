@@ -1,5 +1,5 @@
 export const setupCommand = '"$HOME/.local/bin/999k" init --orca'
-export const setupTitle = '999K setup'
+export const setupTitle = 'P-999K setup'
 
 declare module 'orca' {
   interface PluginRequests {

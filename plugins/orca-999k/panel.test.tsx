@@ -11,7 +11,7 @@ test('waits for a click and reports a terminal opening', async () => {
   assert.equal(launches, 0)
   await view.press({ text: 'Open setup terminal' })
   assert.equal(launches, 1)
-  assert.ok(view.find({ text: 'Terminal opened. Continue in “999K setup”.' }))
+  assert.ok(view.find({ text: 'Terminal opened. Continue in “P-999K setup”.' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })

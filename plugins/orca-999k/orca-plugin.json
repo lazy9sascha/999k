@@ -1,7 +1,7 @@
 {
   "manifestVersion": 2,
-  "id": "radio999k",
-  "name": "999K",
+  "id": "p-999k",
+  "name": "P-999K",
   "publisher": "lazy9sascha",
   "version": "0.2.1",
   "description": "Open 999K bot setup in a local Orca terminal.",
@@ -18,7 +18,7 @@
     "panels": [
       {
         "id": "setup",
-        "title": "999K",
+        "title": "P-999K",
         "icon": "activity",
         "entry": "panel.tsx",
         "ui": "components"

@@ -75,7 +75,7 @@ orca plugin validate ./999k-orca-0.2.1
 orca plugin install ./999k-orca-0.2.1
 ```
 
-The catalog ID is `lazy9sascha.radio999k`. Existing local installations of 0.2.0 use `local.radio999k`. Review the trusted worker and its `workspace:read` and `terminal:send` permissions. After approval, open **999K** in your local workspace. For a custom 999K
+The catalog ID is `lazy9sascha.p-999k`. Existing local installations of 0.2.0 use `local.radio999k`. Review the trusted worker and its `workspace:read` and `terminal:send` permissions. After approval, open **P-999K** in your local workspace. For a custom 999K
 executable path, run that executable's `init --orca` in a local Orca terminal.
 
 For a catalog release, copy the extracted files and the plugin README to the root of the public plugin repository. Add the `orca-plugin` topic and tag the commit with the plugin version, such as `v0.2.1`.
