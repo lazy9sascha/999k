@@ -113,18 +113,6 @@ jobs:
           python3 packaging/render.py "$version" target/artifacts target/distribution
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
-      - name: Package and test the Orca plugin
-        shell: bash
-        env:
-          VERSION: ${{ steps.candidate.outputs.version }}
-        run: |
-          archive=$(python3 packaging/package_orca.py "$VERSION" target/orca-plugin)
-          cd -- "$(dirname -- "$archive")"
-          shasum -a 256 "${archive##*/}" > SHA256SUMS
-          shasum -a 256 --strict --check SHA256SUMS
-          cd -- "$GITHUB_WORKSPACE"
-          python3 tests/orca_release_package.py
-
       - name: Test the distribution wrappers offline
         run: python3 tests/release_install.py
 
@@ -139,15 +127,36 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: 999k-orca-${{ steps.candidate.outputs.version }}-${{ github.run_attempt }}
+          name: 999k-${{ steps.candidate.outputs.version }}-distribution-candidates-${{ github.run_attempt }}
+          path: target/distribution/
+          if-no-files-found: error
+
+  orca-plugin:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Package and test the Orca plugin
+        shell: bash
+        id: plugin
+        run: |
+          version=$(jq -er .version plugins/orca-999k/orca-plugin.json)
+          archive=$(python3 packaging/package_orca.py "$version" target/orca-plugin)
+          cd -- "$(dirname -- "$archive")"
+          shasum -a 256 "${archive##*/}" > SHA256SUMS
+          shasum -a 256 --strict --check SHA256SUMS
+          cd -- "$GITHUB_WORKSPACE"
+          python3 tests/orca_release_package.py
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 999k-orca-${{ steps.plugin.outputs.version }}-${{ github.run_attempt }}
           path: |
             target/orca-plugin/*.tar.gz
             target/orca-plugin/SHA256SUMS
           compression-level: 0
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: 999k-${{ steps.candidate.outputs.version }}-distribution-candidates-${{ github.run_attempt }}
-          path: target/distribution/
           if-no-files-found: error

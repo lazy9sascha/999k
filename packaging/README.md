@@ -54,26 +54,28 @@ The release workflow builds a separate Orca plugin archive once, with its own
 checksum. Build it locally with Python 3:
 
 ```sh
-python3 packaging/package_orca.py 0.2.0 target/orca-plugin
+python3 packaging/package_orca.py 0.2.1 target/orca-plugin
 python3 tests/orca_release_package.py
-(cd target/orca-plugin && shasum -a 256 999k-orca-0.2.0.tar.gz > SHA256SUMS)
+(cd target/orca-plugin && shasum -a 256 999k-orca-0.2.1.tar.gz > SHA256SUMS)
 ```
 
-The version must match the plugin manifest. The archive contains a single
-installable folder, `999k-orca-0.2.0`. Keep the Orca checksum with the Orca
+The plugin version comes from its manifest and can differ from the CLI version. The archive contains a single
+installable folder, `999k-orca-0.2.1`. Keep the Orca checksum with the Orca
 archive in its own directory. The native installer checksum file lists platform
 archives only.
 
-Install 999K 0.2.0 with the native installer. The plugin's setup button uses
+Install the 999K 0.2.0 CLI with the native installer. The plugin's setup button uses
 the default executable at `$HOME/.local/bin/999k`. Use Orca 1.4.268 or newer
 and run these commands from the directory containing the Orca archive and checksum.
 
 ```sh
 shasum -a 256 --check SHA256SUMS
-tar -xzf 999k-orca-0.2.0.tar.gz
-orca plugin validate ./999k-orca-0.2.0
-orca plugin install ./999k-orca-0.2.0
+tar -xzf 999k-orca-0.2.1.tar.gz
+orca plugin validate ./999k-orca-0.2.1
+orca plugin install ./999k-orca-0.2.1
 ```
 
-Orca installs this folder as `local.radio999k`. If you used `local.pigeonmq`, Orca treats 999K as a separate plugin and asks for approval again. Review the trusted worker and its `workspace:read` and `terminal:send` permissions. After approval, open **999K** in your local workspace. For a custom 999K
+The catalog ID is `lazy9sascha.radio999k`. Existing local installations of 0.2.0 use `local.radio999k`. Review the trusted worker and its `workspace:read` and `terminal:send` permissions. After approval, open **999K** in your local workspace. For a custom 999K
 executable path, run that executable's `init --orca` in a local Orca terminal.
+
+For a catalog release, copy the extracted files and the plugin README to the root of the public plugin repository. Add the `orca-plugin` topic and tag the commit with the plugin version, such as `v0.2.1`.
