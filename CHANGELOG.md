@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## 0.2.0 (candidate)
+## 0.2.0 - 2026-11-24
 
 - PigeonMQ is now **999K**. New examples use the `999k` executable and the `radio999k_*` mailbox tools.
 - The release packages target Apple Silicon Macs and Linux on x86-64 and ARM64.
