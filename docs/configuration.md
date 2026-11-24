@@ -637,6 +637,8 @@ mailbox with its default route, and its existing owner-private bearer file:
 pigeonmq stdio-mcp --home <hub-home> --mailbox <name> --bearer-file <private-file>
 ```
 
+Use `--peer <recipient-id>` to restrict this client to recipient discovery, sends to that recipient, and waits for its replies. Each wait must include the original request ID as `in_reply_to`. [Orca setup](quickstart.md#connect-orca-to-your-existing-peers) attaches a separate scoped client to each relay bot.
+
 Give the client the bearer file path, not the bearer value. A missing or unauthenticated
 hub returns a protocol error. The adapter does not fall back to TCP. Closing the client
 leaves the hub running. This adapter handles one request at a time with the MCP 2025-03-26 initialization handshake. It does not expose remote events or cancel calls in progress.

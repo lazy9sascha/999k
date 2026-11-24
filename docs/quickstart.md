@@ -112,6 +112,26 @@ The adapter uses the mailbox policy already mounted in the hub. Closing the clie
 
 See [Local MCP over stdio](configuration.md#local-mcp-over-stdio) for foreground socket setup and protocol details.
 
+#### Connect Orca to your existing peers
+
+Use the Mac that runs the hub. Enable its [private stdio socket](configuration.md#local-mcp-over-stdio) and use the existing sender mailbox. The sender needs permission to send to the peers and read their replies. Peers see that mailbox as the sender. Keep its bearer in the private file on your Mac.
+
+1. Install the native PigeonMQ executable and the [Orca plugin archive](../packaging/README.md#orca-plugin-archive). Review the plugin permissions in Orca. Open a local workspace, select **PigeonMQ**, then **Open setup terminal**. For the default installation this runs `pigeonmq init --orca`.
+2. Leave the setup terminal open. On an empty Orca profile, use **Bots → New bot**, enter the name and identity shown in the terminal, choose the provider, and select **Create**. Setup binds that bot to its existing peer, then asks its Home Chat to propose the remaining relay bots. If Orca cannot deliver the handoff, the terminal prints a command for that Home Chat. Review the cards there. Each time you select **Create bot**, the terminal detects the new bot and attaches its scoped connector. You can close setup and run it again. If you dismissed a card, check Orca before using `--retry-orca-offer <peer>`.
+3. Inspect the setup result. In each configured bot's Home Chat, ask it to call `pigeonmq_recipients` on its own `pigeonmq` tool. It should list the one bound peer. A configured tool can still be unavailable to an existing chat. Verify the call before sending a message.
+4. Send one message. Once the tool returns an original ID, the bot can report **Queued**. To get the answer, use `pigeonmq_wait` in that chat with the original ID as `in_reply_to`. A matching peer reply confirms the exchange. Retry an empty wait with the same ID.
+
+For a custom installation or an existing sender bearer at a different path, run:
+
+```sh
+"$PIGEONMQ_BIN" init --orca --home /absolute/path/to/hub-home \
+  --orca-sender codex-cloud --orca-bearer-file /absolute/path/to/private-bearer-file
+```
+
+Setup reads the existing authorized recipients and configures the supported ones among Dot, Instinct, Cue, Muse and GrokBot. An existing bot must have the expected name and an identity that designates that PigeonMQ peer. Setup reports conflicting names and tools. For this Orca version, use absolute executable, home and bearer paths without spaces or shell metacharacters.
+
+When a project agent calls a bot, keep the Orca question ID with the PigeonMQ original ID. After retrieving the matching answer, the bot can use `orca orchestration reply --id <original-orca-question-id> --body-file -` and pass the answer on standard input.
+
 ## 2. Try a local exchange
 
 You need Python 3 for this optional test. It does not require Rust or a source checkout.

@@ -41,6 +41,8 @@ mod lifecycle_service;
 mod local_http;
 #[path = "cloud/mailbox_startup.rs"]
 mod mailbox_startup;
+#[path = "cloud/orca_onboard.rs"]
+mod orca_onboard;
 #[path = "cloud/reply_mailbox_setup.rs"]
 mod reply_mailbox_setup;
 #[path = "cloud/runtime_profiles.rs"]
@@ -191,6 +193,18 @@ enum Command {
         /// Enable the private stdio socket during a managed apply; an already-active home can enable it once.
         #[arg(long, requires = "apply", conflicts_with = "reserve_address")]
         stdio_socket: bool,
+        /// Onboard existing local Orca bots for the five peers using stdio.
+        #[arg(long, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port", "reserve_address"])]
+        orca: bool,
+        /// Authorized sender mailbox for Orca onboarding.
+        #[arg(long, requires = "orca")]
+        orca_sender: Option<String>,
+        /// Private bearer file for the Orca sender.
+        #[arg(long, requires = "orca")]
+        orca_bearer_file: Option<PathBuf>,
+        /// Request a new card after confirming the previous offer was dismissed or lost.
+        #[arg(long, requires = "orca")]
+        retry_orca_offer: Option<String>,
         /// Use a private Unix origin for a new hosted enrollment.
         #[arg(long, hide = true, requires = "reserve_address")]
         hosted_unix: bool,
@@ -327,6 +341,9 @@ enum Command {
         mailbox: String,
         #[arg(long)]
         bearer_file: PathBuf,
+        /// Restrict this bot connector to one recipient and its linked replies.
+        #[arg(long)]
+        peer: Option<String>,
     },
     // Disabled by owner request. Use the authenticated hub API/MCP for messages.
     // Keep these declarations with the disabled handlers below for a reversible change.
@@ -419,10 +436,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             stdio_socket,
             hosted_unix,
             port,
+            orca,
+            orca_sender,
+            orca_bearer_file,
+            retry_orca_offer,
         } => {
             let home = cloud_setup::resolve_home(home.clone());
             if *reserve_address {
                 return cloud_setup::reserve_address(&home, *hosted_unix);
+            }
+            if *orca {
+                let sender = orca_sender.as_deref().unwrap_or("codex-cloud");
+                let bearer_file = match orca_bearer_file.clone() {
+                    Some(path) => path,
+                    None => orca_onboard::resolve_bearer_file(&home, sender)?,
+                };
+                return orca_onboard::onboard(
+                    &home,
+                    sender,
+                    &bearer_file,
+                    retry_orca_offer.as_deref(),
+                );
             }
             if *operational {
                 let mailbox = agent.as_deref().ok_or("mailbox name required")?;
@@ -632,7 +666,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             home,
             mailbox,
             bearer_file,
-        } => stdio_mcp::run(home, mailbox, bearer_file).map_err(Into::into),
+            peer,
+        } => stdio_mcp::run(home, mailbox, bearer_file, peer.as_deref()).map_err(Into::into),
         Command::ServeHub(options) => {
             let ServeHubOptions {
                 queue,

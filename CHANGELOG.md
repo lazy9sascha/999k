@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Connect a local MCP client to the running hub with `pigeonmq stdio-mcp`. The hub authenticates the mailbox and uses the existing queue.
 - Enable the private socket on an existing managed macOS hub with `init <active-profile> --apply --stdio-socket`.
+- Set up Orca relay bots for existing peers with the separate PigeonMQ plugin and `init --orca`. Each bot's local tool sends to one peer and retrieves replies linked to its original request.
 
 ## 0.1.6 (candidate)
 

@@ -18,6 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "stdio_peer.rs"]
+mod peer_scope;
+
 const SOCKET: &str = "mcp.sock";
 const OWNER: &str = "stdio-mcp.json";
 pub(crate) const AUTHORITY: &str = "127.0.0.1";
@@ -288,6 +291,7 @@ fn serve(
     home: &Path,
     route: &str,
     token: &str,
+    scope: Option<peer_scope::Scope<'_>>,
     mut input: impl BufRead,
     mut output: impl Write,
 ) -> io::Result<()> {
@@ -361,9 +365,14 @@ fn serve(
                         }
                         "ping" => json!({"jsonrpc":"2.0", "id":id, "result":{}}),
                         "tools/list" | "tools/call" if session == Session::Ready => {
-                            exchange(home, route, token, &request).unwrap_or_else(|err| {
+                            let exchange = |request: &Value| exchange(home, route, token, request);
+                            if let Some(scope) = scope {
+                                scope.exchange(method, &request, exchange)
+                            } else {
+                                exchange(&request)
+                            }
+                            .unwrap_or_else(|err| {
                                 eprintln!("Local MCP request failed: {err}");
-
                                 error(id, -32000, "Local MCP hub unavailable or unauthorized")
                             })
                         }
@@ -386,10 +395,8 @@ fn serve(
     }
 }
 
-pub(crate) fn run(home: &Path, mailbox: &str, bearer_file: &Path) -> io::Result<()> {
-    let home = crate::cloud_setup::require_home(home)?;
-    let route = route_for(mailbox)?;
-    let bytes = read_private(bearer_file)?;
+fn bearer(path: &Path) -> io::Result<String> {
+    let bytes = read_private(path)?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| fail("invalid MCP bearer file"))?
         .trim();
@@ -397,11 +404,155 @@ pub(crate) fn run(home: &Path, mailbox: &str, bearer_file: &Path) -> io::Result<
     if token.is_empty() || !token.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
         return Err(fail("invalid MCP bearer file"));
     }
+    Ok(token.to_owned())
+}
+
+pub(crate) fn orca_recipients(
+    home: &Path,
+    sender: &str,
+    bearer_file: &Path,
+) -> io::Result<Vec<String>> {
+    let home = crate::cloud_setup::require_home(home)?;
+    let route = route_for(sender)?;
+    let token = bearer(bearer_file)?;
+    let init = exchange(
+        &home,
+        &route,
+        &token,
+        &json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+            "protocolVersion":PROTOCOL, "capabilities":{},
+            "clientInfo":{"name":"pigeonmq-orca-setup", "version":env!("CARGO_PKG_VERSION")}
+        }}),
+    )?;
+    if init["result"]["protocolVersion"] != PROTOCOL {
+        return Err(fail("local MCP initialization failed"));
+    }
+    let reply = exchange(
+        &home,
+        &route,
+        &token,
+        &json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
+            "name":"pigeonmq_recipients", "arguments":{}
+        }}),
+    )?;
+    let recipients = peer_scope::tool_value(&reply)?;
+    recipients["recipients"]
+        .as_array()
+        .ok_or_else(|| fail("invalid local MCP recipient list"))?
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| fail("invalid local MCP recipient"))
+        })
+        .collect()
+}
+
+pub(crate) fn run(
+    home: &Path,
+    mailbox: &str,
+    bearer_file: &Path,
+    peer: Option<&str>,
+) -> io::Result<()> {
+    let home = crate::cloud_setup::require_home(home)?;
+    let route = route_for(mailbox)?;
+    let token = bearer(bearer_file)?;
+    let scope = peer
+        .map(|peer| peer_scope::Scope::new(mailbox, peer))
+        .transpose()?;
     serve(
         &home,
         &route,
-        token,
+        &token,
+        scope,
         io::stdin().lock(),
         io::stdout().lock(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn orca_discovery_uses_authenticated_local_mcp_and_rejects_http_denial() {
+        let home = tempfile::Builder::new()
+            .prefix("pmqs")
+            .tempdir_in("/tmp")
+            .unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let bearer_file = home.path().join("bearer");
+        private_file::replace_private(&bearer_file, b"Bearer fixture-stdio-token\n").unwrap();
+        let socket = bind(home.path(), &["/codex/mcp".into()]).unwrap();
+        let server = std::thread::spawn(move || {
+            for (id, method) in [(1, "initialize"), (2, "tools/call"), (1, "initialize")] {
+                let (mut stream, _) = socket.listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut input = io::BufReader::new(&mut stream);
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    input.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    assert!(!line.is_empty());
+                    headers.push_str(&line);
+                }
+                assert!(headers.starts_with("POST /codex/mcp HTTP/1.1\r\n"));
+                let size: usize = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let mut body = vec![0; size];
+                input.read_exact(&mut body).unwrap();
+                let request = strict_json(&body).unwrap();
+                assert_eq!(request["id"], id);
+                assert_eq!(request["method"], method);
+                if headers
+                    .lines()
+                    .any(|line| line == "Authorization: Bearer fixture-denied")
+                {
+                    write!(
+                        stream,
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .unwrap();
+                    continue;
+                }
+                assert!(
+                    headers
+                        .lines()
+                        .any(|line| line == "Authorization: Bearer fixture-stdio-token")
+                );
+                let result = if method == "initialize" {
+                    assert_eq!(request["params"]["protocolVersion"], PROTOCOL);
+                    json!({"protocolVersion": PROTOCOL})
+                } else {
+                    assert_eq!(request["params"]["name"], "pigeonmq_recipients");
+                    json!({"isError":false,"content":[{"type":"text","text":"{\"recipients\":[\"dot\",\"cue\"]}"}]})
+                };
+                let reply = json!({"jsonrpc":"2.0","id":id,"result":result}).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+            }
+        });
+        assert_eq!(
+            orca_recipients(home.path(), "codex-cloud", &bearer_file).unwrap(),
+            ["dot", "cue"]
+        );
+        private_file::replace_private(&bearer_file, b"fixture-denied\n").unwrap();
+        let denied = orca_recipients(home.path(), "codex-cloud", &bearer_file).unwrap_err();
+        assert_eq!(denied.to_string(), "local MCP hub returned HTTP 401");
+        server.join().unwrap();
+    }
 }

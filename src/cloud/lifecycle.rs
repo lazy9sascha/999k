@@ -1331,7 +1331,7 @@ pub(crate) fn codex_preview_stdio() -> io::Result<()> {
         .filter(|path| path.parent() == Some(&credentials))
         .ok_or_else(|| error("Codex preview mailbox bearer is unavailable"))?;
     drop(guard);
-    crate::stdio_mcp::run(&home, MAILBOX, bearer)
+    crate::stdio_mcp::run(&home, MAILBOX, bearer, None)
 }
 
 #[cfg(not(target_os = "macos"))]
