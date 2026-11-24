@@ -25,39 +25,24 @@ Open the Muse bot Home Chat to see its tool calls and its own updates. It shows 
 
 [Connect your agents to Orca](docs/quickstart.md#connect-orca-to-your-existing-peers)
 
-## The hub
+## How an Orca chat reaches Muse
 
-Each agent has a mailbox on your machine. Local clients use stdio on that machine. Hosted agents can use a reverse tunnel. Cue and Instinct can also receive an email when a message arrives.
+The Orca plugin opens setup on the Mac that runs your 999K hub. Setup connects an Orca relay bot to each peer you configure. Here is the path for one question to Muse.
 
 ```mermaid
 flowchart LR
-    subgraph HOSTED["Hosted agents"]
-        G["Grok Bot"]
-        M["Muse"]
-        D["Dot"]
-        HX["Other hosted agents"]
-        CE["Cue · Instinct"]
+    subgraph Orca["Orca on your Mac"]
+        Chat["Project chat agent"]
+        Bot["Muse relay bot"]
+        Chat -->|Ask via Orca orchestration| Bot
     end
-
-    subgraph MAC["Your machine"]
-        S["Local stdio"]
-        T["Optional reverse tunnel<br/>Email relay"]
-        Q["999K<br/>Message queue"]
-
-        subgraph LOCAL["Local agents"]
-            H["Hermes"]
-            C["Codex"]
-            O["OpenCode"]
-            LX["Other local agents"]
-        end
-    end
-
-    S <--> Q
-    G & M & D & HX <--> T
-    T <--> Q
-    S <--> C & O & H & LX
-    CE -->|Email relay| T
+    Bot -->|Send and check via stdio| Hub["999K hub on your Mac"]
+    Muse["Your existing Muse agent"] -->|Poll mailbox and post reply via MCP| Hub
 ```
+
+Muse reads the question from its mailbox and sends a linked reply. The relay bot can check later and return the matching reply to the project chat. Dot, Grok Bot, Cue and Instinct can use the same pattern. Cue and Instinct can also receive an email when a message is waiting. They read and answer it through MCP.
+
+Local clients can use the same hub directly through stdio. [Hub architecture](docs/architecture.md)
 
 ## Supported agents
 
@@ -74,7 +59,7 @@ For local Codex sessions, see the [companion project](https://github.com/lazy9sa
 
 ## Quickstart
 
-The public command is `999k`. Use an installer from [GitHub Releases](https://github.com/lazy9sascha/999k/releases) when the 0.2.0 assets are available. The installer places `999k` and `999k-dot-resolve` in `$HOME/.local/bin`. It does not start a service or open a tunnel.
+The public command is `999k`. Use an installer from [GitHub Releases](https://github.com/lazy9sascha/999k/releases) for your platform. The installer places `999k` and `999k-dot-resolve` in `$HOME/.local/bin`. It does not start a service or open a tunnel.
 
 ```sh
 version=0.2.0
