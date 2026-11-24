@@ -4,6 +4,10 @@ If this checkout sits inside a parent workspace with [workspace instructions](..
 
 999K runs a standalone queue and MCP hub on your Mac. Cloud agents connect through a tunnel. It owns its own queue and does not depend on a PigeonMQ Local installation at build time or runtime. Read [docs/architecture.md](docs/architecture.md) before changing behavior.
 
+## Release planning
+
+Before taking release work, read the current goal in `.local/goal.md` and the ticket board in `.local/task/README.md`. These private files are shared by this repository's local worktrees. If a linked worktree has no local planning files, find the primary checkout with `git worktree list` and read its copies. Update the shared files when scope or assignments change.
+
 ## Layout
 
 ```text
