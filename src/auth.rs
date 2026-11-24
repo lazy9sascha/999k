@@ -1,5 +1,5 @@
 //! Minimal bearer/operation/mailbox policy. No credential creation or Keychain.
-use pigeonmq::private_file::MAX_PRIVATE_CONFIG_BYTES as MAX_POLICY;
+use radio999k::private_file::MAX_PRIVATE_CONFIG_BYTES as MAX_POLICY;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, io::Read, path::Path};
@@ -116,7 +116,7 @@ impl Principal {
         }
     }
 }
-fn digest(text: &str) -> Option<[u8; 32]> {
+pub(crate) fn digest(text: &str) -> Option<[u8; 32]> {
     if text.len() != 64 || !text.is_ascii() {
         return None;
     }
@@ -125,6 +125,19 @@ fn digest(text: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
     }
     Some(out)
+}
+
+pub(crate) fn read_private_policy(path: &Path) -> Result<Vec<u8>, Fault> {
+    let fail = (503, "auth_unavailable");
+    let mut bytes = Vec::new();
+    open_private_file(path)?
+        .take(MAX_POLICY + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| fail)?;
+    if bytes.len() as u64 > MAX_POLICY {
+        return Err(fail);
+    }
+    Ok(bytes)
 }
 fn label(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 128
@@ -135,14 +148,7 @@ fn load_generic_policy(path: &Path) -> Result<Vec<(Entry, [u8; 32])>, Fault> {
 type LoadedPolicy = (Vec<(Entry, [u8; 32])>, Option<Events>);
 fn load_policy_file(path: &Path) -> Result<LoadedPolicy, Fault> {
     let fail = (503, "auth_unavailable");
-    let mut bytes = Vec::new();
-    open_private_file(path)?
-        .take(MAX_POLICY + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| fail)?;
-    if bytes.len() as u64 > MAX_POLICY {
-        return Err(fail);
-    }
+    let bytes = read_private_policy(path)?;
     let policy: Policy = serde_json::from_slice(&bytes).map_err(|_| fail)?;
     if policy.principals.is_empty() {
         return Err(fail);
@@ -174,7 +180,7 @@ fn load_policy_file(path: &Path) -> Result<LoadedPolicy, Fault> {
 pub fn codex_events(
     path: &Path,
     registration: &Path,
-) -> Result<Option<(Events, pigeonmq::events::policy::EventsPolicy)>, Fault> {
+) -> Result<Option<(Events, radio999k::events::policy::EventsPolicy)>, Fault> {
     let (entries, settings) = load_policy_file(path)?;
     let Some(settings) = settings else {
         return Ok(None);
@@ -192,9 +198,9 @@ pub fn codex_events(
     {
         return Err((403, "forbidden"));
     }
-    pigeonmq::registration::validate_registration(registration, "codex-cloud", "codex-cloud")?;
-    let peers = pigeonmq::registration::active_peers(registration, "codex-cloud")?;
-    let policy = pigeonmq::events::policy::EventsPolicy::for_codex(
+    radio999k::registration::validate_registration(registration, "codex-cloud", "codex-cloud")?;
+    let peers = radio999k::registration::active_peers(registration, "codex-cloud")?;
+    let policy = radio999k::events::policy::EventsPolicy::for_codex(
         entry.token_sha256.to_ascii_lowercase(),
         peers,
         settings.callback_hosts.clone(),
@@ -207,25 +213,47 @@ pub fn codex_events(
 pub fn validate_private(path: &Path) -> Result<(), Fault> {
     load_generic_policy(path).map(|_| ())
 }
-// AUTH-007: authenticate private callers.
-pub fn authenticate_private(path: &Path, authorization: &[Vec<u8>]) -> Result<Principal, Fault> {
-    authenticate_generic(load_generic_policy(path)?, authorization)
-}
-fn authenticate_generic(
-    entries: Vec<(Entry, [u8; 32])>,
-    authorization: &[Vec<u8>],
-) -> Result<Principal, Fault> {
+// AUTH-007: extract the presented bearer token digest.
+pub(crate) fn presented_token_digest(authorization: &[Vec<u8>]) -> Result<[u8; 32], Fault> {
     let bad = (401, "unauthorized");
     if authorization.len() != 1 {
         return Err(bad);
     }
     let value = std::str::from_utf8(&authorization[0]).map_err(|_| bad)?;
     let token = value.strip_prefix("Bearer ").ok_or(bad)?;
-    // FIXME(yagni): 256-byte/graphic bearer pre-check - the token is SHA-256 hashed and compared in constant time anyway
-    if token.is_empty() || token.len() > 256 || !token.bytes().all(|v| v.is_ascii_graphic()) {
+    if token.is_empty() || token.len() > 256 || !token.bytes().all(|b| b.is_ascii_graphic()) {
         return Err(bad);
     }
-    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    Ok(Sha256::digest(token.as_bytes()).into())
+}
+
+// AUTH-007: authenticate private callers.
+pub fn authenticate_private(path: &Path, authorization: &[Vec<u8>]) -> Result<Principal, Fault> {
+    authenticate_generic(load_generic_policy(path)?, authorization)
+}
+/// Preserve the live Cue policy without accepting its local Bearer on the hosted route.
+pub(crate) fn active_hosted_cue_policy(path: &Path) -> Result<Principal, Fault> {
+    let (entry, _) = load_generic_policy(path)?
+        .into_iter()
+        .find(|(entry, _)| entry.id == "cue" && !entry.revoked)
+        .ok_or((403, "forbidden"))?;
+    Ok(principal(entry))
+}
+
+fn principal(entry: Entry) -> Principal {
+    Principal {
+        id: entry.id,
+        operations: entry.operations,
+        send_to: entry.send_to,
+        mailboxes: entry.mailboxes,
+    }
+}
+fn authenticate_generic(
+    entries: Vec<(Entry, [u8; 32])>,
+    authorization: &[Vec<u8>],
+) -> Result<Principal, Fault> {
+    let bad = (401, "unauthorized");
+    let presented = presented_token_digest(authorization)?;
     // Compare every entry; never use normal string equality for bearer verification.
     let mut matched = None;
     for (index, (entry, hash)) in entries.iter().enumerate() {
@@ -236,12 +264,7 @@ fn authenticate_generic(
     }
     let index = matched.ok_or(bad)?;
     let (entry, _) = entries.into_iter().nth(index).ok_or(bad)?;
-    Ok(Principal {
-        id: entry.id,
-        operations: entry.operations,
-        send_to: entry.send_to,
-        mailboxes: entry.mailboxes,
-    })
+    Ok(principal(entry))
 }
 
 /// Send and Read use the same registered peers at a single write checkpoint.
@@ -308,7 +331,7 @@ fn muse_now_ms() -> Result<u64, Fault> {
 
 impl MusePrincipal {
     fn registered_peers(&self) -> Result<Vec<String>, Fault> {
-        pigeonmq::registration::active_peers(
+        radio999k::registration::active_peers(
             Path::new(
                 self.registration
                     .as_deref()
@@ -330,9 +353,9 @@ impl MusePrincipal {
     pub fn scope(
         &self,
         operation: MuseOperation,
-    ) -> Result<pigeonmq::muse_mailbox::MuseScope, Fault> {
+    ) -> Result<radio999k::muse_mailbox::MuseScope, Fault> {
         self.require_operation(operation)?;
-        Ok(pigeonmq::muse_mailbox::MuseScope {
+        Ok(radio999k::muse_mailbox::MuseScope {
             allowed_senders: self.registered_peers()?,
         })
     }
@@ -340,7 +363,7 @@ impl MusePrincipal {
 
 /// Open through a verified directory descriptor to avoid parent replacement races.
 /// Only the immediate parent is constrained; ancestors remain trusted installation paths.
-use pigeonmq::private_file::open_private_file;
+use radio999k::private_file::open_private_file;
 
 /// Metadata check only; does not read database or credential contents.
 pub fn require_private_file(path: &Path) -> Result<(), Fault> {
@@ -349,14 +372,7 @@ pub fn require_private_file(path: &Path) -> Result<(), Fault> {
 
 fn load_muse(path: &Path) -> Result<(MusePrincipal, [u8; 32]), Fault> {
     let fail = (503, "auth_unavailable");
-    let mut bytes = Vec::new();
-    open_private_file(path)?
-        .take(MAX_POLICY + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| fail)?;
-    if bytes.len() as u64 > MAX_POLICY {
-        return Err(fail);
-    }
+    let bytes = read_private_policy(path)?;
     let policy: MusePolicy = serde_json::from_slice(&bytes).map_err(|_| fail)?;
     if policy.retired_senders {
         return Err((503, RETIRED_SENDERS_CODE));
@@ -390,19 +406,9 @@ pub fn validate_muse(path: &Path) -> Result<(), Fault> {
 
 pub fn authenticate_muse(path: &Path, authorization: &[Vec<u8>]) -> Result<MusePrincipal, Fault> {
     let (principal, hash) = load_muse(path).map_err(public_policy_fault)?;
-    let bad = (401, "unauthorized");
-    if authorization.len() != 1 {
-        return Err(bad);
-    }
-    let value = std::str::from_utf8(&authorization[0]).map_err(|_| bad)?;
-    let token = value.strip_prefix("Bearer ").ok_or(bad)?;
-    // FIXME(yagni): 256-byte/graphic bearer pre-check - the hash compare already rejects bad tokens
-    if token.is_empty() || token.len() > 256 || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(bad);
-    }
-    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    let presented = presented_token_digest(authorization)?;
     if hash.ct_eq(&presented).unwrap_u8() != 1 {
-        return Err(bad);
+        return Err((401, "unauthorized"));
     }
     Ok(principal)
 }
@@ -411,7 +417,7 @@ pub fn authenticate_muse(path: &Path, authorization: &[Vec<u8>]) -> Result<MuseP
 pub fn local_muse_scope(
     path: &Path,
     operation: MuseOperation,
-) -> Result<pigeonmq::muse_mailbox::MuseScope, Fault> {
+) -> Result<radio999k::muse_mailbox::MuseScope, Fault> {
     load_muse(path)?.0.scope(operation)
 }
 

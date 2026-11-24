@@ -1,0 +1,153 @@
+name: Release artifacts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/artifacts.yml
+      - Cargo.toml
+      - Cargo.lock
+      - LICENSE
+      - 'packaging/**'
+      - 'plugins/orca-999k/**'
+      - 'scripts/**'
+      - 'src/**'
+      - tests/release_install.py
+      - tests/orca_release_package.py
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Rust toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+          rustc -vV
+
+      - name: Build and smoke-test native archive
+        shell: bash
+        run: |
+          archive=$(scripts/package-release.sh "$TARGET")
+          name=${archive##*/}
+          version=${name#999k-}
+          version=${version%-$TARGET.tar.gz}
+          scripts/smoke-release.sh "$archive" "$version"
+          cd -- "$(dirname -- "$archive")"
+          shasum -a 256 "$name" > "$name.sha256"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-${{ github.run_attempt }}-${{ matrix.target }}
+          path: |
+            target/artifacts/*.tar.gz
+            target/artifacts/*.tar.gz.sha256
+          compression-level: 0
+          if-no-files-found: error
+
+  assemble:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Re-run all jobs after a failure to keep every archive in the same attempt.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-${{ github.run_attempt }}-*
+          path: target/artifacts
+          merge-multiple: true
+
+      - name: Verify checksums and render distribution candidates
+        id: candidate
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' Cargo.toml)
+          (
+            cd target/artifacts
+            shopt -s nullglob
+            archives=(*.tar.gz)
+            expected=(
+              "999k-$version-aarch64-apple-darwin.tar.gz"
+              "999k-$version-aarch64-unknown-linux-gnu.tar.gz"
+              "999k-$version-x86_64-unknown-linux-gnu.tar.gz"
+            )
+            if [[ "${#archives[@]}" != "${#expected[@]}" ]]; then
+              echo 'Unexpected number of native archives.' >&2
+              exit 1
+            fi
+            for archive in "${expected[@]}"; do
+              if [[ ! -f "$archive" ]]; then
+                echo "Missing native release archive: $archive" >&2
+                exit 1
+              fi
+            done
+            LC_ALL=C sort -k 2,2 -- "${expected[@]/%/.sha256}" > SHA256SUMS
+            shasum -a 256 --strict --check SHA256SUMS
+            rm -- "${expected[@]/%/.sha256}"
+          )
+          python3 packaging/render.py "$version" target/artifacts target/distribution
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Package and test the Orca plugin
+        shell: bash
+        env:
+          VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          archive=$(python3 packaging/package_orca.py "$VERSION" target/orca-plugin)
+          cd -- "$(dirname -- "$archive")"
+          shasum -a 256 "${archive##*/}" > SHA256SUMS
+          shasum -a 256 --strict --check SHA256SUMS
+          cd -- "$GITHUB_WORKSPACE"
+          python3 tests/orca_release_package.py
+
+      - name: Test the distribution wrappers offline
+        run: python3 tests/release_install.py
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 999k-${{ steps.candidate.outputs.version }}-candidate-release-assets-${{ github.run_attempt }}
+          path: |
+            target/artifacts/*.tar.gz
+            target/artifacts/SHA256SUMS
+          compression-level: 0
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 999k-orca-${{ steps.candidate.outputs.version }}-${{ github.run_attempt }}
+          path: |
+            target/orca-plugin/*.tar.gz
+            target/orca-plugin/SHA256SUMS
+          compression-level: 0
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: 999k-${{ steps.candidate.outputs.version }}-distribution-candidates-${{ github.run_attempt }}
+          path: target/distribution/
+          if-no-files-found: error

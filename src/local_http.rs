@@ -4,11 +4,11 @@ use crate::mcp_sdk;
 use catalog::Adapter;
 
 use crate::auth::{self, Operation, Principal};
-use pigeonmq::{
+use radio999k::{
     DeadLetterInspection, Envelope, Error, Outcome, Queue, mailbox_catalog as catalog,
     mailbox_generation,
 };
-use pigeonmq::{
+use radio999k::{
     mailbox_tools::registered_mailbox_tools,
     mcp_request::{
         accepted_cancellation, check_streamable_mailbox_body, registered_mailbox_fields,
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Write},
-    net::{Ipv4Addr, TcpListener, TcpStream},
+    net::{Ipv4Addr, TcpListener},
     os::{
         fd::AsRawFd,
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -28,10 +28,17 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+mod access;
+mod cloudflare_access;
 mod transport;
 #[cfg(test)]
 use std::io::Read;
-use transport::{Fault, Input, MAX_HEADERS, ProfileHandler, WireResponse, serve_profile_listeners};
+#[cfg(test)]
+use std::net::TcpStream;
+use transport::{
+    Fault, Input, MAX_HEADERS, ProfileHandler, ProfileListener, ProfileStream, WireResponse,
+    serve_profile_listeners,
+};
 const MAX_HTTP_CONNECTION_WORKERS: usize = 8;
 const MAX_BODY: usize = 16384;
 // JSON may encode one body byte as six ASCII bytes (\uXXXX).
@@ -41,7 +48,7 @@ const MAX_MUSE_ENVELOPE: usize = catalog::default_body_limit(MAX_HEADERS);
 mod grok_bot;
 pub(crate) use grok_bot::validate_grok_setup_policy;
 pub use grok_bot::{check_grok, prepare_grok};
-use pigeonmq::inbox_page;
+use radio999k::inbox_page;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestBody {
@@ -146,11 +153,11 @@ pub(crate) fn terminal_observation_fault(error: Fault) -> Fault {
 
 fn mcp_tools() -> Value {
     json!([
-        {"name":"pigeonmq_send","description":"Enqueue an ordinary message. Requires authenticated send authority; does not run an agent or acknowledge a message. Single recipient only: central registration-backed subset preflight is unavailable in this generic profile.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
-        {"name":"pigeonmq_request","description":"Enqueue an RPC request. Returns message ID as request ID.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
-        {"name":"pigeonmq_receive","description":"Claim one RPC request for a recipient with a lease.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"lease_seconds":{"type":"integer"}},"required":["recipient"],"additionalProperties":false}},
-        {"name":"pigeonmq_respond","description":"Store a result and atomically end the claim.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"id":{"type":"string"},"receipt":{"type":"string"},"result":{"type":"object"}},"required":["recipient","id","receipt","result"],"additionalProperties":false}},
-        {"name":"pigeonmq_status","description":"Check request state and result.","inputSchema":{"type":"object","properties":{"requester":{"type":"string"},"id":{"type":"string"}},"required":["requester","id"],"additionalProperties":false}}
+        {"name":"radio999k_send","description":"Enqueue an ordinary message. Requires authenticated send authority; does not run an agent or acknowledge a message. Single recipient only: central registration-backed subset preflight is unavailable in this generic profile.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
+        {"name":"radio999k_request","description":"Enqueue an RPC request. Returns message ID as request ID.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
+        {"name":"radio999k_receive","description":"Claim one RPC request for a recipient with a lease.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"lease_seconds":{"type":"integer"}},"required":["recipient"],"additionalProperties":false}},
+        {"name":"radio999k_respond","description":"Store a result and atomically end the claim.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"id":{"type":"string"},"receipt":{"type":"string"},"result":{"type":"object"}},"required":["recipient","id","receipt","result"],"additionalProperties":false}},
+        {"name":"radio999k_status","description":"Check request state and result.","inputSchema":{"type":"object","properties":{"requester":{"type":"string"},"id":{"type":"string"}},"required":["requester","id"],"additionalProperties":false}}
     ])
 }
 
@@ -161,12 +168,12 @@ fn call_mcp_tool(
     args: Value,
 ) -> Result<Value, Fault> {
     Ok(match name {
-        "pigeonmq_send" => {
+        "radio999k_send" => {
             let b: RequestBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             send_message(queue, b, principal)?
         }
-        "pigeonmq_request" => {
+        "radio999k_request" => {
             let b: RequestBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             principal.operation(Operation::Request)?;
@@ -186,7 +193,7 @@ fn call_mcp_tool(
             )
             .map_err(|_| (500, "internal_error"))?
         }
-        "pigeonmq_receive" => {
+        "radio999k_receive" => {
             let b: ReceiveBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             principal.operation(Operation::Receive)?;
@@ -198,7 +205,7 @@ fn call_mcp_tool(
             )
             .map_err(|_| (500, "internal_error"))?
         }
-        "pigeonmq_respond" => {
+        "radio999k_respond" => {
             let b: RespondBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             principal.operation(Operation::Respond)?;
@@ -210,7 +217,7 @@ fn call_mcp_tool(
             )
             .map_err(|_| (500, "internal_error"))?
         }
-        "pigeonmq_status" => {
+        "radio999k_status" => {
             let b: StatusBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             principal.operation(Operation::Status)?;
@@ -342,7 +349,7 @@ mod tests {
                 deadline: None,
             };
             let dispatch =
-                || dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false);
+                || dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false, None);
             assert!(matches!(
                 dispatch(),
                 WireResponse::Json((Err((404, "profile_disabled")), 200))
@@ -406,7 +413,9 @@ mod tests {
                 Vec::new(),
                 None,
                 (addr.port(), Some(1), HubMode::Explicit),
+                false,
                 Some(listener.try_clone().unwrap()),
+                None,
             )
             .unwrap_err()
             .to_string(),
@@ -422,7 +431,9 @@ mod tests {
                 Vec::new(),
                 Some("managed"),
                 (addr.port(), Some(1), HubMode::Managed),
+                false,
                 Some(listener),
+                None,
             )
         });
         for route in ["/dot/mcp", "/mcp", "/receiver", "/rpc/request"] {
@@ -473,7 +484,7 @@ mod tests {
             );
             let input = parse_head(head.as_bytes(), "127.0.0.1:1234").unwrap();
             assert!(matches!(
-                dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false),
+                dispatch_hub_request(&state, "127.0.0.1:1234", &input, b"{}", &|| false, None),
                 transport::WireResponse::Json((Err((404, "profile_disabled")), 200))
             ));
         }
@@ -554,7 +565,7 @@ mod tests {
             let input = transport::parse_head(head.as_bytes(), authority, |p| {
                 state.routes.get(p).map(|route| route.body_limit)
             })?;
-            match dispatch_hub_request(state, authority, &input, body.as_bytes(), &|| false) {
+            match dispatch_hub_request(state, authority, &input, body.as_bytes(), &|| false, None) {
                 transport::WireResponse::Json((result, 200)) => result.map(Option::unwrap),
                 _ => panic!("expected generic JSON response"),
             }
@@ -680,11 +691,11 @@ mod tests {
     }
     #[test]
     fn grok_and_muse_framing_accept_escaped_16_kib_text() {
-        assert_eq!(pigeonmq::grok_mailbox::MAX_TEXT, 16384);
-        assert_eq!(pigeonmq::muse_mailbox::MAX_REQUEST_BYTES, 16384);
+        assert_eq!(radio999k::grok_mailbox::MAX_TEXT, 16384);
+        assert_eq!(radio999k::muse_mailbox::MAX_REQUEST_BYTES, 16384);
         let body = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"pigeonmq_send","arguments":{{"recipient":"muse","body":"{}","idempotency_key":"framing-fixture"}}}}}}"#,
-            "\\u0061".repeat(pigeonmq::grok_mailbox::MAX_TEXT)
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"radio999k_send","arguments":{{"recipient":"muse","body":"{}","idempotency_key":"framing-fixture"}}}}}}"#,
+            "\\u0061".repeat(radio999k::grok_mailbox::MAX_TEXT)
         );
         let decoded: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
@@ -692,7 +703,7 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .len(),
-            pigeonmq::grok_mailbox::MAX_TEXT
+            radio999k::grok_mailbox::MAX_TEXT
         );
         for path in ["/grok/mcp", "/muse/mcp"] {
             let request = |length| {
@@ -889,7 +900,7 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(reply["id"], "generic-test");
         assert_eq!(reply["result"]["protocolVersion"], "2025-03-26");
-        assert_eq!(reply["result"]["serverInfo"]["name"], "pigeonmq");
+        assert_eq!(reply["result"]["serverInfo"]["name"], "999k");
         assert!(reply["result"]["capabilities"].get("events").is_none());
 
         let initialized = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
@@ -900,13 +911,13 @@ mod tests {
         let (status, listed) = f.rpc("sender-fixture", "tools/list", json!({}));
         assert_eq!(status, 200);
         let tools = listed["result"]["tools"].as_array().unwrap();
-        assert!(tools.iter().any(|tool| tool["name"] == "pigeonmq_request"));
+        assert!(tools.iter().any(|tool| tool["name"] == "radio999k_request"));
         let find = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap();
-        let schema = &find("pigeonmq_send")["inputSchema"];
+        let schema = &find("radio999k_send")["inputSchema"];
         assert_eq!(schema["required"], json!(["sender", "recipient", "body"]));
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(
-            find("pigeonmq_receive")["inputSchema"]["required"],
+            find("radio999k_receive")["inputSchema"]["required"],
             json!(["recipient"])
         );
         for method in ["resources/list", "events/list"] {
@@ -926,7 +937,7 @@ mod tests {
             400
         );
         for arguments in [json!(["sender", "worker"]), json!(false), json!("bad")] {
-            let (status, response) = f.tool("sender-fixture", "pigeonmq_request", arguments);
+            let (status, response) = f.tool("sender-fixture", "radio999k_request", arguments);
             assert!(
                 matches!(status, 400 | 415) || response.get("error").is_some(),
                 "invalid arguments accepted: {status} {response}"
@@ -937,7 +948,7 @@ mod tests {
         assert_eq!(unknown["error"]["code"], -32602);
         let (status, invalid) = f.tool(
             "worker-fixture",
-            "pigeonmq_receive",
+            "radio999k_receive",
             json!({"lease_seconds":30}),
         );
         assert_eq!(status, 200);
@@ -950,7 +961,7 @@ mod tests {
         let request = json!({"sender":"sender","recipient":"worker","body":"synthetic RPC"});
         let forbidden = (403, json!({"error":{"code":"forbidden"}}));
         assert_eq!(
-            f.tool("observer-fixture", "pigeonmq_request", request.clone()),
+            f.tool("observer-fixture", "radio999k_request", request.clone()),
             forbidden
         );
         for args in [
@@ -958,23 +969,23 @@ mod tests {
             json!({"sender":"sender","recipient":"outside","body":"outside target"}),
         ] {
             assert_eq!(
-                f.tool("sender-fixture", "pigeonmq_request", args),
+                f.tool("sender-fixture", "radio999k_request", args),
                 forbidden
             );
         }
-        let queued = unpack(f.tool("sender-fixture", "pigeonmq_request", request));
+        let queued = unpack(f.tool("sender-fixture", "radio999k_request", request));
         let id = &queued["message"]["id"];
         assert_eq!(
             f.tool(
                 "worker-fixture",
-                "pigeonmq_receive",
+                "radio999k_receive",
                 json!({"recipient":"outside"})
             ),
             forbidden
         );
         let receive = unpack(f.tool(
             "worker-fixture",
-            "pigeonmq_receive",
+            "radio999k_receive",
             json!({"recipient":"worker"}),
         ));
         assert_eq!(&receive["message"]["id"], id);
@@ -982,28 +993,28 @@ mod tests {
         assert_eq!(
             f.tool(
                 "worker-fixture",
-                "pigeonmq_respond",
+                "radio999k_respond",
                 json!({"recipient":"worker","id":id,"receipt":"wrong","result":answer})
             ),
             (409, json!({"error":{"code":"stale_receipt"}})),
         );
         let completed = unpack(f.tool(
             "worker-fixture",
-            "pigeonmq_respond",
+            "radio999k_respond",
             json!({"recipient":"worker","id":id,"receipt":receive["receipt"],"result":answer}),
         ));
         assert_eq!(completed, answer);
         assert_eq!(
             f.tool(
                 "sender-fixture",
-                "pigeonmq_status",
+                "radio999k_status",
                 json!({"requester":"worker","id":id})
             ),
             forbidden
         );
         let status = unpack(f.tool(
             "sender-fixture",
-            "pigeonmq_status",
+            "radio999k_status",
             json!({"requester":"sender","id":id}),
         ));
         assert_eq!(status["state"], "answered");
@@ -1019,7 +1030,7 @@ mod tests {
         );
         assert_eq!(f.http("/messages/send", "observer-fixture", send).0, 403);
         assert_eq!(
-            f.tool("sender-fixture", "pigeonmq_send", json!({"sender":"sender","recipient":"worker,observer","body":"synthetic","idempotency_key":"subset"})),
+            f.tool("sender-fixture", "radio999k_send", json!({"sender":"sender","recipient":"worker,observer","body":"synthetic","idempotency_key":"subset"})),
             (503, json!({"error":{"code":"recipient_preflight_unavailable"}})),
         );
         let rows: i64 = rusqlite::Connection::open(&f.state.db)
@@ -1041,7 +1052,7 @@ mod tests {
                 f.http("/rpc/receive", "worker-fixture", args.clone()).0,
                 400
             );
-            let (status, response) = f.tool("worker-fixture", "pigeonmq_receive", args);
+            let (status, response) = f.tool("worker-fixture", "radio999k_receive", args);
             assert!(status == 400 || response["error"]["code"] == -32602);
         }
         for (mcp, args, seconds) in [
@@ -1064,7 +1075,7 @@ mod tests {
             };
             let before = now();
             let delivery = if mcp {
-                unpack(f.tool("worker-fixture", "pigeonmq_receive", args))
+                unpack(f.tool("worker-fixture", "radio999k_receive", args))
             } else {
                 let (status, result) = f.http("/rpc/receive", "worker-fixture", args);
                 assert_eq!(status, 200);
@@ -1098,7 +1109,7 @@ mod tests {
 
 // Muse is a separate authenticated profile of the existing loopback transport.
 // This path never creates a queue, emits Events, starts a model, or uses dot ACLs.
-use pigeonmq::muse_mailbox::{self, MailboxError, MuseScope};
+use radio999k::muse_mailbox::{self, MailboxError, MuseScope};
 use rmcp::{
     ErrorData,
     model::{ErrorCode, RequestId},
@@ -1239,7 +1250,7 @@ fn dispatch_muse(
     let request = mcp_sdk::streamable_request(&input.path, &input.sdk_headers, body)?;
     let mut active = None;
     let response = mcp_sdk::dispatch_streamable(
-        "pigeonmq-muse",
+        "999k-muse",
         registered_mailbox_tools("Muse", "muse"),
         request,
         authority,
@@ -1287,17 +1298,17 @@ fn call_muse_tool(
     arguments: &Value,
 ) -> Result<Value, Fault> {
     Ok(match name {
-        "pigeonmq_inbox" => inbox_page::list_muse(&state.db, "muse", arguments, deadline, || {
+        "radio999k_inbox" => inbox_page::list_muse(&state.db, "muse", arguments, deadline, || {
             state
                 .scope(authorization, auth::MuseOperation::Read, active, deadline)
                 .map(|scope| scope.allowed_senders)
         })?,
-        "pigeonmq_recipients" => {
+        "radio999k_recipients" => {
             registered_mailbox_fields(arguments, &[], &[])?;
             let scope = state.scope(authorization, auth::MuseOperation::Send, active, deadline)?;
             json!({"recipients":scope.allowed_senders,"connection_status":"unknown"})
         }
-        "pigeonmq_confirm_terminal" => {
+        "radio999k_confirm_terminal" => {
             let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             if message_id.trim().is_empty() || message_id.len() > 128 {
@@ -1334,7 +1345,7 @@ fn call_muse_tool(
             })?;
             json!({"state":"acknowledged","message_id":message_id,"duplicate":duplicate})
         }
-        pigeonmq::mailbox_tools::READ_THREAD => pigeonmq::conversation::read_thread_tool(
+        radio999k::mailbox_tools::READ_THREAD => radio999k::conversation::read_thread_tool(
             &state.db,
             "muse",
             muse_mailbox::MAX_REQUEST_BYTES as i64,
@@ -1345,7 +1356,7 @@ fn call_muse_tool(
                     .map(|s| s.allowed_senders)
             },
         )?,
-        "pigeonmq_read" => {
+        "radio999k_read" => {
             let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             let scope = state.scope(authorization, auth::MuseOperation::Read, active, deadline)?;
@@ -1357,7 +1368,7 @@ fn call_muse_tool(
             }
             serde_json::to_value(observed).map_err(|_| (500, "serialization_failed"))?
         }
-        "pigeonmq_wait" => {
+        "radio999k_wait" => {
             let args = registered_mailbox_fields(arguments, &["timeout_ms"], &[])?;
             let timeout = args["timeout_ms"]
                 .as_u64()
@@ -1421,7 +1432,7 @@ fn call_muse_tool(
                 thread::sleep((until - now).min(Duration::from_millis(100)));
             }
         }
-        "pigeonmq_reply" => {
+        "radio999k_reply" => {
             let args = registered_mailbox_fields(arguments, &["message_id", "body"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             let body = args["body"].as_str().ok_or((400, "invalid_fields"))?;
@@ -1433,7 +1444,7 @@ fn call_muse_tool(
             .map_err(muse_fault)?;
             serde_json::to_value(result).map_err(|_| (500, "serialization_failed"))?
         }
-        "pigeonmq_send" => send_registered(
+        "radio999k_send" => send_registered(
             &state.db,
             "muse",
             muse_mailbox::MAX_REQUEST_BYTES as i64,
@@ -1476,7 +1487,7 @@ fn send_registered(
         (Some(parent), Some(peers)) => queue.continue_checked(
             envelope,
             parent,
-            pigeonmq::conversation::ThreadScope {
+            radio999k::conversation::ThreadScope {
                 mailbox,
                 peers,
                 request_bytes,
@@ -1517,7 +1528,7 @@ impl ReceiverProfile {
         use std::os::unix::fs::MetadataExt;
         auth::validate_private(&policy)?;
         auth::require_private_file(&registration)?;
-        let metadata = pigeonmq::private_file::open_private_file(db)?
+        let metadata = radio999k::private_file::open_private_file(db)?
             .metadata()
             .map_err(|_| (503, "storage_unavailable"))?;
         Ok(Self {
@@ -1528,7 +1539,7 @@ impl ReceiverProfile {
     }
     fn check_queue(&self, db: &std::path::Path) -> Result<(), Fault> {
         use std::os::unix::fs::MetadataExt;
-        let metadata = pigeonmq::private_file::open_private_file(db)?
+        let metadata = radio999k::private_file::open_private_file(db)?
             .metadata()
             .map_err(|_| (503, "storage_unavailable"))?;
         if self.identity != (metadata.dev(), metadata.ino()) {
@@ -1541,7 +1552,7 @@ enum RouteHandler {
     Disabled,
     Generic(Arc<PathBuf>),
     Muse(Arc<MuseState>),
-    Dot(pigeonmq::dot_profile::DotHost),
+    Dot(radio999k::dot_profile::DotHost),
     Grok(grok_bot::GrokState),
     Mailbox(
         crate::codex_mcp::Profile,
@@ -1605,6 +1616,7 @@ struct HubRoute {
     body_limit: usize,
     handler: RouteHandler,
     generation: Option<BoundGeneration>,
+    access: Option<access::MailboxAccess>,
 }
 
 #[derive(Default)]
@@ -1630,6 +1642,7 @@ impl HubRoutes {
             body_limit,
             handler,
             generation,
+            access: None,
         });
         Ok(())
     }
@@ -1716,9 +1729,9 @@ fn dispatch_receiver(
     profile: &ReceiverProfile,
     input: &Input,
     body: &[u8],
-    context: &pigeonmq::mcp_request::Context<'_>,
+    context: &radio999k::mcp_request::Context<'_>,
 ) -> Result<Value, Fault> {
-    use pigeonmq::receiver_api::{Action, Request};
+    use radio999k::receiver_api::{Action, Request};
     let principal = auth::authenticate_private(&profile.policy, &input.authorization)?;
     let request: Request = decode(body)?;
     let operation = if matches!(&request.action, Action::Complete { .. }) {
@@ -1747,7 +1760,7 @@ fn dispatch_receiver(
         })
     };
     authorize().map_err(|_| denied.get().unwrap_or((403, "forbidden")))?;
-    pigeonmq::receiver_api::execute(
+    radio999k::receiver_api::execute(
         &state.db,
         &profile.registration,
         &principal.id,
@@ -1774,10 +1787,42 @@ fn dispatch_hub_request(
     input: &Input,
     body: &[u8],
     peer_closed: &(dyn Fn() -> bool + Sync),
+    hosted: Option<uuid::Uuid>,
 ) -> transport::WireResponse {
     let route = match state.routes.get(&input.path) {
         Ok(route) => route,
         Err(error) => return (Err(error), 200).into(),
+    };
+    // Only the managed hosted Unix listener provides an installation ID.
+    // The shared guard also fences switching opt-in mode and rotating the grant.
+    let mut hosted_guard = None;
+    let mut scoped_cue = None;
+    if let Some(installation) = hosted.filter(|_| input.path == "/cue/mcp") {
+        let Some(home) = state.db.parent() else {
+            return (Err((401, "unauthorized")), 200).into();
+        };
+        let scope = crate::hosted_mailbox_bearer::Scope::new(home, installation);
+        let Ok(guard) = scope.lock(false) else {
+            return (Err((401, "unauthorized")), 200).into();
+        };
+        hosted_guard = Some(guard);
+        match crate::lifecycle::hosted_cue_mode(home, installation) {
+            Ok(true) => scoped_cue = Some(scope),
+            Ok(false) => {}
+            Err(_) => return (Err((401, "unauthorized")), 200).into(),
+        }
+    }
+    let _hosted_guard = hosted_guard;
+    let projected;
+    let authorization = match &route.access {
+        Some(access) if !input.access_assertions.is_empty() => {
+            projected = match access.authorization(&input.access_assertions) {
+                Ok(header) => [header],
+                Err(fault) => return (Err(fault), 200).into(),
+            };
+            &projected[..]
+        }
+        _ => &input.authorization,
     };
     let now = Instant::now();
     // Dot and Codex Events apply the request deadline inside their wire handlers.
@@ -1795,7 +1840,7 @@ fn dispatch_hub_request(
         .deadline
         .unwrap_or(now + Duration::from_secs(15))
         .min(now + Duration::from_secs(15));
-    let context = pigeonmq::mcp_request::Context::new(deadline, peer_closed);
+    let context = radio999k::mcp_request::Context::new(deadline, peer_closed);
     // Retire and activate take the exclusive side of this lock. The current
     // binding remains stable for the request, including deferred waits.
     let _generation = match &route.generation {
@@ -1834,18 +1879,28 @@ fn dispatch_hub_request(
             };
         }
         RouteHandler::Dot(host) => {
-            return match dispatch_dot(host, authority, input, body, &context) {
+            return match dispatch_dot(host, authority, input, authorization, body, &context) {
                 Ok(response) => transport::WireResponse::Sdk(response),
                 Err(error) => (Err(error), 200).into(),
             };
         }
         RouteHandler::Mailbox(profile, events) => {
+            let scoped_profile;
+            let (profile, events) = if let Some(scope) = scoped_cue {
+                scoped_profile = match profile.hosted_cue(scope) {
+                    Ok(value) => value,
+                    Err(fault) => return (Err(fault), 200).into(),
+                };
+                (&scoped_profile, None)
+            } else {
+                (profile, events.as_deref())
+            };
             return match profile.dispatch_streamable_http(
                 (authority, &input.path),
                 &input.sdk_headers,
-                &input.authorization,
+                authorization,
                 body,
-                events.as_deref(),
+                events,
                 (route.body_limit, &context),
             ) {
                 Ok(response) => transport::WireResponse::Sdk(response),
@@ -1857,13 +1912,14 @@ fn dispatch_hub_request(
 }
 
 fn dispatch_dot(
-    host: &pigeonmq::dot_profile::DotHost,
+    host: &radio999k::dot_profile::DotHost,
     authority: &str,
     input: &Input,
+    authorization: &[Vec<u8>],
     body: &[u8],
-    context: &pigeonmq::mcp_request::Context<'_>,
+    context: &radio999k::mcp_request::Context<'_>,
 ) -> Result<http::Response<Vec<u8>>, Fault> {
-    let bearer = match input.authorization.as_slice() {
+    let bearer = match authorization {
         [value] => std::str::from_utf8(value)
             .ok()
             .and_then(|v| v.strip_prefix("Bearer ")),
@@ -1879,12 +1935,44 @@ fn dispatch_dot(
     )
 }
 
-fn handle_hub_connection(stream: TcpStream, authority: &str, state: &HubState) {
+fn handle_hub_connection(stream: impl Into<ProfileStream>, authority: &str, state: &HubState) {
+    handle_hub_routes(stream.into(), authority, state, None, None, false)
+}
+
+fn handle_hub_routes(
+    stream: ProfileStream,
+    authority: &str,
+    state: &HubState,
+    allowed: Option<&[String]>,
+    hosted: Option<uuid::Uuid>,
+    legacy_tool_listing: bool,
+) {
     transport::handle_connection(
         stream,
         authority,
-        |path| state.routes.get(path).map(|route| route.body_limit),
-        |input, body, peer_closed| dispatch_hub_request(state, authority, input, body, peer_closed),
+        |path| {
+            if allowed.is_some_and(|allowed| !allowed.iter().any(|route| route == path)) {
+                return Err((404, "route_not_found"));
+            }
+            state.routes.get(path).map(|route| route.body_limit)
+        },
+        |input, body, peer_closed| {
+            let mut response =
+                dispatch_hub_request(state, authority, input, body, peer_closed, hosted);
+            if legacy_tool_listing
+                && let transport::WireResponse::Sdk(sdk) = &mut response
+                && sdk.status().is_success()
+                && let Ok(mut value) = serde_json::from_slice(sdk.body())
+                && radio999k::mailbox_tools::translate_tool_list(
+                    &mut value,
+                    radio999k::mailbox_tools::legacy_tool_name,
+                )
+                && let Ok(encoded) = serde_json::to_vec(&value)
+            {
+                *sdk.body_mut() = encoded;
+            }
+            response
+        },
     );
 }
 
@@ -1893,6 +1981,10 @@ enum HubMode {
     Managed,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep the existing hub entry point and explicit socket configuration"
+)]
 pub fn serve_hub(
     db: PathBuf,
     generic_policy: Option<PathBuf>,
@@ -1901,6 +1993,7 @@ pub fn serve_hub(
     manifest_fingerprint: Option<&str>,
     port: u16,
     seconds: Option<u64>,
+    local_stdio: bool,
 ) -> io::Result<()> {
     serve_hub_on(
         db,
@@ -1909,12 +2002,19 @@ pub fn serve_hub(
         local_profiles,
         manifest_fingerprint,
         (port, seconds, HubMode::Explicit),
+        local_stdio,
+        None,
         None,
     )
 }
 
 /// The managed hub keeps its loopback listener after the last profile is removed.
-pub(crate) fn serve_managed_hub(db: PathBuf, bindings: Vec<Binding>, port: u16) -> io::Result<()> {
+pub(crate) fn serve_managed_hub(
+    db: PathBuf,
+    bindings: Vec<Binding>,
+    port: u16,
+    local_stdio: bool,
+) -> io::Result<()> {
     serve_hub_on(
         db,
         None,
@@ -1922,6 +2022,8 @@ pub(crate) fn serve_managed_hub(db: PathBuf, bindings: Vec<Binding>, port: u16) 
         Vec::new(),
         Some("managed"),
         (port, None, HubMode::Managed),
+        local_stdio,
+        None,
         None,
     )
 }
@@ -1948,7 +2050,9 @@ pub(crate) fn serve_dot_on(
         Vec::new(),
         None,
         (addr.port(), None, HubMode::Explicit),
+        false,
         Some(listener),
+        None,
     )
 }
 
@@ -1959,8 +2063,8 @@ pub(crate) fn hub_queue_lock_path(db: &Path) -> PathBuf {
 }
 
 // Keep the sibling file. Unlinking a live lock lets another hub lock a new file.
-fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
-    use pigeonmq::private_file::open_private_file;
+pub(crate) fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
+    use radio999k::private_file::open_private_file;
     let private_db = |path: &Path| {
         open_private_file(path).map_err(|_| io::Error::other("private database required"))
     };
@@ -1995,6 +2099,56 @@ fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
     Ok((owner, db))
 }
 
+/// Hosted transport uses the existing managed hub, queue lock, and route state.
+struct HostedSocket<'a> {
+    installation: uuid::Uuid,
+    scope: &'a crate::hosted_registration::OriginDescriptor,
+    #[cfg(test)]
+    fixture_root: Option<&'a Path>,
+}
+
+impl HostedSocket<'_> {
+    fn bind(&self) -> io::Result<crate::hosted_origin_local::OriginListener> {
+        let origin = self.scope.origin().map_err(io::Error::other)?;
+        #[cfg(test)]
+        if let Some(root) = self.fixture_root {
+            return crate::hosted_origin_local::bind_in(root, &origin, self.installation);
+        }
+        crate::hosted_origin_local::bind_system(&origin, self.installation)
+    }
+}
+
+#[allow(dead_code)] // No exposed activation path until isolated launchd acceptance.
+pub(crate) fn serve_managed_hosted_hub(
+    db: PathBuf,
+    bindings: Vec<Binding>,
+    port: u16,
+    installation: uuid::Uuid,
+    scope: &crate::hosted_registration::OriginDescriptor,
+    local_stdio: bool,
+) -> io::Result<()> {
+    serve_hub_on(
+        db,
+        None,
+        bindings,
+        Vec::new(),
+        Some("managed"),
+        (port, None, HubMode::Managed),
+        local_stdio,
+        None,
+        Some(HostedSocket {
+            installation,
+            scope,
+            #[cfg(test)]
+            fixture_root: None,
+        }),
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Both startup modes pass their explicit configuration to this shared listener"
+)]
 fn serve_hub_on(
     db: PathBuf,
     generic_policy: Option<PathBuf>,
@@ -2002,7 +2156,9 @@ fn serve_hub_on(
     local_profiles: Vec<crate::codex_mcp::Profile>,
     manifest_fingerprint: Option<&str>,
     (port, seconds, mode): (u16, Option<u64>, HubMode),
+    local_stdio: bool,
     prebound: Option<TcpListener>,
+    hosted: Option<HostedSocket<'_>>,
 ) -> io::Result<()> {
     let managed = matches!(mode, HubMode::Managed);
     if port == 0
@@ -2081,14 +2237,14 @@ fn serve_hub_on(
                 }))
             }
             Adapter::Dot => {
-                dot_events = pigeonmq::dot_profile::check_with_generation(
+                dot_events = radio999k::dot_profile::check_with_generation(
                     &db,
                     &binding.policy,
                     false,
                     binding.generation.as_deref(),
                 )?
                 .map(Arc::new);
-                RouteHandler::Dot(pigeonmq::dot_profile::DotBackend::host_with_events(
+                RouteHandler::Dot(radio999k::dot_profile::DotBackend::host_with_events(
                     db.clone(),
                     binding.policy,
                     dot_events.clone(),
@@ -2166,13 +2322,66 @@ fn serve_hub_on(
             RouteHandler::Mailbox(profile, None),
         )?;
     }
+    if !local_mailbox_enabled && prebound.is_none() {
+        access::mount(&db, &mut routes)?;
+    }
+    let hosted_listener = if let Some(socket) = &hosted {
+        if !managed
+            || socket.scope.hub_port != port
+            || socket
+                .scope
+                .mcp_paths
+                .iter()
+                .any(|path| routes.get(path).is_err())
+        {
+            return Err(io::Error::other(
+                "hosted Unix origin does not match the managed hub",
+            ));
+        }
+        // The existing queue lock has already been acquired. Hold socket custody
+        // until this hub and its accepted connection workers have stopped.
+        match socket.bind() {
+            Ok(listener) => Some(listener),
+            Err(_) => {
+                tracing::warn!("hosted Unix origin unavailable; local hub stays active");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let stdio_routes: Vec<String> = routes
+        .0
+        .iter()
+        .filter(|(path, route)| {
+            crate::stdio_mcp::named_route(path) && !matches!(route.handler, RouteHandler::Disabled)
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    let stdio_listener = if local_stdio {
+        let home = db
+            .parent()
+            .ok_or_else(|| io::Error::other("queue parent required"))?;
+        match crate::stdio_mcp::bind(home, &stdio_routes) {
+            Ok(listener) => Some(listener),
+            Err(_) if managed => {
+                tracing::warn!(
+                    "managed stdio socket unavailable; other hub transports stay active"
+                );
+                None
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
     let listener = match prebound {
         Some(listener) => listener,
         None => TcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
     };
     // Best-effort wake on its own thread. It never blocks a commit.
     let grok_wake = if let Some((policy, files_dir, generation)) = grok_wake_binding {
-        use pigeonmq::grok_wake::WakeConfig;
+        use radio999k::grok_wake::WakeConfig;
         let config = match files_dir {
             Some(dir) => Some(WakeConfig::from_files_dir(&db, &dir)),
             None => WakeConfig::discover_with_keychain(
@@ -2184,13 +2393,13 @@ fn serve_hub_on(
         config
             .map(|config| {
                 let owner = queue_owner.clone();
-                pigeonmq::grok_wake::spawn(config, deadline, move |id| {
+                radio999k::grok_wake::spawn(config, deadline, move |id| {
                     // The wake thread can outlive the listener.
                     let _keep_queue_owner = &owner;
                     generation.as_ref()?.check(&queue).ok()?;
                     let scope = grok_bot::observation_scope(&policy).ok()?;
                     let (sender, conversation_id) =
-                        pigeonmq::grok_mailbox::wake_candidate(&queue, id, &scope).ok()??;
+                        radio999k::grok_mailbox::wake_candidate(&queue, id, &scope).ok()??;
                     let latest = grok_bot::observation_scope(&policy).ok()?;
                     latest
                         .allowed_senders
@@ -2209,12 +2418,49 @@ fn serve_hub_on(
         deadline,
     });
     let public_state = state.clone();
-    let listeners: Vec<(TcpListener, Arc<ProfileHandler>)> = vec![(
-        listener,
+    let mut listeners: Vec<(ProfileListener, Arc<ProfileHandler>)> = vec![(
+        ProfileListener::Tcp(listener),
         Arc::new(move |stream, authority| {
             handle_hub_connection(stream, authority, &public_state);
         }),
     )];
+    if let (Some(holder), Some(socket)) = (&hosted_listener, &hosted) {
+        let allowed = socket.scope.mcp_paths.clone();
+        let installation = socket.installation;
+        let hosted_state = state.clone();
+        listeners.push((
+            ProfileListener::Unix(holder.listener.try_clone()?, format!("127.0.0.1:{port}")),
+            Arc::new(move |stream, authority| {
+                handle_hub_routes(
+                    stream,
+                    authority,
+                    &hosted_state,
+                    Some(&allowed),
+                    Some(installation),
+                    false,
+                );
+            }),
+        ));
+    }
+    if let Some(holder) = &stdio_listener {
+        let stdio_state = state.clone();
+        listeners.push((
+            ProfileListener::Unix(
+                holder.listener.try_clone()?,
+                crate::stdio_mcp::AUTHORITY.into(),
+            ),
+            Arc::new(move |stream, authority| {
+                handle_hub_routes(
+                    stream,
+                    authority,
+                    &stdio_state,
+                    Some(&stdio_routes),
+                    None,
+                    true,
+                );
+            }),
+        ));
+    }
     let dot_events_enabled = dot_events.is_some();
     let _dot_events_worker = dot_events
         .map(|events| events.start(deadline))
@@ -2240,6 +2486,9 @@ fn serve_hub_on(
         .as_object_mut()
         .expect("readiness object")
         .extend(enabled);
+    if local_stdio {
+        ready["local_stdio_socket"] = json!(stdio_listener.is_some());
+    }
     if let Some(fingerprint) = manifest_fingerprint {
         ready["profiles_fingerprint"] = json!(fingerprint);
     }
@@ -2285,14 +2534,14 @@ mod dot_wire {
             json!({"principal":"pigeonmq-cloud-dot","mailbox":"dot","enabled":true,
             "registration":registration,"token_sha256":digest}),
         );
-        pigeonmq::dot_profile::check(&db, &policy, true).unwrap();
+        radio999k::dot_profile::check(&db, &policy, true).unwrap();
         let mut routes = HubRoutes::default();
         let descriptor = catalog::by_adapter(catalog::Adapter::Dot);
         routes
             .mount(
                 descriptor.route,
                 descriptor.body_limit(MAX_HEADERS),
-                RouteHandler::Dot(pigeonmq::dot_profile::DotBackend::host(db.clone(), policy)),
+                RouteHandler::Dot(radio999k::dot_profile::DotBackend::host(db.clone(), policy)),
             )
             .unwrap();
         let state = Arc::new(HubState {
@@ -2344,6 +2593,308 @@ mod dot_wire {
     }
 
     #[test]
+    fn hosted_cue_bearer_rotation_isolated_from_local_stdio() {
+        use std::os::unix::net::UnixStream;
+        let home = tempfile::Builder::new()
+            .prefix("hc")
+            .tempdir_in("/tmp")
+            .unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let db = home.path().join("queue.sqlite3");
+        drop(Queue::open(&db).unwrap());
+        fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
+        let local = "test-local-cue";
+        let policy = home.path().join("pigeonmq-cloud-cue-policy.json");
+        let registration = home.path().join("pigeonmq-cloud-registration.json");
+        let digest: String = Sha256::digest(local)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        private_json(
+            &policy,
+            json!({"principals":[{
+                "id":"cue","token_sha256":digest,"operations":["read","reply"],
+                "send_to":[],"mailboxes":["cue"],"revoked":false
+            }]}),
+        );
+        private_json(
+            &registration,
+            json!({"cue":{"mailbox":"cue","revoked":false}}),
+        );
+        let root = tempfile::Builder::new()
+            .prefix("hp")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let origin = crate::hosted_origin_local::new_origin().unwrap();
+        let socket = root.path().join(origin.directory_name()).join("hub.sock");
+        let stdio = crate::stdio_mcp::socket_path(home.path());
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let installation = uuid::Uuid::new_v4();
+        let life = home.path().join(".pigeonmq-lifecycle");
+        fs::create_dir(&life).unwrap();
+        fs::set_permissions(&life, fs::Permissions::from_mode(0o700)).unwrap();
+        let state = life.join("profiles.json");
+        let baseline =
+            json!({"port":port,"registration":registration,"relay_command":null,"profiles":{}});
+        private_json(&state, baseline.clone());
+        let descriptor: crate::hosted_registration::OriginDescriptor =
+            serde_json::from_value(json!({
+                "kind":"unix_v1","nonce":origin.nonce(),"hub_port":port,"mcp_paths":["/cue/mcp"],
+            }))
+            .unwrap();
+        let cue = Binding::bundled(
+            catalog::http_by_id("cue").unwrap(),
+            policy.clone(),
+            home.path(),
+        );
+        let root_path = root.path().to_owned();
+        let worker = std::thread::spawn(move || {
+            serve_hub_on(
+                db,
+                None,
+                vec![cue],
+                Vec::new(),
+                Some("managed"),
+                (port, Some(4), HubMode::Managed),
+                true,
+                None,
+                Some(HostedSocket {
+                    installation,
+                    scope: &descriptor,
+                    fixture_root: Some(&root_path),
+                }),
+            )
+        });
+        let ready = Instant::now() + Duration::from_secs(2);
+        while !(socket.exists() && stdio.exists()) && Instant::now() < ready {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let post = |socket: &Path, host: &str, route: &str, bearer: &str| -> u16 {
+            let mut client = UnixStream::connect(socket).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+            write!(client,"POST {route} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {bearer}\r\nContent-Length: {}\r\n\r\n{body}",body.len()).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            response.split_whitespace().nth(1).unwrap().parse().unwrap()
+        };
+        let authority = format!("127.0.0.1:{port}");
+        let hosted = |token| post(&socket, &authority, "/cue/mcp", token);
+        let local_post = |token| post(&stdio, crate::stdio_mcp::AUTHORITY, "/cue/mcp", token);
+        assert_eq!(hosted(local), 200); // Legacy installations have not enabled C22.
+        assert_eq!(local_post(local), 200);
+        let scope = crate::hosted_mailbox_bearer::Scope::new(home.path(), installation);
+        let transfer = tempfile::tempdir().unwrap();
+        fs::set_permissions(transfer.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let first = transfer.path().join("remote-first");
+        let second = transfer.path().join("remote-second");
+        {
+            let _write = scope.lock(true).unwrap();
+            scope
+                .rotate_locked(60, &first, || {
+                    let mut state_data = baseline.clone();
+                    state_data["finite_cue_installation"] = json!(installation.to_string());
+                    private_json(&state, state_data);
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let older = fs::read_to_string(&first).unwrap();
+        assert_eq!(hosted(local), 401);
+        assert_eq!(hosted(&older), 200);
+        assert_eq!(local_post(&older), 401);
+        assert_eq!(post(&socket, &authority, "/instinct/mcp", &older), 404);
+        {
+            let _write = scope.lock(true).unwrap();
+            scope.rotate_locked(60, &second, || Ok(())).unwrap();
+        }
+        let newer = fs::read_to_string(&second).unwrap();
+        assert_eq!(hosted(&older), 401);
+        assert_eq!(hosted(&newer), 200);
+        {
+            let _write = scope.lock(true).unwrap();
+            scope.revoke_locked().unwrap();
+        }
+        assert_eq!(hosted(&newer), 401);
+        assert_eq!(hosted(local), 401);
+        fs::remove_file(home.path().join("hosted-cue-bearer.json")).unwrap();
+        assert_eq!(hosted(local), 401);
+        assert_eq!(local_post(local), 200);
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn hosted_unix_uses_same_queue_and_auth_without_targeting_tcp() {
+        use std::os::unix::net::UnixStream;
+        let (home, _, state) = fixture();
+        let root = tempfile::Builder::new()
+            .prefix("po")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let root_path = root.path().to_owned();
+        let origin = crate::hosted_origin_local::new_origin().unwrap();
+        let socket = root_path.join(origin.directory_name()).join("hub.sock");
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let installation = uuid::Uuid::new_v4();
+        let scope: crate::hosted_registration::OriginDescriptor = serde_json::from_value(json!({
+            "kind":"unix_v1", "nonce":origin.nonce(), "hub_port":port, "mcp_paths":["/dot/mcp"],
+        }))
+        .unwrap();
+        let dot = Binding::bundled(
+            catalog::by_adapter(catalog::Adapter::Dot),
+            home.path().join("pigeonmq-cloud-dot-policy.json"),
+            home.path(),
+        );
+        let database = state.db.clone();
+        let worker = std::thread::spawn(move || {
+            serve_hub_on(
+                database,
+                None,
+                vec![dot],
+                Vec::new(),
+                Some("managed"),
+                (port, Some(2), HubMode::Managed),
+                false,
+                None,
+                Some(HostedSocket {
+                    installation,
+                    scope: &scope,
+                    fixture_root: Some(&root_path),
+                }),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !socket.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let authority = format!("127.0.0.1:{port}");
+        let post = |route: &str, host: &str, bearer: &str| {
+            let mut client = UnixStream::connect(&socket).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_recipients","arguments":{}}}"#;
+            write!(
+                client,
+                "POST {route} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {bearer}\r\nMcp-Method: tools/call\r\nMcp-Name: radio999k_recipients\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            let (header, body) = response.split_once("\r\n\r\n").unwrap();
+            (
+                header
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .parse::<u16>()
+                    .unwrap(),
+                serde_json::from_str::<Value>(body).unwrap(),
+            )
+        };
+        assert_eq!(
+            post("/dot/mcp", &authority, "fixture-connector-token").0,
+            401
+        );
+        assert_eq!(post("/dot/mcp", "wrong.example.test", TOKEN).0, 403);
+        assert_eq!(post("/instinct/mcp", &authority, TOKEN).0, 404);
+        let (status, response) = post("/dot/mcp", &authority, TOKEN);
+        assert_eq!(status, 200);
+        assert!(response.get("result").is_some());
+        assert!(lock_hub_queue(&state.db).is_err());
+        worker.join().unwrap().unwrap();
+
+        let foreign = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).unwrap();
+        foreign.set_nonblocking(true).unwrap();
+        assert_eq!(
+            UnixStream::connect(&socket).err().unwrap().kind(),
+            io::ErrorKind::ConnectionRefused
+        );
+        assert_eq!(
+            foreign.accept().err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn cloudflare_access_projects_only_the_configured_dot_mailbox() {
+        use super::cloudflare_access::tests::{signed, verifier_with_claims};
+        let (temp, _, mut state) = fixture();
+        let bearer_file = temp.path().join("dot-mailbox.key");
+        radio999k::private_file::replace_private(
+            &bearer_file,
+            format!("Bearer {TOKEN}\n").as_bytes(),
+        )
+        .unwrap();
+        let (verifier, mut claims) = verifier_with_claims();
+        Arc::get_mut(&mut state)
+            .unwrap()
+            .routes
+            .0
+            .get_mut("/dot/mcp")
+            .unwrap()
+            .access = Some(access::MailboxAccess {
+            verifier,
+            bearer_file,
+        });
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_recipients","arguments":{}}}"#;
+        let authority = "127.0.0.1:1234";
+        let call = |token: &str, assertions: &[Vec<u8>]| {
+            let mut head = format!(
+                "POST /dot/mcp HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n",
+                body.len()
+            );
+            for assertion in assertions {
+                head.push_str(&format!(
+                    "Cf-Access-Jwt-Assertion: {}\r\n",
+                    std::str::from_utf8(assertion).unwrap()
+                ));
+            }
+            head.push_str("\r\n");
+            let input = transport::parse_head(head.as_bytes(), authority, |path| {
+                state.routes.get(path).map(|route| route.body_limit)
+            })
+            .unwrap();
+            dispatch_hub_request(&state, authority, &input, body, &|| false, None)
+        };
+        let valid = signed(&claims);
+        let WireResponse::Sdk(response) = call("opaque-fixture", std::slice::from_ref(&valid))
+        else {
+            panic!("expected authorized MCP response");
+        };
+        assert_eq!(
+            success((
+                response.status().as_u16(),
+                serde_json::from_slice(response.body()).unwrap()
+            ))["recipients"],
+            json!(["test-peer"])
+        );
+        assert!(matches!(
+            call(TOKEN, &[valid.clone(), valid]),
+            WireResponse::Json((Err((403, _)), _))
+        ));
+        claims["aud"] = json!(["unrelated-mailbox-fixture"]);
+        assert!(matches!(
+            call(TOKEN, &[signed(&claims)]),
+            WireResponse::Json((Err((403, _)), _))
+        ));
+        assert!(
+            matches!(call(TOKEN, &[]), WireResponse::Sdk(response) if response.status() == 200)
+        );
+    }
+
+    #[test]
     fn dot_can_list_and_address_registered_codex_sessions() {
         let (temp, mut queue, state) = fixture();
         let registration = temp.path().join("pigeonmq-cloud-dot-registration.json");
@@ -2358,18 +2909,18 @@ mod dot_wire {
             }),
         );
         let call = |tool, args| success(post(&state, TOKEN, json!(1), tool, args));
-        let listed = call("pigeonmq_recipients", json!({}));
+        let listed = call("radio999k_recipients", json!({}));
         assert_eq!(
             listed["recipients"],
             json!(["codex-local-abcdef012345", "codex-local1", "test-peer"])
         );
         assert_eq!(listed["connection_status"], "unknown");
         call(
-            "pigeonmq_send",
+            "radio999k_send",
             json!({"recipient":"codex-local1","body":"first","idempotency_key":"session-one"}),
         );
         call(
-            "pigeonmq_send",
+            "radio999k_send",
             json!({"recipient":"codex-local-abcdef012345","body":"second","idempotency_key":"session-two"}),
         );
         for (recipient, body) in [
@@ -2390,7 +2941,7 @@ mod dot_wire {
         let db = &state.db;
         let call = |name: &str, args: Value| success(post(&state, TOKEN, json!(1), name, args));
         let outbound = call(
-            "pigeonmq_send",
+            "radio999k_send",
             json!({"recipient":"test-peer","body":"hello","idempotency_key":"wire-send"}),
         );
         let outbound_id = outbound["message_id"].as_str().unwrap();
@@ -2413,15 +2964,15 @@ mod dot_wire {
             })
             .unwrap()
             .message;
-        let read = call("pigeonmq_read", json!({"message_id":request.id}));
+        let read = call("radio999k_read", json!({"message_id":request.id}));
         assert_eq!(read["body"], "request");
         assert_eq!(read["state"], "pending");
         let answer = call(
-            "pigeonmq_reply",
+            "radio999k_reply",
             json!({"message_id":request.id,"body":"answer"}),
         );
         let replay = call(
-            "pigeonmq_reply",
+            "radio999k_reply",
             json!({"message_id":request.id,"body":"answer"}),
         );
         assert_eq!(answer["reply_id"], replay["reply_id"]);
@@ -2450,15 +3001,15 @@ mod dot_wire {
                 || Ok(()),
             )
             .unwrap();
-        let observed = call("pigeonmq_read", json!({"message_id":terminal.id}));
+        let observed = call("radio999k_read", json!({"message_id":terminal.id}));
         assert_eq!(observed["state"], "reply_received");
         let confirmed = call(
-            "pigeonmq_confirm_terminal",
+            "radio999k_confirm_terminal",
             json!({"message_id":terminal.id}),
         );
         assert_eq!(confirmed["state"], "acknowledged");
         let repeated = call(
-            "pigeonmq_confirm_terminal",
+            "radio999k_confirm_terminal",
             json!({"message_id":terminal.id}),
         );
         assert_eq!(repeated["duplicate"], true);
@@ -2483,7 +3034,7 @@ mod dot_wire {
         };
 
         assert_eq!(
-            success(call(json!(2), "pigeonmq_wait", filtered(0))),
+            success(call(json!(2), "radio999k_wait", filtered(0))),
             json!({"state":"timeout","message":null})
         );
 
@@ -2495,7 +3046,7 @@ mod dot_wire {
             (json!("bounded-wait"), filtered(10)),
             (json!(3), json!({"timeout_ms":0})),
         ] {
-            let result = call(id.clone(), "pigeonmq_wait", arguments);
+            let result = call(id.clone(), "radio999k_wait", arguments);
             assert_eq!(result, (503, expected(id, "storage_busy")));
         }
         assert_eq!(
@@ -2503,13 +3054,13 @@ mod dot_wire {
                 &state,
                 "invalid-fixture-token",
                 json!(4),
-                "pigeonmq_wait",
+                "radio999k_wait",
                 filtered(0)
             ),
             (401, json!({"error":{"code":"unauthorized"}}))
         );
         assert_eq!(
-            call(json!("inbox-read"), "pigeonmq_inbox", json!({})),
+            call(json!("inbox-read"), "radio999k_inbox", json!({})),
             (503, expected(json!("inbox-read"), "storage_unavailable"))
         );
         lock.execute_batch("ROLLBACK").unwrap();
@@ -2533,25 +3084,25 @@ mod dot_wire {
         assert_eq!(
             call(
                 json!("reply-write"),
-                "pigeonmq_reply",
+                "radio999k_reply",
                 json!({"message_id":message.id,"body":"answer"})
             ),
             (503, expected(json!("reply-write"), "storage_unavailable"))
         );
         let observation = success(call(
             json!(5),
-            "pigeonmq_read",
+            "radio999k_read",
             json!({"message_id":message.id}),
         ));
         assert_eq!(observation["state"], "pending");
-        let (status, missing) = call(json!(6), "pigeonmq_read", json!({"message_id":"missing"}));
+        let (status, missing) = call(json!(6), "radio999k_read", json!({"message_id":"missing"}));
         assert_eq!(status, 200);
         assert_eq!(missing["id"], 6);
         assert_eq!(missing["error"]["data"]["reason"], "message_not_available");
         assert_eq!(
             call(
                 json!(7),
-                "pigeonmq_send",
+                "radio999k_send",
                 json!({
                     "recipient":"test-peer, unregistered","body":"fixture","idempotency_key":"test-subset"
                 })

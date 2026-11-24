@@ -3,7 +3,7 @@
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
 fn receiver(state: &Path, binding: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_pigeonmq-codex-receiver"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_999k-codex-receiver"));
     command
         .arg("--state")
         .arg(state)
@@ -32,7 +32,7 @@ fn default_preflight_preserves_spaced_paths_without_queue_or_native_access() {
     let endpoint = temp.path().join("native.sock");
     let listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let binding = pigeonmq::adapters::codex::receiver::Binding {
+    let binding = radio999k::adapters::codex::receiver::Binding {
         thread_id: "synthetic-owner".into(),
         endpoint,
         cwd: work.clone(),
@@ -43,7 +43,7 @@ fn default_preflight_preserves_spaced_paths_without_queue_or_native_access() {
     fs::write(&path, &bytes).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
-    let minimal = Command::new(env!("CARGO_BIN_EXE_pigeonmq-codex-receiver"))
+    let minimal = Command::new(env!("CARGO_BIN_EXE_999k-codex-receiver"))
         .arg("--binding")
         .arg(&path)
         .output()
@@ -104,7 +104,7 @@ fn only_run_requires_state_and_token_file() {
     let temp = tempfile::tempdir().unwrap();
     let binding = temp.path().join("missing-binding.json");
     let command = || {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_pigeonmq-codex-receiver"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_999k-codex-receiver"));
         c.arg("--binding").arg(&binding);
         c
     };

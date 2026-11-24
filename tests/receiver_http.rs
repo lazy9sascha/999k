@@ -1,5 +1,5 @@
 //! Synthetic main-binary HTTP coverage. No native agent or external connection.
-use pigeonmq::{
+use radio999k::{
     Delivery, Envelope, Message, Queue, hub_http,
     receiver_api::{Action, Request},
     runtime_admission::Record,
@@ -78,7 +78,7 @@ impl Hub {
             .local_addr()
             .unwrap()
             .port();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_999k"));
         command
             .env_clear()
             .args(["serve-hub", "--queue"])
@@ -89,7 +89,7 @@ impl Hub {
             .stderr(Stdio::inherit());
         if receiver {
             let manifest = home.path().join("profiles.json");
-            pigeonmq::private_file::replace_private(
+            radio999k::private_file::replace_private(
                 &manifest,
                 &serde_json::to_vec(&json!({"registration":registry,"profiles":[
                     {"adapter":"codex-local","route":"/receiver","policy":policy}

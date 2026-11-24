@@ -82,7 +82,7 @@ pub(crate) fn validate_schema(connection: &Connection) -> Result<()> {
     }
     let application: i64 = connection.pragma_query_value(None, "application_id", |r| r.get(0))?;
     if application != 1346851153 {
-        return Err(Error::Invalid("not a PigeonMQ database"));
+        return Err(Error::Invalid("not a 999K database"));
     }
     Ok(())
 }

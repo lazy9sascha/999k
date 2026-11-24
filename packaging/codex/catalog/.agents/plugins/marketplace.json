@@ -1,0 +1,20 @@
+{
+  "name": "radio999k-local-test",
+  "interface": {
+    "displayName": "999K Local Test"
+  },
+  "plugins": [
+    {
+      "name": "radio999k-preview",
+      "source": {
+        "source": "local",
+        "path": "./plugins/radio999k-preview"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

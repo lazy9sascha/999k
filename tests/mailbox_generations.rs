@@ -1,4 +1,4 @@
-use pigeonmq::{
+use radio999k::{
     AckResult, Envelope, Error, Message, Outcome, Queue, RpcState,
     conversation::{ThreadRead, ThreadScope},
     inbox_page, mailbox_generation,
@@ -357,16 +357,16 @@ fn old_receipts_and_rpc_results_cannot_cross_a_generation_boundary() {
 fn legacy_queue_remains_usable_and_refuses_unsafe_retirement() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("legacy.sqlite3");
-    let queue = pigeonmq::Queue::open(&db).unwrap();
+    let queue = radio999k::Queue::open(&db).unwrap();
     drop(queue);
     let connection = rusqlite::Connection::open(&db).unwrap();
     connection
         .execute_batch("DROP TABLE pigeonmq_mailbox_generations")
         .unwrap();
     drop(connection);
-    let mut queue = pigeonmq::Queue::open_existing(&db).unwrap();
+    let mut queue = radio999k::Queue::open_existing(&db).unwrap();
     let sent = queue
-        .send(pigeonmq::Envelope {
+        .send(radio999k::Envelope {
             sender: "fixture-sender".into(),
             recipient: "fixture-recipient".into(),
             body: "legacy fixture".into(),
@@ -377,7 +377,7 @@ fn legacy_queue_remains_usable_and_refuses_unsafe_retirement() {
         .unwrap()
         .message;
     let before = std::fs::read(&db).unwrap();
-    assert!(pigeonmq::mailbox_generation::retire(&db, "fixture-recipient").is_err());
+    assert!(radio999k::mailbox_generation::retire(&db, "fixture-recipient").is_err());
     assert_eq!(std::fs::read(&db).unwrap(), before);
     assert_eq!(
         queue

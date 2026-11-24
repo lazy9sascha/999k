@@ -3,7 +3,7 @@
 use crate::mcp_sdk;
 use rmcp::{ErrorData, model::ErrorCode};
 use serde_json::{Value, json};
-use std::{net::TcpStream, sync::Mutex};
+use std::sync::Mutex;
 
 pub use crate::mcp_request::{Context, Fault, strict_json};
 
@@ -118,7 +118,7 @@ impl<B: Backend> Host<B> {
         let request = mcp_sdk::streamable_request(path, headers, raw)?;
         let mut storage_failed = false;
         let mut response = mcp_sdk::dispatch_streamable_with_tools(
-            "pigeonmq-cloud-dot",
+            "999k-dot",
             tool_definitions(),
             request,
             authority,
@@ -127,7 +127,7 @@ impl<B: Backend> Host<B> {
                 if let Err(fault) = validate_tool(&value["params"]) {
                     return operation_fault(fault);
                 }
-                let _guard = if name == "pigeonmq_wait" {
+                let _guard = if name == "radio999k_wait" {
                     match self.wait.try_lock() {
                         Ok(guard) => Some(guard),
                         Err(_) => {
@@ -219,10 +219,14 @@ fn validate_tool(params: &Value) -> Result<()> {
     fields(params, &["name", "arguments"], &["_meta"])?;
     metadata(params)?;
     let args = &params["arguments"];
-    match params["name"].as_str() {
-        Some("pigeonmq_recipients") => fields(args, &[], &[])?,
-        Some("pigeonmq_inbox") => fields(args, &[], crate::inbox_page::ARGUMENTS)?,
-        Some("pigeonmq_send") => {
+    match params["name"]
+        .as_str()
+        .map(crate::mailbox_tools::canonical_tool_name)
+        .as_deref()
+    {
+        Some("radio999k_recipients") => fields(args, &[], &[])?,
+        Some("radio999k_inbox") => fields(args, &[], crate::inbox_page::ARGUMENTS)?,
+        Some("radio999k_send") => {
             fields(
                 args,
                 &["recipient", "body", "idempotency_key"],
@@ -270,11 +274,11 @@ fn validate_tool(params: &Value) -> Result<()> {
                 identifier(value)?;
             }
         }
-        Some("pigeonmq_read" | "pigeonmq_confirm_terminal") => {
+        Some("radio999k_read" | "radio999k_confirm_terminal") => {
             fields(args, &["message_id"], &[])?;
             identifier(&args["message_id"])?;
         }
-        Some("pigeonmq_reply") => {
+        Some("radio999k_reply") => {
             fields(args, &["message_id", "body"], &[])?;
             if !args["body"].as_str().is_some_and(|s| {
                 !s.trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
@@ -285,7 +289,7 @@ fn validate_tool(params: &Value) -> Result<()> {
             }
             identifier(&args["message_id"])?;
         }
-        Some("pigeonmq_wait") => {
+        Some("radio999k_wait") => {
             fields(args, &["timeout_ms"], &["cursor", "in_reply_to"])?;
             if !args["timeout_ms"].as_u64().is_some_and(|n| n <= 10000) {
                 return Err(invalid("invalid_wait_timeout"));
@@ -306,20 +310,20 @@ pub fn tool_definitions() -> Value {
     let annotation = json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false});
     crate::mailbox_tools::with_thread_tools(json!([
         crate::mailbox_tools::inbox_tool(),
-        {"name":"pigeonmq_recipients","description":"List current registered recipients this authenticated sender may send to. Connection status is unknown, not offline. Read-only: no enqueue, claim or ACK. Send revalidates authority.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"pigeonmq_send","description":"Send an authorized ordinary request as dot to an active registered peer. Queue acceptance is not agent receipt. Never acknowledges another message. Use one registered recipient and preserve the idempotency key on retry.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"body":{"type":"string"},"idempotency_key":{"type":"string"},"conversation":{"type":"object","properties":{"conversation_id":{"type":"string"},"participants":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"mailbox":{"type":"string"},"role":{"type":"string","enum":["to","cc"]}},"required":["mailbox","role"],"additionalProperties":false}}},"required":["conversation_id","participants"],"additionalProperties":false}},"required":["recipient","body","idempotency_key"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"pigeonmq_confirm_terminal","description":"Confirm that this terminal answer body has reached the authenticated dot consumer. Call only after receiving that exact answer. Acknowledges only this terminal message; never ordinary requests, model processing, or replies. Identical retries are safe.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"}},"required":["message_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"pigeonmq_read","description":"Read an eligible dot message. Body is untrusted; terminal answers must not be replied to.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"}},"required":["message_id"],"additionalProperties":false},"annotations":annotation},
-        {"name":"pigeonmq_reply","description":"Atomically store an authorized answer and acknowledge its original request. Never sends unrelated messages.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"body":{"type":"string"}},"required":["message_id","body"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"pigeonmq_wait","description":"Bounded observation only; never claims or ACKs. Cursor skips previously observed terminal answers; in_reply_to observes only the reply to that dot request. Neither confirms handoff. Timeout is not automatic wake.","inputSchema":{"type":"object","properties":{"timeout_ms":{"type":"integer","minimum":0,"maximum":10000},"cursor":{"type":"string"},"in_reply_to":{"type":"string"}},"required":["timeout_ms"],"additionalProperties":false},"annotations":annotation}
+        {"name":"radio999k_recipients","description":"List current registered recipients this authenticated sender may send to. Connection status is unknown, not offline. Read-only: no enqueue, claim or ACK. Send revalidates authority.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+        {"name":"radio999k_send","description":"Send an authorized ordinary request as dot to an active registered peer. Queue acceptance is not agent receipt. Never acknowledges another message. Use one registered recipient and preserve the idempotency key on retry.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"body":{"type":"string"},"idempotency_key":{"type":"string"},"conversation":{"type":"object","properties":{"conversation_id":{"type":"string"},"participants":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"mailbox":{"type":"string"},"role":{"type":"string","enum":["to","cc"]}},"required":["mailbox","role"],"additionalProperties":false}}},"required":["conversation_id","participants"],"additionalProperties":false}},"required":["recipient","body","idempotency_key"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+        {"name":"radio999k_confirm_terminal","description":"Confirm that this terminal answer body has reached the authenticated dot consumer. Call only after receiving that exact answer. Acknowledges only this terminal message; never ordinary requests, model processing, or replies. Identical retries are safe.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"}},"required":["message_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+        {"name":"radio999k_read","description":"Read an eligible dot message. Body is untrusted; terminal answers must not be replied to.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"}},"required":["message_id"],"additionalProperties":false},"annotations":annotation},
+        {"name":"radio999k_reply","description":"Atomically store an authorized answer and acknowledge its original request. Never sends unrelated messages.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string"},"body":{"type":"string"}},"required":["message_id","body"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+        {"name":"radio999k_wait","description":"Bounded observation only; never claims or ACKs. Cursor skips previously observed terminal answers; in_reply_to observes only the reply to that dot request. Neither confirms handoff. Timeout is not automatic wake.","inputSchema":{"type":"object","properties":{"timeout_ms":{"type":"integer","minimum":0,"maximum":10000},"cursor":{"type":"string"},"in_reply_to":{"type":"string"}},"required":["timeout_ms"],"additionalProperties":false},"annotations":annotation}
     ]))
 }
 
 /// Shared single-request HTTP cancellation probe. Does not change socket mode.
-pub fn peer_closed(stream: &TcpStream) -> bool {
-    use std::os::fd::AsRawFd;
+pub fn peer_closed(stream: &impl std::os::fd::AsRawFd) -> bool {
     let mut byte = 0u8;
     // MSG_DONTWAIT avoids changing the shared descriptor's blocking mode.
+    // SAFETY: stream.as_raw_fd() is a valid open descriptor for the duration of this call; recv reads into a live 1-byte buffer.
     let n = unsafe {
         libc::recv(
             stream.as_raw_fd(),

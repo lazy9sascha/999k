@@ -19,7 +19,7 @@ fn invalid(reason: &'static str) -> Fault {
     Fault::new(-32602, reason)
 }
 
-// Context follows PigeonMQ e399161, src/dot_mcp_host.rs (MIT).
+// Context follows 999K e399161, src/dot_mcp_host.rs (MIT).
 pub struct Context<'a> {
     pub deadline: Instant,
     enforce_deadline: bool,

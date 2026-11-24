@@ -6,7 +6,7 @@
     <string>pigeonmq.private-supervisor</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/absolute/path/to/installed/pigeonmq</string>
+        <string>/absolute/path/to/installed/999k</string>
         <string>run</string>
         <string>--home</string>
         <string>/absolute/path/to/private/hub-home</string>

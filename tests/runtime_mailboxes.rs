@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq");
+const BIN: &str = env!("CARGO_BIN_EXE_999k");
 
 struct Hub(Child);
 impl Drop for Hub {
@@ -112,7 +112,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
     let home = temp.path().join("sandbox");
     // This mailbox name is unknown until test runtime.
     let name = format!("fixture-{}", uuid::Uuid::new_v4().simple());
-    assert!(pigeonmq::mailbox_catalog::http_by_id(&name).is_none());
+    assert!(radio999k::mailbox_catalog::http_by_id(&name).is_none());
     let read_route = format!("/{name}/mcp");
     let record = triage_home(&home).join(format!("{name}.json"));
     write_triage(
@@ -225,12 +225,12 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
     visible.sort_unstable();
     assert_eq!(
         visible,
-        ["pigeonmq_inbox", "pigeonmq_read", "pigeonmq_read_thread"]
+        ["radio999k_inbox", "radio999k_read", "radio999k_read_thread"]
     );
     let mut queue =
-        pigeonmq::Queue::open_existing(home.join("local-mailboxes/mailboxes.sqlite3")).unwrap();
+        radio999k::Queue::open_existing(home.join("local-mailboxes/mailboxes.sqlite3")).unwrap();
     let message = queue
-        .send(pigeonmq::Envelope {
+        .send(radio999k::Envelope {
             sender: name.clone(),
             recipient: name,
             body: "synthetic observation".into(),
@@ -246,7 +246,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         &read_route,
         &read_token,
         "tools/call",
-        json!({"name":"pigeonmq_read","arguments":{"message_id":message.id}}),
+        json!({"name":"radio999k_read","arguments":{"message_id":message.id}}),
     );
     assert_eq!(status, 200);
     let content: Value =
@@ -259,7 +259,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         &read_route,
         &read_token,
         "tools/call",
-        json!({"name":"pigeonmq_read_thread","arguments":{"conversation_id":message.id}}),
+        json!({"name":"radio999k_read_thread","arguments":{"conversation_id":message.id}}),
     );
     let result: Value =
         serde_json::from_str(thread["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -269,7 +269,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         &read_route,
         &read_token,
         "tools/call",
-        json!({"name":"pigeonmq_wait","arguments":{"timeout_ms":0}}),
+        json!({"name":"radio999k_wait","arguments":{"timeout_ms":0}}),
     );
     assert!(forbidden.get("error").is_some() || forbidden["result"]["isError"] == true);
     for (route, token) in [
@@ -286,7 +286,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         assert_eq!(status, 200);
         assert_eq!(
             initialized["result"]["serverInfo"]["name"],
-            "pigeonmq-local-mailbox"
+            "999k-local-mailbox"
         );
         assert!(initialized["result"]["capabilities"]["events"].is_null());
     }
@@ -295,13 +295,13 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
             "/synthetic-pull/mcp",
             &synthetic_token,
             &[
-                "pigeonmq_inbox",
-                "pigeonmq_read",
-                "pigeonmq_read_thread",
-                "pigeonmq_wait",
+                "radio999k_inbox",
+                "radio999k_read",
+                "radio999k_read_thread",
+                "radio999k_wait",
             ][..],
         ),
-        ("/vooy/mcp", &vooy_token, &["pigeonmq_wait"][..]),
+        ("/vooy/mcp", &vooy_token, &["radio999k_wait"][..]),
     ] {
         let (status, response) = request(port, route, token, "tools/list", json!({}));
         assert_eq!(status, 200, "{route}: {response}");
@@ -318,7 +318,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
             route,
             token,
             "tools/call",
-            json!({"name":"pigeonmq_wait","arguments":{"timeout_ms":0}}),
+            json!({"name":"radio999k_wait","arguments":{"timeout_ms":0}}),
         );
         assert_eq!(status, 200, "{route}: {response}");
         let result: Value =
@@ -331,7 +331,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         "/vooy/mcp",
         &vooy_token,
         "tools/call",
-        json!({"name":"pigeonmq_inbox","arguments":{"scope":"all","query":"synthetic"}}),
+        json!({"name":"radio999k_inbox","arguments":{"scope":"all","query":"synthetic"}}),
     );
     assert!(forbidden.get("error").is_some() || forbidden["result"]["isError"] == true);
     assert_eq!(
@@ -365,7 +365,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         &vooy_token,
         "tools/call",
         json!({
-            "name":"pigeonmq_send",
+            "name":"radio999k_send",
             "arguments":{"recipient":"synthetic-pull","body":"synthetic marker","idempotency_key":"one"}
         }),
     );
@@ -486,7 +486,7 @@ fn invalid_or_unsupported_triage_never_stages_a_mailbox() {
 
 #[test]
 fn cli_remove_stages_a_fresh_bearer_and_apply_preserves_its_bytes() {
-    use pigeonmq::{Envelope, Error, Queue, mailbox_generation};
+    use radio999k::{Envelope, Error, Queue, mailbox_generation};
     use sha2::{Digest, Sha256};
 
     let temp = tempfile::tempdir().unwrap();
@@ -642,7 +642,7 @@ fn cli_remove_stages_a_fresh_bearer_and_apply_preserves_its_bytes() {
         route,
         &new_token,
         "tools/call",
-        json!({"name":"pigeonmq_read","arguments":{"message_id":old.id}}),
+        json!({"name":"radio999k_read","arguments":{"message_id":old.id}}),
     );
     assert_eq!(denied["result"]["isError"], true, "{denied}");
     assert!(!denied.to_string().contains(&old.envelope.body));
@@ -651,7 +651,7 @@ fn cli_remove_stages_a_fresh_bearer_and_apply_preserves_its_bytes() {
         route,
         &new_token,
         "tools/call",
-        json!({"name":"pigeonmq_read","arguments":{"message_id":fresh.message.id}}),
+        json!({"name":"radio999k_read","arguments":{"message_id":fresh.message.id}}),
     );
     assert_eq!(current["result"]["isError"], false);
     assert_eq!(

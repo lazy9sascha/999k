@@ -81,6 +81,7 @@ pub fn lock_state(path: &Path) -> io::Result<File> {
     let parent = path.parent().ok_or_else(invalid_state)?;
     let parent_meta = fs::symlink_metadata(parent)?;
     if !parent_meta.is_dir()
+        // SAFETY: geteuid has no preconditions; comparing owner is a TOCTOU-checked metadata read.
         || parent_meta.uid() != unsafe { libc::geteuid() }
         || parent_meta.mode() & 0o077 != 0
     {

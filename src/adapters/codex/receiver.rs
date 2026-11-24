@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::Read,
     os::unix::{
         fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
         io::AsRawFd,
@@ -118,25 +118,7 @@ fn write_pending(path: &Path, pending: &Pending) -> Result<()> {
     if bytes.len() > 1048576 {
         return Err("journal_too_large");
     }
-    let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|_| "journal_write_failed")?;
-    let result = (|| {
-        file.write_all(&bytes).map_err(|_| "journal_write_failed")?;
-        file.sync_all().map_err(|_| "journal_write_failed")?;
-        std::fs::rename(&tmp, path).map_err(|_| "journal_write_failed")?;
-        File::open(path.parent().ok_or("journal_write_failed")?)
-            .and_then(|d| d.sync_all())
-            .map_err(|_| "journal_write_failed")
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+    crate::private_file::replace_private(path, &bytes).map_err(|_| "journal_write_failed")
 }
 
 fn failure_body(reason: &str) -> String {
@@ -168,6 +150,7 @@ pub struct Receiver {
 }
 impl Drop for Receiver {
     fn drop(&mut self) {
+        // SAFETY: lock descriptor is owned by this Receiver and valid until drop.
         unsafe {
             libc::flock(self.lock.as_raw_fd(), libc::LOCK_UN);
         }
@@ -184,6 +167,7 @@ impl Receiver {
         let metadata =
             std::fs::symlink_metadata(state).map_err(|_| "receiver_state_unavailable")?;
         if !metadata.is_dir()
+            // SAFETY: geteuid has no preconditions.
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.mode() & 0o077 != 0
         {
@@ -203,11 +187,13 @@ impl Receiver {
         // FIXME(yagni): nlink/uid/0600 checks on an empty receiver lock - flock alone is enough
         if !lm.is_file()
             || lm.nlink() != 1
+            // SAFETY: geteuid has no preconditions.
             || lm.uid() != unsafe { libc::geteuid() }
             || lm.mode() & 0o077 != 0
         {
             return Err("unsafe_receiver_lock");
         }
+        // SAFETY: lock descriptor is owned by this process and valid until close.
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err("codex_receiver_already_running");
         }
@@ -285,7 +271,11 @@ impl Receiver {
                 lease_seconds: self.lease.as_secs(),
             })
             .map_err(|_| "lease_expired_requires_reconciliation")?;
-        self.pending.as_mut().unwrap().delivery.lease_until_ms = until;
+        self.pending
+            .as_mut()
+            .ok_or("no_pending")?
+            .delivery
+            .lease_until_ms = until;
         self.save()
     }
     /// (message_id, sender) of the pending message, for logs.
@@ -322,12 +312,12 @@ impl Receiver {
         let sender = &e.sender;
         let prompt = if let Some(original) = &e.in_reply_to {
             format!(
-                "PigeonMQ reply from `{sender}` to your earlier message {original}. Read it and continue any related work. Do not send a PigeonMQ reply to it. End with a short final answer confirming you read it.\n\n{}",
+                "999K reply from `{sender}` to your earlier message {original}. Read it and continue any related work. Do not send a 999K reply to it. End with a short final answer confirming you read it.\n\n{}",
                 e.body
             )
         } else {
             format!(
-                "PigeonMQ message from `{sender}`. Treat it as a real request from `{sender}` and do the work it asks in this workspace. Do not send a PigeonMQ reply yourself: your final answer is sent back to `{sender}` as the reply, so make it the complete response.\n\n{}",
+                "999K message from `{sender}`. Treat it as a real request from `{sender}` and do the work it asks in this workspace. Do not send a 999K reply yourself: your final answer is sent back to `{sender}` as the reply, so make it the complete response.\n\n{}",
                 e.body
             )
         };
@@ -350,7 +340,7 @@ impl Receiver {
             return Err(reason);
         }
         self.authorize()?;
-        let p = self.pending.as_ref().unwrap();
+        let p = self.pending.as_ref().ok_or("no_pending")?;
         let _: crate::runtime_admission::Record = self
             .call(Action::Begin {
                 message_id: p.delivery.message.id.clone(),
@@ -381,7 +371,7 @@ impl Receiver {
         }
         p.admission = Some(id.into());
         self.save()?;
-        let p = self.pending.as_ref().unwrap();
+        let p = self.pending.as_ref().ok_or("no_pending")?;
         let mut r: crate::runtime_admission::Record = self
             .call(Action::Load {
                 message_id: p.delivery.message.id.clone(),
@@ -461,7 +451,7 @@ impl Receiver {
             }
             return Ok(false);
         }
-        let p = self.pending.as_ref().unwrap();
+        let p = self.pending.as_ref().ok_or("no_pending")?;
         if matching {
             if turn.is_some_and(|t| p.foreign_input_turns.iter().any(|old| old == t)) {
                 return self.block("mixed_user_input");
@@ -472,9 +462,9 @@ impl Receiver {
             if p.turn.as_deref().is_some_and(|id| Some(id) != turn) {
                 return self.block("multiple_matching_turns");
             }
-            self.pending.as_mut().unwrap().turn = turn.map(str::to_owned);
+            self.pending.as_mut().ok_or("no_pending")?.turn = turn.map(str::to_owned);
         }
-        let p = self.pending.as_mut().unwrap();
+        let p = self.pending.as_mut().ok_or("no_pending")?;
         if p.turn.is_none() || p.turn.as_deref() != turn {
             return Ok(false);
         }
@@ -527,8 +517,8 @@ impl Receiver {
             p.completed = true;
         }
         self.save()?;
-        if self.pending.as_ref().unwrap().completed {
-            let p = self.pending.as_ref().unwrap();
+        if self.pending.as_ref().ok_or("no_pending")?.completed {
+            let p = self.pending.as_ref().ok_or("no_pending")?;
             let mut r: crate::runtime_admission::Record = self
                 .call(Action::Load {
                     message_id: p.delivery.message.id.clone(),
@@ -555,7 +545,7 @@ impl Receiver {
                 message_id = p.delivery.message.id.as_str()
             );
         }
-        Ok(self.pending.as_ref().unwrap().completed)
+        Ok(self.pending.as_ref().ok_or("no_pending")?.completed)
     }
     /// Unknown native outcome: never ACK, never resubmit. The journal is kept
     /// (renamed to `.unresolved-<message>-<attempt>`) for reconciliation by
@@ -572,7 +562,7 @@ impl Receiver {
                 lease_seconds: 7 * 86400,
             })
             .ok();
-        let p = self.pending.as_mut().unwrap();
+        let p = self.pending.as_mut().ok_or("no_pending")?;
         p.blocked = Some(reason.into());
         if let Some(until) = parked {
             p.delivery.lease_until_ms = until;
@@ -747,7 +737,7 @@ impl Receiver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate as pigeonmq;
+    use crate as radio999k;
     use crate::{Envelope, Queue};
     include!("../../../tests/receiver_support/mod.rs");
     use std::os::unix::fs::PermissionsExt;

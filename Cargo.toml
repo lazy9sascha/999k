@@ -1,21 +1,25 @@
 [package]
-name = "pigeonmq"
-default-run = "pigeonmq"
-version = "0.1.5"
+name = "radio999k"
+default-run = "999k"
+autobins = false
+version = "0.2.0"
 edition = "2024"
 publish = false
-description = "A self-hosted MCP hub for agent-to-agent messaging. The queue runs on your Mac. Cloud agents reach their mailboxes through a tunnel."
+description = "999K is a self-hosted MCP hub for agent-to-agent messaging. The queue runs on your Mac. Cloud agents reach their mailboxes through a tunnel."
 license = "MIT"
 
 [dependencies]
+jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
 bytes = "1"
 http = "1"
 http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 futures-util = { version = "0.3", features = ["sink"] }
 plist = "1"
 rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["rt", "sync", "macros", "net", "time", "process", "io-util", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "blocking", "json"] }
 hmac = "0.13"
 base64 = "0.22"
 url = "2"
@@ -42,13 +46,21 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tempfile = "3"
 
 [[bin]]
-name = "pigeonmq"
+name = "999k"
 path = "src/main.rs"
 
 [[bin]]
-name = "pigeonmq-dot-resolve"
-path = "src/bin/pigeonmq-dot-resolve.rs"
+name = "999k-dot-resolve"
+path = "src/bin/999k-dot-resolve.rs"
+
+[[bin]]
+name = "999k-codex-receiver"
+path = "src/bin/999k-codex-receiver.rs"
+
+[[bin]]
+name = "999k-registration"
+path = "src/bin/999k-registration.rs"
 
 [lib]
-name = "pigeonmq"
+name = "radio999k"
 path = "src/lib.rs"

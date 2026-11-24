@@ -4,7 +4,7 @@ Use the same executable and private `CLOUD_HOME` from the [quickstart](quickstar
 If a setup command fails, read its terminal error first. If `run` started, check the loopback hub:
 
 ```sh
-"$PIGEONMQ_BIN" health --home "$CLOUD_HOME"
+"$RADIO999K_BIN" health --home "$CLOUD_HOME"
 ```
 
 If the hub is not ready, check `$CLOUD_HOME/pigeonmq-cloud-state.json` for the runner's `reason`.
@@ -37,7 +37,7 @@ If it reports `2`, do not edit the version number. This release has no supported
 | `queue_identity_changed_restart_required` | Queue file changed during hub recovery | Review the replacement, then restart `run` |
 | `recovering` | Hub exited and the runner is restarting it | Check repeated failures. The queue and Events outbox remain on disk. |
 | `local_ready` | Local hub is running without a managed public tunnel | Check your external proxy or tunnel and any Cloud subscription separately |
-| `tunnel_mode_required` | `run` started with no tunnel mode | Set `PIGEONMQ_TUNNEL=external` and `PIGEONMQ_PUBLIC_URL` for your own domain, or `PIGEONMQ_TUNNEL=tunnl` for testing. Use `--local-only` for loopback tests only. |
+| `tunnel_mode_required` | `run` started with no tunnel mode | Set `RADIO999K_TUNNEL=external` and `RADIO999K_PUBLIC_URL` for your own domain, or `RADIO999K_TUNNEL=tunnl` for testing. Use `--local-only` for loopback tests only. |
 | `tunnel_env_file_unavailable` | Cannot read the selected private env file | Check the file path and owner-only permissions on the file and its directory |
 | `invalid_tunnel_env_file` or `tunnel_env_file_requires_mode` | Invalid assignment or missing tunnel mode in the file | Follow the [private file format](tunnels.md#use-a-private-env-file) |
 | `ssh_auth_or_host_key_rejected` | SSH key refused or host key changed | Check `pigeonmq-cloud-tunnel-ed25519` and the pinned host key. The runner won't retry this. |
@@ -51,7 +51,7 @@ If it reports `2`, do not edit the version number. This release has no supported
 | Status / error | Meaning |
 | --- | --- |
 | `401` | Missing or wrong Bearer token, or token revoked |
-| `403` | Token is valid but the operation, sender, or mailbox isn't allowed. `pigeonmq_recipients` needs `send`. |
+| `403` | Token is valid but the operation, sender, or mailbox isn't allowed. `radio999k_recipients` needs `send`. |
 | `404 profile_disabled` | That app's policy file isn't loaded. Restart `run` after adding it. |
 | `404 route_not_found` | Wrong path. Use the selected profile's `/muse/mcp`, `/grok/mcp`, `/dot/mcp`, or `/codex/mcp`. |
 | `405 post_required` | Only POST is accepted (a browser GET gets this) |
@@ -91,4 +91,4 @@ For Dot and Codex Cloud Events, look for JSON warnings on hub stderr with `compo
 
 Agent woken twice for one message? Two notifiers are pointed at the same webhook, or two hubs share it. Give each hub its own webhook, and have the agent handle each `message_id` once.
 
-Agent woken but `pigeonmq_read` says not found? The wake came from a different hub than the one the agent reads from. One webhook per hub.
+Agent woken but `radio999k_read` says not found? The wake came from a different hub than the one the agent reads from. One webhook per hub.

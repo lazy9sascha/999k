@@ -342,7 +342,7 @@ impl EventDelivery {
             tx.commit()?;
             if exhausted != 0 {
                 tracing::warn!(
-                    target: "pigeonmq::events",
+                    target: "radio999k::events",
                     component = "events_callback", event = "failure",
                     outcome = "reservation_exhausted", count = exhausted
                 );
@@ -480,7 +480,7 @@ impl EventDelivery {
             && let Some(outcome) = diagnostic
         {
             tracing::warn!(
-                target: "pigeonmq::events",
+                target: "radio999k::events",
                 component = "events_callback", event = "failure", outcome,
                 attempt = attempt.attempt, decision_status = status
             );

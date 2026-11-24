@@ -26,7 +26,7 @@
   {
     "id": "codex-cloud",
     "adapter": "shared-mailbox",
-    "server_name": "pigeonmq-codex",
+    "server_name": "999k-codex",
     "events": "codex",
     "route": "/codex/mcp",
     "policy_file": "pigeonmq-cloud-codex-policy.json",
@@ -42,7 +42,7 @@
   {
     "id": "instinct",
     "adapter": "shared-mailbox",
-    "server_name": "pigeonmq-instinct",
+    "server_name": "999k-instinct",
     "route": "/instinct/mcp",
     "policy_file": "pigeonmq-cloud-instinct-policy.json",
     "enabled_key": "instinct_enabled"
@@ -50,7 +50,7 @@
   {
     "id": "cue",
     "adapter": "shared-mailbox",
-    "server_name": "pigeonmq-cue",
+    "server_name": "999k-cue",
     "route": "/cue/mcp",
     "policy_file": "pigeonmq-cloud-cue-policy.json",
     "enabled_key": "cue_enabled",

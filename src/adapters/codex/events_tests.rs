@@ -1,6 +1,6 @@
-// Source: PigeonMQ e399161, src/codex_events_tests.rs (MIT), Cloud cases only.
+// Source: 999K e399161, src/codex_events_tests.rs (MIT), Cloud cases only.
 use super::*;
-use pigeonmq::{
+use radio999k::{
     Envelope, Queue, events::delivery::EventDelivery, events::subscriptions::SubscriptionStore,
 };
 use rusqlite::{Connection, params};
@@ -28,7 +28,7 @@ fn echo(_: &EventsPolicy, request: SignedCallback<'_>) -> Result<CallbackRespons
     let body: Value = serde_json::from_slice(request.body).unwrap();
     assert_eq!(body["type"], "verification");
     assert!(
-        pigeonmq::events::callback_transport::signed_headers(&request)
+        radio999k::events::callback_transport::signed_headers(&request)
             .unwrap()
             .contains_key("webhook-signature")
     );
@@ -46,8 +46,9 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let profile = Profile {
+            hosted: None,
             identity: crate::codex_mcp::Identity::BuiltIn(
-                pigeonmq::mailbox_catalog::codex().mailbox,
+                radio999k::mailbox_catalog::codex().mailbox,
             ),
             db: dir.path().join("queue.db"),
             policy: dir.path().join("codex-policy.json"),
@@ -280,12 +281,12 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
     .unwrap();
     assert_eq!(f.state(&id), (0, None));
     assert_eq!(
-        f.tool(&r, "pigeonmq_read", json!({"message_id":id}))["id"],
+        f.tool(&r, "radio999k_read", json!({"message_id":id}))["id"],
         id
     );
     let reply = f.tool(
         &r,
-        "pigeonmq_reply",
+        "radio999k_reply",
         json!({"message_id":id,"body":"synthetic handler result, not model inference"}),
     );
     assert_eq!(reply["state"], "replied");
@@ -321,16 +322,16 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
         })
     })
     .unwrap();
-    assert!(f.tool(&r, "pigeonmq_wait", json!({"timeout_ms":0}))["message"].is_null());
+    assert!(f.tool(&r, "radio999k_wait", json!({"timeout_ms":0}))["message"].is_null());
     assert_eq!(
         f.tool(
             &r,
-            "pigeonmq_wait",
+            "radio999k_wait",
             json!({"timeout_ms":0,"in_reply_to":original_id})
         )["message"]["id"],
         terminal
     );
-    f.tool(&r, "pigeonmq_read", json!({"message_id":terminal}));
+    f.tool(&r, "radio999k_read", json!({"message_id":terminal}));
     assert_eq!(f.state(&terminal), (0, None));
     let count: i64 = f
         .conn()
@@ -338,7 +339,7 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
         .unwrap();
     let confirmation = f.tool(
         &r,
-        "pigeonmq_confirm_terminal",
+        "radio999k_confirm_terminal",
         json!({"message_id":terminal}),
     );
     assert_eq!(confirmation["duplicate"], false);
@@ -346,7 +347,7 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
     assert!(
         f.tool(
             &r,
-            "pigeonmq_wait",
+            "radio999k_wait",
             json!({"timeout_ms":0,"in_reply_to":original_id})
         )["message"]
             .is_null()
@@ -355,7 +356,7 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
     assert_eq!(
         f.tool(
             &r,
-            "pigeonmq_confirm_terminal",
+            "radio999k_confirm_terminal",
             json!({"message_id":terminal})
         )["duplicate"],
         true
@@ -369,7 +370,7 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
     let denied = f.rpc(
         &r,
         "tools/call",
-        json!({"name":"pigeonmq_confirm_terminal","arguments":{"message_id":id}}),
+        json!({"name":"radio999k_confirm_terminal","arguments":{"message_id":id}}),
     );
     assert_eq!(denied["result"]["isError"], true);
 }
@@ -534,7 +535,7 @@ fn codex_retry_identity_survives_restart_and_old_grant_cannot_finish_new_one() {
     .unwrap();
     assert_eq!(
         restarted.finish(&retry, 410).unwrap(),
-        pigeonmq::events::delivery::DeliveryOutcome::Superseded
+        radio999k::events::delivery::DeliveryOutcome::Superseded
     );
     assert_eq!(
         f.conn()
@@ -586,7 +587,7 @@ fn confirmation_rejects_claimed_terminal_and_revoked_sender() {
     let denied = f.rpc(
         &r,
         "tools/call",
-        json!({"name":"pigeonmq_confirm_terminal","arguments":{"message_id":terminal}}),
+        json!({"name":"radio999k_confirm_terminal","arguments":{"message_id":terminal}}),
     );
     assert_eq!(denied["result"]["isError"], true);
     assert!(f.state(&terminal).1.is_none());
@@ -647,7 +648,7 @@ fn inline_discovery_then_exact_read_preserves_queue_state() {
     let read = f.rpc(
         &r,
         "tools/call",
-        json!({"_meta":meta,"name":"pigeonmq_read","arguments":{"message_id":id}}),
+        json!({"_meta":meta,"name":"radio999k_read","arguments":{"message_id":id}}),
     );
     let body: Value =
         serde_json::from_str(read["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -673,7 +674,7 @@ fn inline_discovery_then_exact_read_preserves_queue_state() {
 
 #[test]
 fn callback_diagnostics_follow_persisted_failure_transitions() {
-    use pigeonmq::events::delivery::DeliveryOutcome;
+    use radio999k::events::delivery::DeliveryOutcome;
 
     // A parallel test can register a tracing callsite before this thread sees it,
     // caching no interest despite the thread-local subscriber below.

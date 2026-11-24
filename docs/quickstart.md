@@ -1,159 +1,215 @@
 # Quickstart
 
-Build, configure the selected profile, start its transport, and connect the agent.
-The local verification below is optional. It does not limit operational senders or message text.
+Install 999K, set up a local mailbox on macOS, and connect a client over stdio.
+A reverse tunnel is optional and is only for a remote agent.
+For agent-specific connections, see [agents and capabilities](agents.md).
 
-Not sure which connection mode your agent needs? Check [agents and capabilities](agents.md) first.
+<a id="1-build"></a>
 
-## 1. Build
+## 1. Install
 
-Use a checked executable on macOS, or build this checkout with stable Rust and 2024 edition support.
-
-```sh
-cargo build --locked --release
-install -d -m 700 "$HOME/.local/libexec/pigeonmq"
-export PIGEONMQ_BIN="$HOME/.local/libexec/pigeonmq/pigeonmq"
-install -m 700 target/release/pigeonmq "$PIGEONMQ_BIN"
-"$PIGEONMQ_BIN" --version
-```
-
-Keep the installed binary at this absolute path for managed service restarts.
-Version 0.1.0 built `pigeonmq-cloud`. Update scripts and service definitions to use the installed `pigeonmq` path.
-
-Pick a private runtime folder **outside the repository**. It holds the queue, policies, and tunnel keys.
+The 0.2.0 installer supports Apple Silicon Macs and Linux on x86-64 and ARM64.
+Use the installer from [GitHub Releases](https://github.com/lazy9sascha/999k/releases) when the release assets are available.
+It installs `999k` and `999k-dot-resolve` in `$HOME/.local/bin` by default. No Rust toolchain is needed.
 
 ```sh
-export CLOUD_HOME="$HOME/.pigeonmq-cloud"
-"$PIGEONMQ_BIN" init --home "$CLOUD_HOME"
+version=0.2.0
+curl -q --proto '=https' -fLsS -o 999k-install.sh \
+  "https://github.com/lazy9sascha/999k/releases/download/$version/install.sh" &&
+sh ./999k-install.sh
 ```
 
-Use the same explicit `--home` in later commands. `init` creates the queue if it is missing and writes connector drafts.
-It scans the system and user Applications folders for supported bundles.
-A discovered bundle is a candidate. App connection and Bearer verification are separate steps.
-If the home contains a queue from an older release, see [Older queue databases](troubleshooting.md#older-queue-databases).
+If an archive is not available for your machine, build this checkout with stable Rust and 2024 edition support. Use a new directory so the source build does not replace an existing installation.
 
-For **Dot**, use [the private Secure MCP Tunnel procedure](configuration.md#dot-through-a-private-secure-mcp-tunnel).
-This procedure keeps local Bearer authentication and checks access from the intended Dot.
+```sh
+source_bin="$HOME/.local/libexec/999k/0.2.0/bin"
+cargo build --locked --release --bin 999k --bin 999k-dot-resolve &&
+mkdir -p "$(dirname "$source_bin")" &&
+mkdir -m 700 "$source_bin" &&
+install -m 700 target/release/999k target/release/999k-dot-resolve "$source_bin/" &&
+export RADIO999K_BIN="$source_bin/999k"
+```
 
-For **Codex Cloud**, use [Codex Cloud operation](configuration.md#codex-cloud-operation).
-Mailbox setup prepares the profile. The official Secure MCP Tunnel connects to its route on the hub.
-The steps below stay on loopback unless you set a public origin.
-Prefer a reverse tunnel on your own domain. See [Use your own HTTPS origin](tunnels.md#use-your-own-https-origin).
-If you have no domain, you can opt in to tunnl.gg for testing.
+After either install:
 
-### Stage and apply Cue or Instinct on macOS
+```sh
+export RADIO999K_BIN="${RADIO999K_BIN:-$HOME/.local/bin/999k}"
+export PATH="$(dirname "$RADIO999K_BIN"):$PATH"
+"$RADIO999K_BIN" --version
+```
 
-Use the private `CLOUD_HOME` initialized above and the installed binary.
+If you used another install directory, set `RADIO999K_BIN` to the absolute path of its `999k`.
+Use a stable absolute path for a managed service.
+For an existing managed service, upgrade the executable at its recorded absolute path. Keep its home, service labels, and credential store. See the [installer notes](../packaging/README.md).
+
+## Local MCP on macOS
+
+The stdio steps require a build that provides `999k stdio-mcp`. If your installed version lacks that command, build this checkout.
+
+### macOS: managed Cue or Instinct
+
 Use one managed home for all profiles in the same macOS login.
+This example uses a new Instinct home and opts in to the private stdio socket on its first managed apply.
+Use `cue` instead to serve `/cue/mcp`.
+
+Keep an existing home on its current absolute path and configuration.
+If this login already runs a managed hub, skip the fresh-home example and use the existing hub directory.
+These commands opt in on the first active profile of a new managed Cue or Instinct home.
+For an existing managed home, run the candidate from the installed service’s executable path. Use the existing home and an already-active profile with `init <active-profile> --home <existing-home> --apply --stdio-socket`. The running hub restarts once.
 
 ```sh
-"$PIGEONMQ_BIN" init cue --home "$CLOUD_HOME"
-"$PIGEONMQ_BIN" init cue --home "$CLOUD_HOME" --apply
+export CLOUD_HOME="$HOME/.999k-stdio"
+if [ ! -e "$CLOUD_HOME" ] && [ ! -L "$CLOUD_HOME" ]; then
+  "$RADIO999K_BIN" init --home "$CLOUD_HOME" &&
+  "$RADIO999K_BIN" init instinct --home "$CLOUD_HOME" &&
+  "$RADIO999K_BIN" init instinct --home "$CLOUD_HOME" --apply --stdio-socket
+else
+  printf '%s\n' "Choose a new 999K home." >&2
+fi
 ```
 
-The first command stages the profile and Bearer file. The output gives the file path and the intended route.
-The second command registers and starts the managed loopback hub in your macOS login session.
-Repeat with `instinct` to add a second mailbox. Repeating the same active setup reuses the original Bearer.
+The first named command stages the policy and bearer file. Use the private `token_file` path it prints.
+The command does not print the bearer.
+The apply command registers and starts the managed loopback hub and binds the private stdio socket for that home.
+The socket setting stays with the home.
+This command does not start hosted registration.
+Repeating an active setup keeps its bearer.
+See [managed profiles](configuration.md#manage-built-in-profiles) for other profiles, email, and removal.
+See [Local MCP over stdio](configuration.md#local-mcp-over-stdio) for the socket rules and for adding `--stdio-socket` to an existing foreground `serve-hub` command.
+Use the macOS procedures for [Dot](configuration.md#dot-through-a-private-secure-mcp-tunnel) and [Codex Cloud](configuration.md#codex-cloud-operation).
+A detected app is not a connected app.
 
-A local MCP client can check `tools/list` on `http://127.0.0.1:54843/cue/mcp`.
-Use the Bearer from the protected file printed by `init`.
-A remote client needs an approved tunnel and must be configured with its own route and Bearer.
-The hub does not install a remote app or start a model.
+#### Connect over stdio
 
-See [managed profiles](configuration.md#manage-built-in-profiles) for existing profiles, optional email, and removal.
+`stdio-mcp` uses the absolute `999k` executable and the private bearer file path.
+The client runs as the same OS user as the hub.
+Pass the private bearer file path.
 
-## 2. Optional local verification
+If your client uses an `mcpServers` object, enter this configuration. Otherwise, use the same command and arguments in the client's stdio settings.
 
-This sends one message, reads it over HTTP like an agent would, replies, and checks the reply survives a restart. It uses a throwaway folder and a fake token. You need Python 3 and curl.
-
-```sh
-bin="$PIGEONMQ_BIN"
-export PIGEON_HOME="$(mktemp -d)"
-export PIGEON_PORT=54900          # any free loopback port
-export TEST_TOKEN=local-test-only-not-a-credential
-umask 077
-"$bin" init --home "$PIGEON_HOME"
-
-python3 - <<'PY'
-import hashlib, json, os
-from pathlib import Path
-home = Path(os.environ["PIGEON_HOME"]).resolve()
-registry = home / "pigeonmq-cloud-registration.json"
-registry.write_text(json.dumps({p: {"mailbox": p, "revoked": False} for p in ("a", "muse")}))
-(home / "fixture-sender-policy.json").write_text(json.dumps({"principals": [{
-    "id": "a", "token_sha256": hashlib.sha256(os.environ["TEST_TOKEN"].encode()).hexdigest(),
-    "operations": ["send"], "send_to": ["muse"], "mailboxes": [], "revoked": False,
-}]}))
-(home / "pigeonmq-cloud-muse-policy.json").write_text(json.dumps({
-    "principal": "muse", "mailbox": "muse",
-    "token_sha256": hashlib.sha256(os.environ["TEST_TOKEN"].encode()).hexdigest(),
-    "operations": ["read", "reply"],
-    "enabled": True, "expires_at_ms": 9999999999999,
-    "registration": str(registry),
-}))
-PY
-
-db="$PIGEON_HOME/pigeonmq-cloud-queue.sqlite3"
-policy="$PIGEON_HOME/pigeonmq-cloud-muse-policy.json"
-"$bin" muse-prepare --queue "$db" --auth-policy "$policy"   # prints muse_storage_prepared
-```
-
-Start the hub and talk to it:
-
-```sh
-"$bin" run --home "$PIGEON_HOME" --local-only --port "$PIGEON_PORT" \
-  --auth-policy "$PIGEON_HOME/fixture-sender-policy.json" &
-hub_pid=$!
-```
-
-Wait for `local_ready` in the runner output. Then send a test message:
-
-```sh
-id="$(curl -fsS "http://127.0.0.1:$PIGEON_PORT/messages/send" \
-  -H "Authorization: Bearer $TEST_TOKEN" -H 'Content-Type: application/json' \
-  --data '{"sender":"a","recipient":"muse","body":"hello"}' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["message"]["id"])')"
-
-mcp() {
-  curl -fsS "http://127.0.0.1:$PIGEON_PORT/muse/mcp" \
-    -H "Authorization: Bearer $TEST_TOKEN" \
-    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-    -H 'MCP-Protocol-Version: 2025-03-26' --data "$1"
+```json
+{
+  "mcpServers": {
+    "radio999k": {
+      "command": "/absolute/path/to/999k",
+      "args": [
+        "stdio-mcp",
+        "--home",
+        "/absolute/path/to/hub-home",
+        "--mailbox",
+        "instinct",
+        "--bearer-file",
+        "/absolute/path/to/private-bearer-file"
+      ]
+    }
+  }
 }
-read_msg() { mcp "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"pigeonmq_read\",\"arguments\":{\"message_id\":\"$id\"}}}"; }
-
-read_msg                                   # state: pending
-mcp "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"pigeonmq_reply\",\"arguments\":{\"message_id\":\"$id\",\"body\":\"hello back\"}}}"
-read_msg                                   # state: replied, with reply_id
 ```
 
-Restart check: run `kill $hub_pid; wait $hub_pid`. Start the hub again with the same command. Run `read_msg`. It is still `replied` with the same `reply_id`. Stop the hub when done.
+Set `command` to the absolute path in `RADIO999K_BIN`.
+Set `--home` to the same absolute home, and `--bearer-file` to the absolute `token_file` path from init.
+Use `cue` as `--mailbox` when the applied profile is Cue.
+The adapter uses the mailbox policy already mounted in the hub. Closing the client leaves the hub running. Use a synthetic message from an authorized peer to verify access.
+
+See [Local MCP over stdio](configuration.md#local-mcp-over-stdio) for foreground socket setup and protocol details.
+
+#### Connect Orca to your existing peers
+
+After setup, ask from the chat you are in. For example, “Ask Muse for a shorter title for ‘Getting started with 999K’.” Your project agent can bring Muse’s answer back to that question.
+
+Open **Bots → Muse** to see the bot’s Home Chat. It shows tool calls and the bot’s own updates. **Queued** means 999K accepted the question. If Muse replies later, the bot may need another check to retrieve the matching answer.
+
+Use the Mac that runs the hub. Enable its [private stdio socket](configuration.md#local-mcp-over-stdio) and use the existing sender mailbox. The sender needs permission to send to the peers and read their replies. Peers see that mailbox as the sender. Keep its bearer in the private file on your Mac.
+
+1. Install the native 999K executable and the [Orca plugin archive](../packaging/README.md#orca-plugin-archive). Review the plugin permissions in Orca. Open a local workspace, select **999K**, then **Open setup terminal**. For the default installation this runs `999k init --orca`.
+2. Leave the setup terminal open. On an empty Orca profile, use **Bots → New bot**, enter the name and identity shown in the terminal, choose the provider, and select **Create**. Setup binds that bot to its existing peer, then asks its Home Chat to propose the remaining relay bots. If Orca cannot deliver the handoff, the terminal prints a command for that Home Chat. Review the cards there. Each time you select **Create bot**, the terminal detects the new bot and attaches its scoped connector. You can close setup and run it again. If you dismissed a card, check Orca before using `--retry-orca-offer <peer>`.
+3. Inspect the setup result. In each configured bot’s Home Chat, ask it to list recipients through its own connector. A new connector is named `radio999k` and offers `radio999k_recipients`. A preserved connector may still be named `pigeonmq` and advertise `pigeonmq_recipients`. Use the name in its tool list. It should return only the bound peer. A configured tool can still be unavailable to an existing chat. Verify the call before sending a message.
+4. Send one message. Once the tool returns an original ID, the bot can report **Queued**. To get the answer, use `radio999k_wait` in that chat with the original ID as `in_reply_to`. A matching peer reply confirms the exchange. Retry an empty wait with the same ID.
+
+For a custom installation or an existing sender bearer at a different path, run:
+
+```sh
+"$RADIO999K_BIN" init --orca --home /absolute/path/to/hub-home \
+  --orca-sender codex-cloud --orca-bearer-file /absolute/path/to/private-bearer-file
+```
+
+Setup reads the existing authorized recipients and configures the supported ones among Dot, Instinct, Cue, Muse and GrokBot. An existing bot must have the expected name and an identity that designates that 999K peer. Setup reports conflicting names and tools. For this Orca version, use absolute executable, home and bearer paths without spaces or shell metacharacters.
+
+When a project agent calls a bot, keep the Orca question ID with the 999K original ID. After retrieving the matching answer, the bot can use `orca orchestration reply --id <original-orca-question-id> --body-file -` and pass the answer on standard input.
+
+## 2. Try a local exchange
+
+You need Python 3 for this optional test. It does not require Rust or a source checkout.
+Set `version` to the installed version, without a leading `v`. Use its copy of the script from the source tag.
+
+```sh
+version=0.2.0
+curl -q --proto '=https' -fLsS -o 999k-smoke.sh \
+  "https://raw.githubusercontent.com/lazy9sascha/999k/$version/scripts/smoke-release.sh" &&
+sh ./999k-smoke.sh --installed "$(dirname "$RADIO999K_BIN")" "$version"
+```
+
+In a checkout, use [`scripts/smoke-release.sh`](../scripts/smoke-release.sh) instead of downloading it.
+To check a downloaded archive before installing, pass its filename and version without `--installed`.
+
+The test checks both binaries, starts a private loopback hub, and exchanges one message using synthetic Bearer tokens.
+It stops and restarts the hub and checks that the same linked reply ID is still in the queue.
+It removes the temporary home. It does not reach a public endpoint, touch Keychain, or start a background service.
+
+## Prepare a real mailbox
+
+Use an owner-private runtime folder outside the repository.
+The home holds the queue and its policies. Use the same absolute `--home` each time.
+For an existing hub, keep its home and configuration. See [Older queue databases](troubleshooting.md#older-queue-databases) if needed.
+
+### Linux: foreground with a file credential
+
+This example creates a new Instinct home. It does not use Keychain or start a service.
+Use a new path. The commands stop if the folder already exists.
+
+```sh
+export CLOUD_HOME="$HOME/.999k-instinct"
+mkdir -m 700 "$CLOUD_HOME" &&
+(umask 077; printf '%s\n' '{"instinct":{"mailbox":"instinct","revoked":false}}' \
+  > "$CLOUD_HOME/pigeonmq-cloud-registration.json") &&
+"$RADIO999K_BIN" init --home "$CLOUD_HOME" &&
+"$RADIO999K_BIN" init instinct --home "$CLOUD_HOME" --operational &&
+"$RADIO999K_BIN" run --home "$CLOUD_HOME" --local-only
+```
+
+The running hub serves `http://127.0.0.1:54843/instinct/mcp`.
+Use the Bearer in the mode-600 file printed as `token_file`. The command does not print the token.
+Add active peers only as needed in the [registration file](configuration.md#registration-format).
+Keep this terminal open while you use the hub. Press Ctrl+C to stop it.
+On later starts, use only the `run` command with the same home.
+For a new macOS managed Cue or Instinct home, use [macOS: managed Cue or Instinct](#macos-managed-cue-or-instinct) and connect with stdio.
 
 ## 3. Open a tunnel
 
-Public HTTPS connectors need a public URL.
-`run` has no default tunnel mode.
-You must set a mode, or pass `--local-only` for loopback testing.
+This section is optional. Skip it for a client on the hub machine.
+A remote HTTPS connector needs a reachable origin. Private Dot and Codex Cloud tunnels use separate procedures.
+`run` has no default tunnel mode. Pass `--local-only` only for loopback.
+If a managed hub already serves the route, connect the tunnel to that listener. Do not start a second runner.
 Prefer a reverse tunnel on your own domain.
 See [Use your own HTTPS origin](tunnels.md#use-your-own-https-origin).
 The service that handles public TLS can read the Bearer token and message bodies.
 
-### Prepare the runtime folder
+### Prepare Muse on macOS
 
-For **Muse**, one command does everything (queue, registration, policy, Keychain token):
+For **Muse**, prepare the queue, registration, policy, and Keychain token:
 
 ```sh
-"$PIGEONMQ_BIN" setup-muse --home "$CLOUD_HOME" --peer my-peer
+"$RADIO999K_BIN" setup-muse --home "$CLOUD_HOME" --peer my-peer
 ```
 
-`--peer` is the mailbox allowed to message Muse. Running it again is safe. It keeps existing policies and tells you which tunnel files are missing.
+`--peer` is the mailbox allowed to message Muse. Repeat setup to check what is missing without replacing existing policies.
 
 For **Grok Bot**, see [Grok Bot policy setup](configuration.md#grok-bot-policy-by-hand).
 
 ### Use tunnl.gg only for testing
 
 Use this path only when you have no domain.
-Set `PIGEONMQ_TUNNEL=tunnl` before you start `run`.
+Set `RADIO999K_TUNNEL=tunnl` before you start `run`.
 
 Read these limits first:
 
@@ -174,26 +230,26 @@ Then save tunnl.gg's **verified** host key in `$CLOUD_HOME/pigeonmq-cloud-tunnel
 For a reverse tunnel on your own domain:
 
 ```sh
-PIGEONMQ_TUNNEL=external PIGEONMQ_PUBLIC_URL=https://pigeon.example.com \
-  "$PIGEONMQ_BIN" run --home "$CLOUD_HOME"
+RADIO999K_TUNNEL=external RADIO999K_PUBLIC_URL=https://radio.example.com \
+  "$RADIO999K_BIN" run --home "$CLOUD_HOME"
 ```
 
 For tunnl.gg testing:
 
 ```sh
-PIGEONMQ_TUNNEL=tunnl "$PIGEONMQ_BIN" run --home "$CLOUD_HOME"
+RADIO999K_TUNNEL=tunnl "$RADIO999K_BIN" run --home "$CLOUD_HOME"
 ```
 
 For loopback testing only:
 
 ```sh
-"$PIGEONMQ_BIN" run --home "$CLOUD_HOME" --local-only
+"$RADIO999K_BIN" run --home "$CLOUD_HOME" --local-only
 ```
 
-In another terminal, set the same `CLOUD_HOME` and `PIGEONMQ_BIN`. Check the local hub:
+In another terminal, set the same `CLOUD_HOME` and `RADIO999K_BIN`. Check the local hub:
 
 ```sh
-"$PIGEONMQ_BIN" health --home "$CLOUD_HOME"
+"$RADIO999K_BIN" health --home "$CLOUD_HOME"
 ```
 
 `"local_ready":true` means the loopback hub answered. It does not check the tunnel or agent.
@@ -204,30 +260,68 @@ Only one `run` can own a folder. Use `--port` to change the loopback port (defau
 
 ## 4. Connect an app
 
-To connect through tunnl.gg, copy a connector prompt after the runner reports `connected`. For your own HTTPS origin, [configure the connector manually](tunnels.md#use-your-own-https-origin).
+A local stdio client uses [Connect over stdio](#connect-over-stdio).
+The steps below connect a client with Streamable HTTP.
+For a client on the hub machine, use the loopback URL. A remote client needs a trusted HTTPS origin or its supported private tunnel.
+Use that mailbox's real Bearer in the client's secure credential field. A URL alone cannot authenticate.
+
+For example, add this entry to [Claude Code's `.mcp.json`](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json):
+
+```json
+{
+  "mcpServers": {
+    "radio999k": {
+      "type": "http",
+      "url": "http://127.0.0.1:54843/instinct/mcp",
+      "headers": {
+        "Authorization": "Bearer ${RADIO999K_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+For a different profile or a remote client, replace the URL with the exact route.
+Supply `RADIO999K_TOKEN` from your credential store or the protected token file in that client's environment.
+For a local Claude Code session, with shell tracing off, you can start it as follows:
 
 ```sh
-"$PIGEONMQ_BIN" handoff --home "$CLOUD_HOME" --app muse        # or grok-bot, dot
+RADIO999K_TOKEN="$(cat /absolute/path/to/protected-token-file)" claude
+```
+
+Do not paste the token into chat, source, config, or a command line.
+If the client cannot accept a secure Bearer value, stop. An OAuth-only connection cannot use this Bearer flow.
+This example configures the client only. It does not enable a hub route, grant mailbox access, or set up Events.
+Make a permitted read-only call such as `radio999k_inbox` to confirm access.
+To verify delivery, read a known test message sent by an authorized peer.
+
+### Muse or Grok Bot handoff on macOS
+
+For tunnl.gg, copy a connector prompt after the runner reports `connected`.
+For your own HTTPS origin, [configure the connector manually](tunnels.md#use-your-own-https-origin).
+
+```sh
+"$RADIO999K_BIN" handoff --home "$CLOUD_HOME" --app muse        # or grok-bot
 ```
 
 Paste it into the app's chat if it accepts setup by prompt. Then copy the token **separately** and paste it only into the app's secure credential field:
 
 ```sh
-"$PIGEONMQ_BIN" handoff --home "$CLOUD_HOME" --app muse --copy-token
+"$RADIO999K_BIN" handoff --home "$CLOUD_HOME" --app muse --copy-token
 ```
 
 Copy something else afterwards to clear the clipboard. If the app has no secure field for a Bearer token, stop: that app can't use this connection yet.
 
-**Check it works:** ask the app to `pigeonmq_read` a known test message ID. A tool list alone only proves the connector loaded.
+**Check it works:** ask the app to `radio999k_read` a known test message ID. A tool list alone only proves the connector loaded.
 
 ### Upgrade an existing app to 0.1.2
 
-On November 19, 2026, the hub listed `pigeonmq_inbox` and `pigeonmq_read_thread` while the saved Dot and Codex apps still had older catalogs. Refreshing each saved app restored the tools. Check the serving hub and each saved app separately during an upgrade.
+On November 19, 2026, the hub listed `radio999k_inbox` and `radio999k_read_thread` while the saved Dot and Codex apps still had older catalogs. Refreshing each saved app restored the tools. Check the serving hub and each saved app separately during an upgrade.
 
-1. Check the replacement binary with `"$PIGEONMQ_BIN" --version`. Restart the existing hub with that binary using the same `--home`, routes, policies, and transport. The release uses the existing queue, including its sent and received history.
-2. Use an authenticated MCP client to call `tools/list` on the serving `/dot/mcp`, `/codex/mcp`, `/muse/mcp`, `/grok/mcp`, and any enabled registered mailbox route with read access. For `pigeonmq_inbox`, check that `inputSchema.properties` includes `scope`, `query`, and `order` alongside `limit` and `continuation`. Use each route's existing credential. If a route still advertises the old schema, verify which hub serves it before refreshing the app. For a manual request, [negotiate MCP first](tunnels.md#verify-and-update-the-clients).
+1. Check the replacement binary with `"$RADIO999K_BIN" --version`. Restart the existing hub with that binary using the same `--home`, routes, policies, and transport. The release uses the existing queue, including its sent and received history.
+2. Use an authenticated MCP client to call `tools/list` on the serving `/dot/mcp`, `/codex/mcp`, `/muse/mcp`, `/grok/mcp`, and any enabled registered mailbox route with read access. For `radio999k_inbox`, check that `inputSchema.properties` includes `scope`, `query`, and `order` alongside `limit` and `continuation`. Use each route's existing credential. If a route still advertises the old schema, verify which hub serves it before refreshing the app. For a manual request, [negotiate MCP first](tunnels.md#verify-and-update-the-clients).
 3. Refresh discovery for the existing saved Dot and Codex connections in the intended ChatGPT account or workspace. Open each connection in ChatGPT Plugins and use **Refresh** if available. The server's `tools/list` checks the running hub. The app refresh pulls that schema into ChatGPT. Reuse each app ID, connection, and existing Events subscription. [OpenAI's metadata refresh guide](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata).
-4. Select the same saved app in each intended conversation and call `pigeonmq_inbox` with `{"scope":"all","query":"<known test phrase>"}`. Inspect the tool arguments and confirm known sent and received test messages from before the upgrade appear with the same IDs, newest first, with metadata only. Check `{"scope":"inbox","query":"<known test phrase>"}` for the received test messages. Where a conversation still shows the old schema after refresh, try the same saved app in a new conversation and verify the call again. [More mailbox examples](architecture.md#mcp-tools).
+4. Select the same saved app in each intended conversation and call `radio999k_inbox` with `{"scope":"all","query":"<known test phrase>"}`. Inspect the tool arguments and confirm known sent and received test messages from before the upgrade appear with the same IDs, newest first, with metadata only. Check `{"scope":"inbox","query":"<known test phrase>"}` for the received test messages. Where a conversation still shows the old schema after refresh, try the same saved app in a new conversation and verify the call again. [More mailbox examples](architecture.md#mcp-tools).
 
 ## 5. Optional: Grok Bot wake
 
@@ -238,7 +332,7 @@ Grok Bot can't keep a connection open, so the hub can wake it with a webhook (mo
 3. Restart the hub under the same macOS user. Check `$CLOUD_HOME/grok-wake-status.json`. If Keychain access fails, the wake stops and the hub stays online.
 
 ```sh
-"$PIGEONMQ_BIN" setup-grok-wake --home "$CLOUD_HOME"
+"$RADIO999K_BIN" setup-grok-wake --home "$CLOUD_HOME"
 ```
 
 If both private credential files already exist, add `--from-private-files HOST`. Specify the HTTPS host that you checked. The command does not print the credentials or change the original files. Add `--stage-only` to store the item without selecting it for the notifier.
@@ -248,7 +342,7 @@ The notifier reads the Keychain item once at startup. Restart the hub after you 
 Use the two mode 600 files `grok-webhook-url` and `grok-webhook-auth` only when Keychain mode is not selected. In file mode, the notifier reads both files for each send. In Keychain mode, it does not fall back to files.
 
 In the routine's instructions, tell Grok Bot to do the following.
-Read the message with `pigeonmq_read` on the wake's `message_id`.
+Read the message with `radio999k_read` on the wake's `message_id`.
 Never trust the webhook body.
 Handle each ID once.
 Treat `reply_conflict` as already answered.

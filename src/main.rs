@@ -1,4 +1,4 @@
-use pigeonmq::{mailbox_catalog as catalog, mcp_sdk};
+use radio999k::{mailbox_catalog as catalog, mcp_sdk};
 mod auth;
 #[path = "cloud/cloud_credentials.rs"]
 mod cloud_credentials;
@@ -20,6 +20,18 @@ mod codex_events;
 mod codex_mcp;
 #[path = "adapters/codex/setup.rs"]
 mod codex_setup;
+#[path = "cloud/hosted_connector.rs"]
+mod hosted_connector;
+#[path = "cloud/hosted_enrollment.rs"]
+mod hosted_enrollment;
+#[path = "cloud/hosted_mailbox_bearer.rs"]
+mod hosted_mailbox_bearer;
+#[path = "cloud/hosted_origin.rs"]
+mod hosted_origin;
+#[path = "cloud/hosted_origin_local.rs"]
+mod hosted_origin_local;
+#[path = "cloud/hosted_registration.rs"]
+mod hosted_registration;
 #[path = "cloud/lifecycle.rs"]
 mod lifecycle;
 #[path = "cloud/lifecycle_profile.rs"]
@@ -29,13 +41,17 @@ mod lifecycle_service;
 mod local_http;
 #[path = "cloud/mailbox_startup.rs"]
 mod mailbox_startup;
+#[path = "cloud/orca_onboard.rs"]
+mod orca_onboard;
 #[path = "cloud/reply_mailbox_setup.rs"]
 mod reply_mailbox_setup;
 #[path = "cloud/runtime_profiles.rs"]
 mod runtime_profiles;
+#[path = "cloud/stdio_mcp.rs"]
+mod stdio_mcp;
 
 use clap::{Parser, Subcommand};
-use pigeonmq::Queue;
+use radio999k::Queue;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -54,7 +70,7 @@ struct CodexFinal {
 }
 
 #[derive(Parser)]
-#[command(version, about)]
+#[command(name = "999k", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -85,6 +101,9 @@ struct ServeHubOptions {
     seconds: Option<u64>,
     #[arg(long)]
     continuous: bool,
+    /// Also bind an owner-private Unix socket for local MCP clients.
+    #[arg(long)]
+    stdio_socket: bool,
     #[arg(long, hide = true, requires_all = ["continuous", "queue"])]
     run_lease_lock: Option<std::os::fd::RawFd>,
 }
@@ -94,9 +113,9 @@ enum Command {
     /// Supervise the hub until stopped.
     ///
     /// A tunnel mode is required. There is no default.
-    /// Set PIGEONMQ_TUNNEL=external and PIGEONMQ_PUBLIC_URL to record an
+    /// Set RADIO999K_TUNNEL=external and RADIO999K_PUBLIC_URL to record an
     /// externally managed HTTPS origin. This is the recommended option.
-    /// Set PIGEONMQ_TUNNEL=tunnl to start the built-in SSH reverse tunnel for testing.
+    /// Set RADIO999K_TUNNEL=tunnl to start the built-in SSH reverse tunnel for testing.
     /// Pass --env-file to read these settings from a private file instead.
     /// Use --local-only for loopback testing only. It ignores both sources.
     Run(cloud_service::RunOptions),
@@ -108,11 +127,16 @@ enum Command {
     },
     /// Report supervised hub, queue, tunnel and delivery health.
     Health {
-        #[arg(long, default_value = ".local")]
-        home: PathBuf,
-        /// Check the configured public HTTPS endpoint without credentials.
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Check configured public HTTPS routes without credentials.
         #[arg(long)]
         probe_public: bool,
+    },
+    /// Stage a local-only quickstart home and print next steps.
+    Quickstart {
+        #[arg(long, default_value = ".local-quickstart")]
+        home: PathBuf,
     },
     /// Inspect one dead-lettered request in an owner-private queue without writing.
     DlqInspect {
@@ -146,8 +170,8 @@ enum Command {
     /// Prepare Cloud settings, or stage a named mailbox in a dedicated local-only home.
     Init {
         agent: Option<String>,
-        #[arg(long, default_value = ".local")]
-        home: PathBuf,
+        #[arg(long)]
+        home: Option<PathBuf>,
         /// Prepare an operational mailbox policy and private bearer for Instinct or Cue.
         #[arg(long, requires = "agent")]
         operational: bool,
@@ -163,6 +187,27 @@ enum Command {
         /// Select the owner-private executable that receives a destination and message ID.
         #[arg(long, requires = "email_recipient", conflicts_with = "operational")]
         relay_command: Option<PathBuf>,
+        /// Reserve a hosted HTTPS address for this installation (experimental).
+        #[arg(long, hide = true, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
+        reserve_address: bool,
+        /// Enable the private stdio socket during a managed apply; an already-active home can enable it once.
+        #[arg(long, requires = "apply", conflicts_with = "reserve_address")]
+        stdio_socket: bool,
+        /// Onboard existing local Orca bots for the five peers using stdio.
+        #[arg(long, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port", "reserve_address"])]
+        orca: bool,
+        /// Authorized sender mailbox for Orca onboarding.
+        #[arg(long, requires = "orca")]
+        orca_sender: Option<String>,
+        /// Private bearer file for the Orca sender.
+        #[arg(long, requires = "orca")]
+        orca_bearer_file: Option<PathBuf>,
+        /// Request a new card after confirming the previous offer was dismissed or lost.
+        #[arg(long, requires = "orca")]
+        retry_orca_offer: Option<String>,
+        /// Use a private Unix origin for a new hosted enrollment.
+        #[arg(long, hide = true, requires = "reserve_address")]
+        hosted_unix: bool,
         /// Set the managed hub's loopback port at first staging.
         #[arg(long, requires = "agent", conflicts_with = "operational", value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
@@ -180,6 +225,18 @@ enum Command {
     ServeManaged {
         #[arg(long)]
         home: PathBuf,
+    },
+    #[command(hide = true)]
+    ServeHostedConnector {
+        #[arg(long)]
+        home: PathBuf,
+    },
+    /// Manage a finite Bearer for Cue on the managed hosted Unix origin.
+    HostedCueBearer {
+        #[arg(long)]
+        home: PathBuf,
+        #[command(subcommand)]
+        action: HostedCueBearerAction,
     },
     /// Prepare a private Muse queue, registration, policy, and Keychain bearer.
     SetupMuse {
@@ -274,6 +331,20 @@ enum Command {
         auth_policy: PathBuf,
     },
     ServeHub(Box<ServeHubOptions>),
+    #[command(hide = true)]
+    CodexPreviewStdio,
+    /// Serve one configured local mailbox over MCP standard input and output.
+    StdioMcp {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        mailbox: String,
+        #[arg(long)]
+        bearer_file: PathBuf,
+        /// Restrict this bot connector to one recipient and its linked replies.
+        #[arg(long)]
+        peer: Option<String>,
+    },
     // Disabled by owner request. Use the authenticated hub API/MCP for messages.
     // Keep these declarations with the disabled handlers below for a reversible change.
     /*
@@ -323,6 +394,21 @@ fn disable_daemon_keychain_ui() -> security_framework::base::Result<()> {
     Ok(())
 }
 
+#[derive(clap::Subcommand)]
+enum HostedCueBearerAction {
+    /// Enable scoped Cue authorization and export a new Bearer to a private file.
+    Rotate {
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=2592000))]
+        lifetime_secs: u64,
+        #[arg(long)]
+        export_file: PathBuf,
+    },
+    /// Check the scoped policy state without showing a Bearer or digest.
+    Status,
+    /// Revoke the current scoped Bearer. Do not re-enable the old Bearer.
+    Revoke,
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match &cli.command {
@@ -346,24 +432,52 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             profiles_file,
             email_recipient,
             relay_command,
+            reserve_address,
+            stdio_socket,
+            hosted_unix,
             port,
+            orca,
+            orca_sender,
+            orca_bearer_file,
+            retry_orca_offer,
         } => {
+            let home = cloud_setup::resolve_home(home.clone());
+            if *reserve_address {
+                return cloud_setup::reserve_address(&home, *hosted_unix);
+            }
+            if *orca {
+                let sender = orca_sender.as_deref().unwrap_or("codex-cloud");
+                let bearer_file = match orca_bearer_file.clone() {
+                    Some(path) => path,
+                    None => orca_onboard::resolve_bearer_file(&home, sender)?,
+                };
+                return orca_onboard::onboard(
+                    &home,
+                    sender,
+                    &bearer_file,
+                    retry_orca_offer.as_deref(),
+                );
+            }
             if *operational {
                 let mailbox = agent.as_deref().ok_or("mailbox name required")?;
-                lifecycle::check_manual_stage(home, mailbox)?;
-                println!("{}", reply_mailbox_setup::stage(home, mailbox)?);
+                lifecycle::check_manual_stage(&home, mailbox)?;
+                println!("{}", reply_mailbox_setup::stage(&home, mailbox)?);
                 return Ok(());
             }
             if let Some(name) = agent {
+                if *stdio_socket && !lifecycle::supported(name) {
+                    return Err("managed stdio requires a supported managed profile".into());
+                }
                 let result = if lifecycle::supported(name) {
                     lifecycle::init(
-                        home,
+                        &home,
                         name,
                         &lifecycle::Options {
                             profiles_file: profiles_file.as_deref(),
                             email_recipient: email_recipient.as_deref(),
                             relay_command: relay_command.as_deref(),
                             port: *port,
+                            local_stdio: *stdio_socket,
                             apply: *apply,
                         },
                     )?
@@ -375,12 +489,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         return Err("built-in lifecycle options require a supported profile".into());
                     }
-                    runtime_profiles::init(home, name, *apply)?
+                    runtime_profiles::init(&home, name, *apply)?
                 };
                 println!("{result}");
                 Ok(())
             } else {
-                cloud_setup::setup(home, true)
+                cloud_setup::setup(&home, true)
             }
         }
         Command::Remove { agent, home, apply } => {
@@ -396,6 +510,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "macos")]
             disable_daemon_keychain_ui()?;
             lifecycle::serve(home).map_err(Into::into)
+        }
+        Command::ServeHostedConnector { home } => {
+            lifecycle::serve_hosted_connector(home).map_err(Into::into)
+        }
+        Command::HostedCueBearer { home, action } => {
+            match action {
+                HostedCueBearerAction::Rotate {
+                    lifetime_secs,
+                    export_file,
+                } => {
+                    lifecycle::hosted_cue_bearer(home, Some((*lifetime_secs, export_file)))?;
+                }
+                HostedCueBearerAction::Revoke => lifecycle::hosted_cue_bearer(home, None)?,
+                HostedCueBearerAction::Status => {
+                    println!("{}", lifecycle::hosted_cue_bearer_status(home)?);
+                    return Ok(());
+                }
+            }
+            println!("Hosted Cue Bearer state updated.");
+            Ok(())
         }
         Command::SetupMuse { home, peer } => cloud_setup::setup_muse(home, peer),
         Command::SetupGrok { home, token_sha256 } => {
@@ -413,9 +547,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::CompanionGuard { lock, argv } => {
             cloud_service::companion_guard(*lock, argv).map_err(Into::into)
         }
-        Command::Health { home, probe_public } => {
-            std::process::exit(cloud_service::health(home, *probe_public))
-        }
+        Command::Health { home, probe_public } => std::process::exit(cloud_service::health(
+            &cloud_setup::resolve_home(home.clone()),
+            *probe_public,
+        )),
+        Command::Quickstart { home } => cloud_setup::quickstart(home),
         Command::NotifyArrivals {
             queue,
             registration,
@@ -426,14 +562,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             interval_secs,
         } => {
             if config.is_none() {
-                pigeonmq::arrival_notify::validate_static_mailboxes(mailboxes)?;
+                radio999k::arrival_notify::validate_static_mailboxes(mailboxes)?;
             }
             let sweep = || match config {
                 Some(path) => {
-                    pigeonmq::arrival_notify::run_config(queue, registration, state, command, path)
+                    radio999k::arrival_notify::run_config(queue, registration, state, command, path)
                 }
                 None => {
-                    pigeonmq::arrival_notify::run(queue, registration, state, command, mailboxes)
+                    radio999k::arrival_notify::run(queue, registration, state, command, mailboxes)
                 }
             };
             let Some(interval) = interval_secs else {
@@ -450,7 +586,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Ok(_) => {}
                     Err(error) if config.is_some() => {
-                        eprintln!("{}", pigeonmq::arrival_notify::safe_failure(error.as_ref()));
+                        eprintln!(
+                            "{}",
+                            radio999k::arrival_notify::safe_failure(error.as_ref())
+                        );
                     }
                     Err(_) => eprintln!("arrival notification sweep incomplete"),
                 }
@@ -459,7 +598,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::DlqInspect { queue, id } => {
             let result = Queue::inspect_dead_letter(queue, id).map_err(|error| match error {
-                pigeonmq::Error::Database(_) => pigeonmq::Error::Invalid("queue_read_unavailable"),
+                radio999k::Error::Database(_) => {
+                    radio999k::Error::Invalid("queue_read_unavailable")
+                }
                 other => other,
             })?;
             println!("{}", serde_json::to_string(&result)?);
@@ -519,12 +660,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             cloud_credentials::provision(auth_policy, cloud_credentials::App::Dot)?;
-            pigeonmq::dot_profile::check(queue, auth_policy, true).map_err(Into::into)
+            radio999k::dot_profile::check(queue, auth_policy, true).map_err(Into::into)
         }
         Command::GrokPrepare { queue, auth_policy } => {
             cloud_credentials::provision(auth_policy, cloud_credentials::App::GrokBot)?;
             local_http::prepare_grok(queue, auth_policy).map_err(Into::into)
         }
+        Command::CodexPreviewStdio => lifecycle::codex_preview_stdio().map_err(Into::into),
+        Command::StdioMcp {
+            home,
+            mailbox,
+            bearer_file,
+            peer,
+        } => stdio_mcp::run(home, mailbox, bearer_file, peer.as_deref()).map_err(Into::into),
         Command::ServeHub(options) => {
             let ServeHubOptions {
                 queue,
@@ -536,6 +684,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 port,
                 seconds,
                 continuous,
+                stdio_socket,
                 run_lease_lock,
             } = options.as_ref();
             if let Some(lock) = run_lease_lock {
@@ -584,6 +733,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(mailbox_startup::Manifest::fingerprint),
                 *port,
                 seconds,
+                *stdio_socket,
             )
             .map_err(Into::into)
         }
@@ -613,7 +763,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             CODEX_MAILBOX,
                             id,
                             &input.receipt,
-                            pigeonmq::Envelope {
+                            radio999k::Envelope {
                                 sender: CODEX_MAILBOX.into(),
                                 recipient: sender.clone(),
                                 body: input.body,
@@ -638,7 +788,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Restore `_ => {}` in the match above only with these commands.
     if let Command::Send { from, to, body } = &cli.command {
         let mut queue = Queue::open(cli.db.clone())?;
-        let envelope = pigeonmq::Envelope {
+        let envelope = radio999k::Envelope {
             sender: from.clone(),
             recipient: to.clone(),
             body: body.clone(),
@@ -667,7 +817,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             recipient,
             id,
             receipt,
-            pigeonmq::Envelope {
+            radio999k::Envelope {
                 sender: from.clone(),
                 recipient: to.clone(),
                 body: body.clone(),
@@ -688,7 +838,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     // #FEEDBACK resolved: Restore the entry point diagnostics to stderr.
-    pigeonmq::logging::init();
+    radio999k::logging::init();
     if let Err(error) = run() {
         eprintln!("{}", error);
         std::process::exit(1);

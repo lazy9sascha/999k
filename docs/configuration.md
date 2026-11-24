@@ -2,9 +2,13 @@
 
 Everything lives in one private runtime folder (the "home"). Pass it with `--home`. Keep it outside the repository. The folder must be owned by you with no group/other access, and files are mode 600.
 
+With no `--home`, `init`, `run`, and `health` use the absolute path in `RADIO999K_HOME`. Older installations can still use `PIGEONMQ_HOME`. Without either setting, the commands look for `~/.999k`, then `~/.pigeonmq`, then a `.local` directory in the working directory that contains an existing hub’s queue, configuration, or credentials. A new installation defaults to `~/.999k`. If you have multiple homes, pass the intended absolute path with `--home`.
+
+An existing hub keeps its queue filenames, LaunchAgent labels, and Keychain service. Keep these names when upgrading. The `pigeonmq-cloud-*` files in this guide are the files the hub opens.
+
 ## Commands
 
-Run `pigeonmq <command> --help` for exact flags.
+Run `999k <command> --help` for exact flags.
 
 ### Everyday
 
@@ -25,6 +29,7 @@ Run `pigeonmq <command> --help` for exact flags.
 | `credentials --home DIR --app APP reissue --token-file PATH [--use-stored-token]` | Explicit token repair. Save a private repair token and change only its policy digest. |
 | `credentials --home DIR --app APP export --token-file PATH [--format token\|authorization-header]` | Create a private credential file for an explicit client reference. |
 | `dot-tunnel-status --home DIR` | Show the local Dot tunnel state. |
+| `quickstart --home DIR` | Stage Instinct in a new local-only demo home. The command prints the loopback URL, the token file path, and how to start the hub. Use a new directory. |
 | `health --home DIR` | Check whether the supervised loopback hub answers. |
 | `dlq-inspect --queue PATH --id ID` | Inspect one quarantined request without writing. See [dead-letter inspection](#dead-letter-inspection). |
 
@@ -49,9 +54,9 @@ Use a Bearer token for a profile or API that already allows the operation.
 
 | Old command | Use instead |
 | --- | --- |
-| `send` | Call `pigeonmq_send` on the sender's MCP profile with `recipient`, `body`, and `idempotency_key`. Keep the same key on retry. If the generic API is already enabled with `--auth-policy`, scripts can use `POST /messages/send` with `sender`, `recipient`, and `body`. |
-| `reply` to an unclaimed request | Call `pigeonmq_reply` on the recipient's MCP profile with `message_id` and `body`. It stores the linked reply and ACKs the original in one transaction. |
-| `reply --receipt` for a leased request | Keep the worker's authenticated [`/receiver` completion path](#local-codex-receiver). `pigeonmq_reply` does not accept a receipt or replace leased completion. |
+| `send` | Call `radio999k_send` on the sender's MCP profile with `recipient`, `body`, and `idempotency_key`. Keep the same key on retry. If the generic API is already enabled with `--auth-policy`, scripts can use `POST /messages/send` with `sender`, `recipient`, and `body`. |
+| `reply` to an unclaimed request | Call `radio999k_reply` on the recipient's MCP profile with `message_id` and `body`. It stores the linked reply and ACKs the original in one transaction. |
+| `reply --receipt` for a leased request | Keep the worker's authenticated [`/receiver` completion path](#local-codex-receiver). `radio999k_reply` does not accept a receipt or replace leased completion. |
 
 ## Select existing hub profiles
 
@@ -107,7 +112,7 @@ Reconfigure the app with the new Bearer. Earlier messages remain outside the rep
 
 Provide a valid address for Cue or Instinct with `--email-recipient` when staging.
 On first email setup pass `--relay-command` with an absolute path to an owner-private executable.
-The command receives two arguments, the email destination and the PigeonMQ message ID.
+The command receives two arguments, the email destination and the 999K message ID.
 Use an absolute interpreter path in scripts and absolute paths to their dependencies.
 The managed relay supplies a restricted system `PATH`.
 Configure the command using your existing provider login and use the ID as its idempotency key.
@@ -122,12 +127,12 @@ Email sends start at the recorded activation boundary.
 
 ## Stage local mailboxes
 
-Use a new owner-private home for synthetic data. PigeonMQ creates the home if its parent exists. Use an absolute path.
+Use a new owner-private home for synthetic data. 999K creates the home if its parent exists. Use an absolute path.
 
 ```sh
-pigeonmq init synthetic-pull --home "$TEST_HOME"
-pigeonmq init vooy --home "$TEST_HOME"
-pigeonmq serve-hub --mailbox-home "$TEST_HOME" --port 54925 --seconds 60
+999k init synthetic-pull --home "$TEST_HOME"
+999k init vooy --home "$TEST_HOME"
+999k serve-hub --mailbox-home "$TEST_HOME" --port 54925 --seconds 60
 ```
 
 Each init prints JSON with `mailbox`, `route`, `token_file`, `created`, `runtime`, and `remote_verified`. It reports the token file path, not the token. The token file has mode 0600. Running init again checks the existing configuration and token without replacing them. Keep this home and its tokens out of Git.
@@ -141,9 +146,9 @@ This command does not connect the real Vooy app, configure a connector, or start
 Run these commands against the same dedicated home:
 
 ```sh
-pigeonmq remove my-agent --home "$MAILBOX_HOME"
-pigeonmq init my-agent --home "$MAILBOX_HOME"
-pigeonmq init my-agent --home "$MAILBOX_HOME" --apply
+999k remove my-agent --home "$MAILBOX_HOME"
+999k init my-agent --home "$MAILBOX_HOME"
+999k init my-agent --home "$MAILBOX_HOME" --apply
 ```
 
 Removal revokes the existing binding and preserves its queue records.
@@ -164,12 +169,12 @@ Use a separate tunnel for this Dot profile. Keep existing agent tunnels unchange
 This procedure requires a prepared queue, an active `dot` registration, and a matching Dot policy.
 Keep the policy and both credentials outside Git. Use owner-only directories and mode 600 credential files.
 
-1. Prepare the Dot storage with `pigeonmq dot-prepare --queue "$QUEUE" --auth-policy "$DOT_POLICY"`.
+1. Prepare the Dot storage with `999k dot-prepare --queue "$QUEUE" --auth-policy "$DOT_POLICY"`.
 2. Use the existing hub if it serves the Dot route. For a dedicated listener, set `PROFILES_FILE` to the absolute path of a private Dot-only [profile manifest](#select-existing-hub-profiles).
    Use adapter `dot`, route `/dot/mcp`, and the absolute `DOT_POLICY` path in its `policy` field.
 
 ```sh
-pigeonmq serve-hub --queue "$QUEUE" --profiles-file "$PROFILES_FILE" \
+999k serve-hub --queue "$QUEUE" --profiles-file "$PROFILES_FILE" \
   --port "$DOT_PORT" --continuous
 ```
 
@@ -199,7 +204,7 @@ These commands remain active. They do not install automatic startup after a rest
 7. Select **None** only for this private connection with the enforced upstream Bearer header.
 8. Accept the authorized risk notice. Create the plugin. Connect the plugin to the personal account.
 9. Check that ChatGPT lists the plugin as installed.
-10. Use the new plugin from the intended Dot to call `pigeonmq_recipients`.
+10. Use the new plugin from the intended Dot to call `radio999k_recipients`.
 
 **None** removes additional OAuth at the ChatGPT layer. It does not remove hub authentication.
 Each authorized caller through this tunnel uses the Dot identity. Do not share this connection with another agent identity.
@@ -215,7 +220,7 @@ and [ChatGPT connection guide](https://developers.openai.com/plugins/deploy/conn
 
 ### Optional local arrival notifier
 
-Run `pigeonmq notify-arrivals` as a separate service to notify selected registered mailboxes.
+Run `999k notify-arrivals` as a separate service to notify selected registered mailboxes.
 It uses the existing queue in read-only mode. First start records the current sequence.
 Later sweeps observe new eligible ordinary messages and linked terminal replies.
 
@@ -245,7 +250,7 @@ Add these settings only after approval for callback delivery:
 ```json
 "events": {
   "callback_hosts": ["<authorized-platform-callback-host>"],
-  "resolver": "/absolute/path/to/pigeonmq-dot-resolve"
+  "resolver": "/absolute/path/to/999k-dot-resolve"
 }
 ```
 
@@ -285,15 +290,15 @@ Choose mailbox-only operation or Events when you first prepare the profile.
 Mailbox-only setup does not start a model or require Events storage:
 
 ```sh
-pigeonmq setup-codex --home "$CLOUD_HOME" --peer my-peer
+999k setup-codex --home "$CLOUD_HOME" --peer my-peer
 ```
 
 For Events, supply the authorized callback host and the installed resolver's absolute path:
 
 ```sh
-pigeonmq setup-codex --home "$CLOUD_HOME" --peer my-peer \
+999k setup-codex --home "$CLOUD_HOME" --peer my-peer \
   --callback-host '<authorized-callback-host>' \
-  --resolver /absolute/path/to/pigeonmq-dot-resolve
+  --resolver /absolute/path/to/999k-dot-resolve
 ```
 
 Repeat `--callback-host` for each authorized host. Never accept a host from an untrusted message.
@@ -314,7 +319,7 @@ For a new, dedicated private hub, save this [profile manifest](#select-existing-
 Start one listener for that home. This example uses port 54843 and the filename `codex-profiles.json`:
 
 ```sh
-pigeonmq serve-hub --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" \
+999k serve-hub --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" \
   --profiles-file "$CLOUD_HOME/codex-profiles.json" --port 54843 --continuous
 ```
 
@@ -352,7 +357,7 @@ Keep `codex-local` separate from the Cloud mailbox `codex-cloud`.
 Give each local session its own receiver token and mailbox, such as `codex-local1` or `codex-local2`.
 Register each mailbox and grant its worker `receive` and `reply` for that mailbox. The workers share the hub's `/receiver` route.
 
-In Dot, call `pigeonmq_recipients` to list registered mailboxes. Choose the session's exact mailbox name and pass it as `recipient` to `pigeonmq_send`.
+In Dot, call `radio999k_recipients` to list registered mailboxes. Choose the session's exact mailbox name and pass it as `recipient` to `radio999k_send`.
 A mailbox can appear in the list while its worker is offline.
 
 ### Configure the receiver
@@ -366,7 +371,7 @@ Register `codex-local` and its allowed peers in the supplied registration file. 
 The foreground binary requires `--state`, `--token-file`, and `--binding`:
 
 ```sh
-pigeonmq-codex-receiver --state /private/path/receiver-state \
+999k-codex-receiver --state /private/path/receiver-state \
   --hub-port 54843 --token-file /private/path/receiver-token \
   --binding /private/path/codex-binding.json
 ```
@@ -439,7 +444,7 @@ authorize any new identity before unattended use.
 
 ## Dead-letter inspection
 
-Run `pigeonmq dlq-inspect --queue PATH --id ID` on this Mac. Use the real path to a current owner-private queue, not a symlink. The command does not create, migrate, or repair a queue.
+Run `999k dlq-inspect --queue PATH --id ID` on this Mac. Use the real path to a current owner-private queue, not a symlink. The command does not create, migrate, or repair a queue.
 
 The command prints JSON. `dead_lettered` includes the attempt count and `dead_lettered_at_ms` (Unix time in milliseconds). `not_dead_lettered_or_missing` means there is no matching quarantined ordinary request. Both results exit with status 0. Read or validation errors exit nonzero.
 
@@ -474,7 +479,7 @@ Codex Cloud, the common receiver, and the optional generic `--auth-policy` use a
 | --- | --- |
 | `principal`, `mailbox` | Who the token belongs to and which mailbox it may use |
 | `token_sha256` | SHA-256 hex of the Bearer token. Write `"keychain"` and the first `run` (or `setup-muse`) creates a token in the macOS Keychain and replaces this with its digest. Existing digests are never replaced. |
-| `operations` | Any of `read`, `send`, `wait`, `reply`. `pigeonmq_recipients` needs `send`. |
+| `operations` | Any of `read`, `send`, `wait`, `reply`. `radio999k_recipients` needs `send`. |
 | `enabled`, `expires_at_ms` | Off switch and expiry (milliseconds since epoch) |
 | `registration` | Absolute path to the registration file |
 
@@ -516,7 +521,7 @@ They use the existing policy and the same home-specific Keychain account as prov
 Check the selected profile before a handoff:
 
 ```sh
-pigeonmq credentials --home "$CLOUD_HOME" --app grok-bot status
+999k credentials --home "$CLOUD_HOME" --app grok-bot status
 ```
 
 The result reports `local_available`, `matches_policy`, and `agent_use: "unverified"`.
@@ -524,7 +529,7 @@ A stored policy digest does not prove that a matching token exists locally or at
 If a matching token survives in a protected file, recover it explicitly:
 
 ```sh
-pigeonmq credentials --home "$CLOUD_HOME" --app grok-bot import \
+999k credentials --home "$CLOUD_HOME" --app grok-bot import \
   --token-file /private/path/existing-token
 ```
 
@@ -533,7 +538,7 @@ Import rejects a digest mismatch or a different stored token. It never rotates t
 A digest cannot recover a lost token. If no plaintext copy survives, explicitly reissue it:
 
 ```sh
-pigeonmq credentials --home "$CLOUD_HOME" --app grok-bot reissue \
+999k credentials --home "$CLOUD_HOME" --app grok-bot reissue \
   --token-file "$CLOUD_HOME/pigeonmq-cloud-grok-bot-token-repair"
 ```
 
@@ -548,7 +553,7 @@ If local custody exists but its digest differs, choose the authoritative credent
 To explicitly select the existing Keychain token, add `--use-stored-token`:
 
 ```sh
-pigeonmq credentials --home "$CLOUD_HOME" --app grok-bot reissue \
+999k credentials --home "$CLOUD_HOME" --app grok-bot reissue \
   --token-file "$CLOUD_HOME/pigeonmq-cloud-grok-bot-token-repair" \
   --use-stored-token
 ```
@@ -563,7 +568,7 @@ For a native receiver, export the raw token to its `--token-file` path.
 For an official tunnel-client header reference, export the complete `Bearer TOKEN` value:
 
 ```sh
-pigeonmq credentials --home "$CLOUD_HOME" --app codex-cloud export \
+999k credentials --home "$CLOUD_HOME" --app codex-cloud export \
   --token-file "$CLOUD_HOME/pigeonmq-cloud-codex-header" \
   --format authorization-header
 ```
@@ -583,14 +588,14 @@ Use the supported secure credential field or an explicit protected file referenc
 If you already have the SHA-256 digest for your Grok Bot token, run the following command. It prepares the Grok Bot registration and policy. Register the intended peers, then continue at step 3.
 
 ```sh
-pigeonmq setup-grok --home "$CLOUD_HOME" --token-sha256 "$TOKEN_SHA256"
+999k setup-grok --home "$CLOUD_HOME" --token-sha256 "$TOKEN_SHA256"
 ```
 
 For manual setup, start with a home that `init` or `setup-muse` created.
 
 1. Add `"grok-bot": {"mailbox": "grok-bot", "revoked": false}` and each peer to `pigeonmq-cloud-registration.json`.
 2. Create `pigeonmq-cloud-grok-bot-policy.json` with mode 600. Use the policy example above with `principal` and `mailbox` set to `grok-bot`.
-3. `pigeonmq grok-prepare --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" --auth-policy "$CLOUD_HOME/pigeonmq-cloud-grok-bot-policy.json"`
+3. `999k grok-prepare --queue "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" --auth-policy "$CLOUD_HOME/pigeonmq-cloud-grok-bot-policy.json"`
 4. Start the hub with the [tunnel settings](tunnels.md) for your connection.
 5. For `external`, set the connector URL to your HTTPS origin plus `/grok/mcp`. Enter the matching Bearer token in the secure credential field.
    For a connected tunnl.gg test tunnel with a matching Keychain token, follow [Connect an app](quickstart.md#4-connect-an-app).
@@ -601,3 +606,38 @@ The first text item contains a JSON object with an `error` reason, such as `repl
 HTTP authentication failures remain separate from tool results.
 
 For the wake, see [quickstart step 5](quickstart.md#5-optional-grok-bot-wake).
+
+## Local MCP over stdio
+
+Use stdio for a local MCP client that runs under the same OS user as your hub.
+It needs no Cloudflare Tunnel or installation email. It uses the mailbox policy
+already mounted in the hub. It does not create a queue, grant access, or start or
+stop the hub.
+
+For a new managed home on macOS, add `--stdio-socket` to its first managed apply:
+
+```sh
+999k init cue --apply --stdio-socket --home <private-hub-home>
+```
+
+The setting stays with that home. To enable the socket on an existing managed home, use its installed executable path, the same home, and the name of an already-active profile. Run `init <active-profile> --apply --stdio-socket --home <existing-home>`. This migration uses the existing queue and does not create a second hub. It restarts the managed hub once; if activation fails, the previous configuration remains in place. This command does not start hosted registration. If you later enable
+hosted Unix access, the same managed hub can serve both sockets. They are separate
+endpoints with the same existing mailbox policies.
+
+For a foreground hub, add `--stdio-socket` to your existing `999k serve-hub` command. Keep the same
+private queue and profile options. When the hub starts, it binds a private Unix socket
+next to the queue. Do not run it alongside an installed managed service on the same queue. Run the
+foreground preview with `serve-hub`.
+
+Configure your client's stdio command with the same private hub home, a mounted
+mailbox with its default route, and its existing owner-private bearer file:
+
+```sh
+999k stdio-mcp --home <hub-home> --mailbox <name> --bearer-file <private-file>
+```
+
+Use `--peer <recipient-id>` to restrict this client to recipient discovery, sends to that recipient, and waits for its replies. Each wait must include the original request ID as `in_reply_to`. [Orca setup](quickstart.md#connect-orca-to-your-existing-peers) attaches a separate scoped client to each relay bot.
+
+Give the client the bearer file path, not the bearer value. A missing or unauthenticated
+hub returns a protocol error. The adapter does not fall back to TCP. Closing the client
+leaves the hub running. This adapter handles one request at a time with the MCP 2025-03-26 initialization handshake. It does not expose remote events or cancel calls in progress.

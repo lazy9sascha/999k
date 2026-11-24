@@ -1,5 +1,5 @@
 //! Explicit Codex Cloud mailbox preparation. Transport and platform subscription stay separate.
-use pigeonmq::mailbox_catalog as catalog;
+use radio999k::mailbox_catalog as catalog;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -52,13 +52,14 @@ fn validate(options: &SetupOptions) -> io::Result<()> {
             || !metadata.is_file()
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.mode() & 0o022 != 0
+            // SAFETY: name is a live NUL-terminated path string.
             || unsafe { libc::access(name.as_ptr(), libc::X_OK) } != 0
         {
             return Err(io::Error::other(
                 "Use an absolute owned resolver executable without public write access.",
             ));
         }
-        pigeonmq::events::policy::EventsPolicy::for_codex(
+        radio999k::events::policy::EventsPolicy::for_codex(
             "0".repeat(64),
             vec![peer.clone()],
             options.callback_host.clone(),
@@ -76,7 +77,7 @@ fn existing_policy(home: &Path, options: &SetupOptions) -> io::Result<Option<Val
         Ok(_) => {}
     }
     crate::auth::validate_private(&path).map_err(|(_, reason)| io::Error::other(reason))?;
-    let file = pigeonmq::private_file::open_private_file(&path)
+    let file = radio999k::private_file::open_private_file(&path)
         .map_err(|_| io::Error::other("private Codex policy required"))?;
     let value: Value = serde_json::from_reader(file.take(16385))?;
     let _ = principal(&value)?;
@@ -106,7 +107,7 @@ fn registration(home: &Path, peer: &str) -> io::Result<Option<Value>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Default::default(),
         Err(error) => return Err(error),
         Ok(_) => {
-            pigeonmq::registration::load_registrations(&path)
+            radio999k::registration::load_registrations(&path)
                 .map_err(|(_, reason)| io::Error::other(reason))?
                 .0
         }
@@ -142,7 +143,7 @@ fn snapshot(path: &Path) -> io::Result<Option<Vec<u8>>> {
         Err(error) => return Err(error),
         Ok(_) => {}
     }
-    let file = pigeonmq::private_file::open_private_file(path)
+    let file = radio999k::private_file::open_private_file(path)
         .map_err(|_| io::Error::other("private Codex setup file required"))?;
     let mut bytes = Vec::new();
     file.take(16385).read_to_end(&mut bytes)?;
@@ -209,13 +210,14 @@ fn setup_with(
                 "Registration changed during token lookup. No registration was replaced. Retry setup.",
             ));
         }
-        pigeonmq::private_file::replace_private(
+        radio999k::private_file::replace_private(
             &home.join(REGISTRY),
             &serde_json::to_vec_pretty(&value)?,
         )?;
     }
     let profile = crate::codex_mcp::Profile {
-        identity: crate::codex_mcp::Identity::BuiltIn(pigeonmq::mailbox_catalog::codex().mailbox),
+        hosted: None,
+        identity: crate::codex_mcp::Identity::BuiltIn(radio999k::mailbox_catalog::codex().mailbox),
         db: home.join(QUEUE),
         policy: home.join(catalog::codex_http().policy_file),
         registration: home.join(REGISTRY),
@@ -241,7 +243,7 @@ fn setup_with(
             "Codex policy changed. Local credential matching is unverified.",
         ));
     }
-    pigeonmq::registration::validate_registration(
+    radio999k::registration::validate_registration(
         &home.join(REGISTRY),
         &options.peer,
         catalog::codex().mailbox,

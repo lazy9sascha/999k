@@ -1,5 +1,5 @@
 //! Stage a dedicated ordinary mailbox bearer without changing the active mailbox registration.
-use pigeonmq::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
+use radio999k::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -45,7 +45,7 @@ fn create_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 pub(crate) fn stage(home: &Path, mailbox: &str) -> io::Result<Value> {
     let profile = match mailbox {
-        "instinct" | "cue" => pigeonmq::mailbox_catalog::http_by_id(mailbox),
+        "instinct" | "cue" => radio999k::mailbox_catalog::http_by_id(mailbox),
         _ => None,
     }
     .ok_or_else(|| io::Error::other("--operational supports instinct and cue"))?;

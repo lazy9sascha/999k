@@ -1,6 +1,6 @@
 //! Owner-private queue fixtures and fake launchctl only.
 use super::*;
-use pigeonmq::{Envelope, Queue, dot_profile, grok_mailbox, muse_mailbox};
+use radio999k::{Envelope, Queue, dot_profile, grok_mailbox, muse_mailbox};
 use std::{
     cell::{Cell, RefCell},
     os::unix::fs::PermissionsExt,
@@ -193,6 +193,7 @@ impl Fixture {
             email_recipient,
             relay_command: email_recipient.map(|_| self.relay_command.as_path()),
             port: None,
+            local_stdio: false,
             apply,
         }
     }
@@ -541,4 +542,304 @@ fn managed_apply_refuses_a_persisted_disposable_relay_before_launchd_changes() {
         init_with(&fixture.home, "cue", &fixture.options(false, None), None).unwrap(),
         staged
     );
+}
+
+#[test]
+fn hosted_unix_opt_in_stages_until_match_then_schedules_and_retires_only_owned_job() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    init_with(
+        &fixture.home,
+        "instinct",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let id = uuid::Uuid::new_v4();
+    let cloudflared = fixture.home.join("synthetic-cloudflared");
+    let self_managed = fixture.agents.join("test.self-managed.plist");
+    fs::write(&self_managed, b"unchanged").unwrap();
+    fixture
+        .fake
+        .loaded
+        .borrow_mut()
+        .insert("test.self-managed".into(), self_managed.clone());
+    let baseline = fixture.fake.actions.borrow().len();
+    crate::hosted_enrollment::stage_unix_fixture(
+        &fixture.home,
+        id,
+        DEFAULT_PORT + 1,
+        &["/cue/mcp"],
+    );
+    assert!(!schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    assert_eq!(fixture.fake.actions.borrow().len(), baseline);
+    assert!(read_hosted_owner(&fixture.home).unwrap().is_none());
+
+    crate::hosted_enrollment::stage_unix_fixture(&fixture.home, id, DEFAULT_PORT, &["/cue/mcp"]);
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    let plist = fixture.agents.join(format!("{HOSTED_LABEL}.plist"));
+    let data = plist::Value::from_file(&plist).unwrap();
+    let dict = data.as_dictionary().unwrap();
+    let args = dict["ProgramArguments"].as_array().unwrap();
+    assert_eq!(
+        args.iter()
+            .map(|value| value.as_string().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            fixture.executable.to_str().unwrap(),
+            "serve-hosted-connector",
+            "--home",
+            fixture.home.to_str().unwrap()
+        ]
+    );
+    assert_eq!(dict["KeepAlive"].as_boolean(), Some(true));
+    #[cfg(target_os = "macos")]
+    assert!(
+        std::process::Command::new("/usr/bin/plutil")
+            .arg("-lint")
+            .arg(&plist)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(
+        &fixture.fake.actions.borrow()[baseline..],
+        [
+            Action::Bootout(HUB_LABEL.into()),
+            Action::Bootstrap(HUB_LABEL.into()),
+            Action::Bootstrap(HOSTED_LABEL.into()),
+        ]
+    );
+    let count = fixture.fake.actions.borrow().len();
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    assert_eq!(fixture.fake.actions.borrow().len(), count);
+
+    let queue = fixture.home.join(QUEUE);
+    let inode = queue.metadata().unwrap().ino();
+    remove_with(&fixture.home, "cue", Some(&jobs)).unwrap();
+    assert!(!fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+    assert!(!plist.exists());
+    assert!(read_hosted_owner(&fixture.home).unwrap().is_none());
+    assert!(
+        crate::hosted_enrollment::staged_unix(&fixture.home)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(queue.metadata().unwrap().ino(), inode);
+    assert_eq!(
+        fixture.fake.loaded.borrow().get("test.self-managed"),
+        Some(&self_managed)
+    );
+    assert_eq!(fs::read(self_managed).unwrap(), b"unchanged");
+    assert!(fixture.fake.loaded.borrow().contains_key(HUB_LABEL));
+}
+
+#[test]
+fn hosted_unix_refuses_foreign_job_before_touching_hub_and_recovers_after_interruption() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    crate::hosted_enrollment::stage_unix_fixture(
+        &fixture.home,
+        uuid::Uuid::new_v4(),
+        DEFAULT_PORT,
+        &["/cue/mcp"],
+    );
+    let cloudflared = fixture.home.join("synthetic-cloudflared");
+    let foreign = fixture.home.join("unrelated.plist");
+    fixture
+        .fake
+        .loaded
+        .borrow_mut()
+        .insert(HOSTED_LABEL.into(), foreign.clone());
+    let baseline = fixture.fake.actions.borrow().len();
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).is_err());
+    assert_eq!(fixture.fake.actions.borrow().len(), baseline);
+    assert!(read_hosted_owner(&fixture.home).unwrap().is_none());
+    assert_eq!(
+        fixture.fake.loaded.borrow().get(HOSTED_LABEL),
+        Some(&foreign)
+    );
+
+    fixture.fake.loaded.borrow_mut().remove(HOSTED_LABEL);
+    fixture.fake.fail_next_readiness.set(true);
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).is_err());
+    assert!(read_hosted_owner(&fixture.home).unwrap().is_some());
+    assert!(!fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+    assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    assert!(fixture.fake.loaded.borrow().contains_key(HOSTED_LABEL));
+}
+
+#[test]
+fn managed_stdio_is_explicit_at_first_activation_and_persists_without_restart() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    let mut first = fixture.options(true, None);
+    first.local_stdio = true;
+    init_with(&fixture.home, "cue", &first, Some(&jobs)).unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    let saved: Registry = read_json(&file).unwrap();
+    assert!(saved.local_stdio);
+    let n = fixture.fake.actions.borrow().len();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    assert_eq!(fixture.fake.actions.borrow().len(), n);
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(!fixture.home.join(DIRECTORY).join(HOSTED_OWNER).exists());
+}
+
+#[test]
+fn existing_managed_home_stdio_failed_readiness_restores_and_retries() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    assert!(!read_json::<Registry>(&file).unwrap().local_stdio);
+
+    let mut opt_in = fixture.options(true, None);
+    opt_in.local_stdio = true;
+    fixture.fake.fail_next_readiness.set(true);
+    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_err());
+    assert!(!read_json::<Registry>(&file).unwrap().local_stdio);
+
+    let mut retry = fixture.options(true, None);
+    retry.local_stdio = true;
+    let before_retry = fixture.fake.actions.borrow().len();
+    assert!(init_with(&fixture.home, "cue", &retry, Some(&jobs)).is_ok());
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(fixture.fake.actions.borrow().len() > before_retry);
+
+    let after_success = fixture.fake.actions.borrow().len();
+    let mut repeat = fixture.options(true, None);
+    repeat.local_stdio = true;
+    assert!(init_with(&fixture.home, "cue", &repeat, Some(&jobs)).is_ok());
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert_eq!(fixture.fake.actions.borrow().len(), after_success);
+}
+
+#[test]
+fn existing_managed_home_stdio_failed_activation_restores_unloaded_hub() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    fixture.fake.loaded.borrow_mut().clear();
+
+    let mut opt_in = fixture.options(true, None);
+    opt_in.local_stdio = true;
+    fixture.fake.fail_next_readiness.set(true);
+    assert!(init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).is_err());
+    assert!(!read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(!fixture.fake.loaded.borrow().contains_key(HUB_LABEL));
+}
+
+#[test]
+fn existing_managed_home_stdio_activation_preserves_relay() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    let email = Some("cue@example.invalid");
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, email),
+        Some(&jobs),
+    )
+    .unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    assert!(
+        fixture
+            .fake
+            .loaded
+            .borrow_mut()
+            .remove(RELAY_LABEL)
+            .is_some()
+    );
+    let relay_path = fixture.home.join(DIRECTORY).join(RELAY_CONFIG);
+    let relay_before = fs::read(&relay_path).unwrap();
+
+    let mut opt_in = fixture.options(true, email);
+    opt_in.local_stdio = true;
+    init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).unwrap();
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(!fixture.fake.loaded.borrow().contains_key(RELAY_LABEL));
+    assert_eq!(fs::read(relay_path).unwrap(), relay_before);
+}
+
+#[test]
+fn first_managed_apply_with_email_and_stdio_configures_relay() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    let mut options = fixture.options(true, Some("cue@example.invalid"));
+    options.local_stdio = true;
+    let result = init_with(&fixture.home, "cue", &options, Some(&jobs)).unwrap();
+    assert_eq!(result["state"], "active");
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(fixture.fake.loaded.borrow().contains_key(RELAY_LABEL));
+}
+
+#[test]
+fn existing_managed_home_can_enable_stdio_once_with_explicit_opt_in() {
+    let fixture = Fixture::new(false);
+    let jobs = fixture.jobs();
+    init_with(
+        &fixture.home,
+        "cue",
+        &fixture.options(true, None),
+        Some(&jobs),
+    )
+    .unwrap();
+    let file = fixture.home.join(DIRECTORY).join(STATE);
+    let saved = fs::read(&file).unwrap();
+    assert!(
+        !serde_json::from_slice::<Value>(&saved)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("local_stdio")
+    );
+    let mut opt_in = fixture.options(true, None);
+    opt_in.local_stdio = true;
+    let before_actions = fixture.fake.actions.borrow().len();
+    init_with(&fixture.home, "cue", &opt_in, Some(&jobs)).unwrap();
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert!(fixture.fake.actions.borrow().len() > before_actions);
+
+    let after_first = fixture.fake.actions.borrow().len();
+    let mut repeat = fixture.options(true, None);
+    repeat.local_stdio = true;
+    assert!(init_with(&fixture.home, "cue", &repeat, Some(&jobs)).is_ok());
+    assert!(read_json::<Registry>(&file).unwrap().local_stdio);
+    assert_eq!(fixture.fake.actions.borrow().len(), after_first);
 }

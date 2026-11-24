@@ -11,7 +11,7 @@ mod operator_health;
 #[path = "run_companions.rs"]
 mod run_companions;
 pub(crate) use diagnostics::health;
-use pigeonmq::mailbox_catalog as catalog;
+use radio999k::mailbox_catalog as catalog;
 pub(crate) use run_companions::{guard as companion_guard, keep_hub_lease};
 use serde_json::{Value, json};
 use std::{
@@ -33,8 +33,8 @@ use tokio::{
 };
 #[derive(clap::Args)]
 pub(crate) struct RunOptions {
-    #[arg(long, default_value = ".local")]
-    home: PathBuf,
+    #[arg(long)]
+    home: Option<PathBuf>,
     /// Enable generic HTTP and MCP routes with this private policy.
     #[arg(long)]
     auth_policy: Option<PathBuf>,
@@ -68,6 +68,7 @@ struct Args {
     manifest: Option<Manifest>,
     companions: Option<run_companions::Manifest>,
     delivery_enabled: Value,
+    health_public_paths: Value,
     watchdog_interval: Duration,
     operator_health: bool,
 }
@@ -80,7 +81,7 @@ fn queue_identity(a: &Args) -> Result<(u64, u64), &'static str> {
 }
 
 fn private(path: &Path) -> Result<fs::File, &'static str> {
-    pigeonmq::private_file::open_private_file(path).map_err(|_| "unsafe_private_path")
+    radio999k::private_file::open_private_file(path).map_err(|_| "unsafe_private_path")
 }
 fn private_home(home: &Path) -> std::io::Result<fs::File> {
     let directory = fs::OpenOptions::new()
@@ -193,31 +194,31 @@ fn profile(v: &Value, a: &Args) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn add_public_endpoints(value: &mut Value, a: &Args, origin: &str) {
+fn add_public_endpoints(value: &mut Value, paths: &Value, origin: &str) {
     for profile in catalog::http_profiles() {
         if let Some(key) = profile.endpoint_key {
-            let route = match &a.manifest {
-                Some(manifest) => manifest.route(profile),
-                None => configured(a, profile).then_some(profile.route),
-            };
-            value[key] = json!(route.map(|route| format!("{origin}{route}")));
+            value[key] = json!(
+                paths[profile.id]
+                    .as_str()
+                    .map(|path| format!("{origin}{path}"))
+            );
         }
     }
 }
 
 // Process diagnostics never format an I/O error or relay a child's output.
 fn process_io_failure(stage: &'static str, error: &io::Error) {
-    tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+    tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
         stage, outcome = "io_failed", io_kind = ?error.kind(), os_error = error.raw_os_error());
 }
 
 fn process_exited(stage: &'static str, status: ExitStatus) {
-    tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+    tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
         stage, outcome = "exited", exit_code = status.code(), signal = status.signal());
 }
 
 fn process_timeout(stage: &'static str) {
-    tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+    tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
         stage, outcome = "timed_out");
 }
 
@@ -242,12 +243,12 @@ async fn preflight(a: &Args) -> Result<(), &'static str> {
             private(&binding.policy)?;
             cloud_credentials::provision(&binding.policy, app).map_err(|error| {
                 if error.get_ref().is_some_and(|e| e.is::<crate::auth::RetiredSenders>()) {
-                    tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                    tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
                         stage = "policy", outcome = "rejected", profile = app.slug(),
                         error_code = crate::auth::RETIRED_SENDERS_CODE, guidance = crate::auth::RETIRED_SENDERS_HELP);
                     return crate::auth::RETIRED_SENDERS_CODE;
                 }
-                tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
                     stage = "credentials", outcome = "failed", profile = app.slug(),
                     error_code = "cloud_credential_provision_failed");
                 "cloud_credential_provision_failed"
@@ -260,7 +261,7 @@ async fn preflight(a: &Args) -> Result<(), &'static str> {
         match binding.descriptor.adapter {
             catalog::Adapter::Muse => muse = Some(policy),
             catalog::Adapter::Dot => {
-                pigeonmq::dot_profile::check(&queue, policy, false)
+                radio999k::dot_profile::check(&queue, policy, false)
                     .map_err(|_| "dot_policy_or_existing_queue_unavailable")?;
             }
             catalog::Adapter::Grok => {
@@ -295,9 +296,9 @@ async fn preflight(a: &Args) -> Result<(), &'static str> {
                     .registration
                     .as_deref()
                     .ok_or("receiver_registration_unavailable")?;
-                pigeonmq::registration::load_registrations(registration)
+                radio999k::registration::load_registrations(registration)
                     .map_err(|_| "receiver_registration_unavailable")?;
-                pigeonmq::Queue::open_existing(&queue)
+                radio999k::Queue::open_existing(&queue)
                     .map_err(|_| "receiver_existing_queue_unavailable")?;
             }
         }
@@ -337,23 +338,46 @@ async fn preflight(a: &Args) -> Result<(), &'static str> {
     }
     Ok(())
 }
+fn public_health_paths(a: &Args, readiness: &Value) -> Value {
+    let mut paths = serde_json::Map::new();
+    for entry in catalog::http_profiles() {
+        if entry.adapter == catalog::Adapter::Receiver || readiness[entry.enabled_key] != true {
+            continue;
+        }
+        let route = match &a.manifest {
+            Some(manifest) => manifest.route(entry),
+            None => Some(entry.route),
+        };
+        if let Some(path) = route {
+            paths.insert(entry.id.to_owned(), json!(path));
+        }
+    }
+    if readiness["generic_enabled"] == true {
+        paths.insert("generic".to_owned(), json!("/mcp"));
+    }
+    Value::Object(paths)
+}
+
 fn status(a: &Args, mut value: Value) {
     value["tunnel_mode"] = json!(a.transport.mode());
     value["delivery_enabled"] = a.delivery_enabled.clone();
     if value["local_hub"] == "running" {
         value["local_port"] = json!(a.port);
+        if matches!(a.transport.mode(), "ssh" | "external") {
+            value["health_public_paths"] = a.health_public_paths.clone();
+        }
     }
     if record(&a.home, value).is_err() {
-        tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "status_write", outcome = "failed", error_code = "state_write_failed");
     }
 }
 fn local_state(a: &Args, host: &Child, tunnel: &str, reason: Option<&str>) {
     if let Some(error_code) = reason {
-        tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "tunnel", outcome = tunnel, error_code);
     } else {
-        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "tunnel", outcome = tunnel);
     }
     status(
@@ -508,9 +532,9 @@ async fn supervise(
                             "host_pid": host.id(), "tunnel_pid": tunnel.id(), "supervisor_pid": std::process::id(),
                             "generic_enabled": a.auth_policy.is_some()
                         });
-                        add_public_endpoints(&mut state, a, &url);
+                        add_public_endpoints(&mut state, &a.health_public_paths, &url);
                         status(a, state);
-                        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
                             stage = "tunnel", outcome = "connected");
                         println!("{}", json!({"state": "connected", "public_origin": url}));
                         managed.ready(url, Instant::now());
@@ -576,7 +600,7 @@ async fn run_with(
         None
     };
     let tunnel_mode = a.transport.mode();
-    tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+    tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
         stage = "run", outcome = "started", tunnel_mode);
     tokio::pin!(shutdown);
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -601,12 +625,12 @@ async fn run_with(
         }
         let checked = tokio::select! { result=preflight(&a)=>result, _=term.recv()=>Err("stopped"), _=interrupt.recv()=>Err("stopped"), _=&mut shutdown=>Err("stopped") };
         if let Err(reason) = checked {
-            tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+            tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "preflight", outcome = if reason == "stopped" { "stopped" } else { "failed" },
             error_code = reason);
             return finish(&a, reason, None, reason.starts_with("transient_"));
         }
-        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
         stage = "preflight", outcome = "completed");
         if expected_queue.is_none() {
             expected_queue = match queue_identity(&a) {
@@ -652,9 +676,19 @@ async fn run_with(
                 continue;
             }
         };
-        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
         stage = "host", outcome = "spawned");
-        let mut host_output = BufReader::new(host.stdout.take().unwrap());
+        let stdout = match host.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
+                    stage = "host_ready", outcome = "missing_stdout");
+                let _ = host.kill().await;
+                backoff = (backoff * 2).min(Duration::from_secs(5));
+                continue;
+            }
+        };
+        let mut host_output = BufReader::new(stdout);
         let startup = async {
             let mut line = String::new();
             if (&mut host_output)
@@ -664,7 +698,7 @@ async fn run_with(
                 .map_err(host_read_error)?
                 == 0
             {
-                tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
                     stage = "host_ready", outcome = "eof");
                 return Err("transient_host_start");
             }
@@ -679,11 +713,14 @@ async fn run_with(
                     .await
                     .map_err(|_| "transient_host_start")?;
             }
-            Ok(json!({
-                "grok_wake": readiness["grok_wake_enabled"].as_bool(),
-                "dot_events": readiness["dot_events_enabled"].as_bool(),
-                "codex_events": readiness["codex_events_enabled"].as_bool(),
-            }))
+            Ok((
+                json!({
+                    "grok_wake": readiness["grok_wake_enabled"].as_bool(),
+                    "dot_events": readiness["dot_events_enabled"].as_bool(),
+                    "codex_events": readiness["codex_events_enabled"].as_bool(),
+                }),
+                public_health_paths(&a, &readiness),
+            ))
         };
         let mut tunnel = None;
         managed.clear_connection();
@@ -699,9 +736,10 @@ async fn run_with(
                 }
                 Err((e, e.starts_with("transient_")))
             }
-            Ok(Ok(delivery_enabled)) => {
+            Ok(Ok((delivery_enabled, health_public_paths))) => {
                 a.delivery_enabled = delivery_enabled;
-                tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                a.health_public_paths = health_public_paths;
+                tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
                 stage = "host", outcome = "ready");
                 let supervise_ready_host = async {
                     match a.transport.managed_provider() {
@@ -715,21 +753,15 @@ async fn run_with(
                                 private_state["public_origin"] = json!(origin);
                                 private_state["public_origin_source"] = json!("configured");
                                 private_state["remote_verified"] = json!(false);
-                                add_public_endpoints(&mut private_state, &a, origin);
+                                add_public_endpoints(
+                                    &mut private_state,
+                                    &a.health_public_paths,
+                                    origin,
+                                );
                             }
-                            let role_state = |roles: &[run_companions::Role]| {
-                                Value::Object(
-                                    roles
-                                        .iter()
-                                        .map(|role| {
-                                            let (name, state) = role.status();
-                                            (name.into(), state)
-                                        })
-                                        .collect(),
-                                )
-                            };
                             if a.companions.is_some() {
-                                private_state["companions"] = role_state(&roles);
+                                private_state["companions"] =
+                                    run_companions::status_snapshot(&roles);
                             }
                             status(&a, private_state.clone());
                             println!("{value}");
@@ -752,10 +784,9 @@ async fn run_with(
                                             false,
                                         ));
                                     }
-                                    for role in &mut roles {
-                                        role.tick(&a.binary, &lock).await;
-                                    }
-                                    let next = role_state(&roles);
+                                    let next =
+                                        run_companions::tick_and_status(&mut roles, &a, &lock)
+                                            .await;
                                     if next != private_state["companions"] {
                                         private_state["companions"] = next;
                                         status(&a, private_state.clone());
@@ -807,9 +838,13 @@ async fn run_with(
                                     }
                                     Ok(child) => {
                                         tunnel = Some(child);
-                                        tokio::select! {
-                                            result=supervise(&a, provider, &mut host, tunnel.as_mut().unwrap(), &mut managed, &mut term, &mut interrupt)=>result,
-                                            _=&mut shutdown=>Ok("stopped".into())
+                                        if let Some(tunnel) = tunnel.as_mut() {
+                                            tokio::select! {
+                                                result=supervise(&a, provider, &mut host, tunnel, &mut managed, &mut term, &mut interrupt)=>result,
+                                                _=&mut shutdown=>Ok("stopped".into())
+                                            }
+                                        } else {
+                                            Ok("stopped".into())
                                         }
                                     }
                                 };
@@ -883,7 +918,7 @@ async fn run_with(
                 &a,
                 json!({"state":"recovering","local_hub":"stopped","tunnel":"stopped","public_origin":null,"reason":reason}),
             );
-            tracing::warn!(target: "pigeonmq::cloud_service", component="cloud_service",
+            tracing::warn!(target: "radio999k::cloud_service", component="cloud_service",
             stage="host_recovery", outcome="retrying", error_code=reason);
             let stopped = tokio::select! {
                 _=term.recv()=>true, _=interrupt.recv()=>true, _=&mut shutdown=>true,
@@ -905,10 +940,10 @@ async fn run_with(
 
 fn finish(a: &Args, reason: &str, public_origin: Option<String>, retryable: bool) -> i32 {
     if reason == "stopped" {
-        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "run", outcome = "stopped");
     } else {
-        tracing::error!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::error!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "run", outcome = "failed", error_code = reason, retry = retryable);
     }
     status(
@@ -920,13 +955,14 @@ fn finish(a: &Args, reason: &str, public_origin: Option<String>, retryable: bool
     i32::from(reason != "stopped")
 }
 pub(crate) fn start(options: &RunOptions) -> std::io::Result<()> {
+    let home = crate::cloud_setup::resolve_home(options.home.clone());
     let companions = options
         .companions_file
         .as_deref()
         .map(run_companions::Manifest::load)
         .transpose()?;
     let transport = if companions.is_some() {
-        if !cfg!(target_os = "macos") || !options.home.is_absolute() {
+        if !cfg!(target_os = "macos") || !home.is_absolute() {
             return Err(io::Error::other(
                 "private_companions_require_macos_and_absolute_home",
             ));
@@ -936,21 +972,23 @@ pub(crate) fn start(options: &RunOptions) -> std::io::Result<()> {
         Transport::select(options.local_only, options.env_file.as_deref())
             .map_err(io::Error::other)?
     };
+    let manifest = options
+        .profiles_file
+        .as_deref()
+        .map(|path| Manifest::load(path, &home))
+        .transpose()?;
     let args = Args {
-        home: options.home.clone(),
+        home,
         binary: std::env::current_exe()?,
         auth_policy: options.auth_policy.clone(),
         port: options.port,
         transport,
         delivery_enabled: Value::Null,
+        health_public_paths: Value::Null,
         watchdog_interval: diagnostics::WATCH_INTERVAL,
         operator_health: options.operator_health,
         companions,
-        manifest: options
-            .profiles_file
-            .as_deref()
-            .map(|path| Manifest::load(path, &options.home))
-            .transpose()?,
+        manifest,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -999,6 +1037,7 @@ mod tests {
             manifest: None,
             companions: None,
             delivery_enabled: Value::Null,
+            health_public_paths: Value::Null,
             watchdog_interval: diagnostics::WATCH_INTERVAL,
             operator_health: false,
         };
@@ -1062,7 +1101,7 @@ mod tests {
         )
         .unwrap();
         fs::remove_file(a.home.join(QUEUE)).unwrap();
-        pigeonmq::Queue::open(a.home.join(QUEUE)).unwrap();
+        radio999k::Queue::open(a.home.join(QUEUE)).unwrap();
         for (name, value) in [
             (
                 catalog::codex_http().policy_file,
@@ -1117,12 +1156,14 @@ mod tests {
         ready["profiles_fingerprint"] = json!("changed");
         assert_eq!(profile(&ready, &a), Err("unexpected_host_profile"));
         let mut endpoints = json!({});
-        add_public_endpoints(&mut endpoints, &a, "https://fixture.example");
+        let paths = public_health_paths(&a, &ready);
+        add_public_endpoints(&mut endpoints, &paths, "https://fixture.example");
         assert_eq!(
             endpoints["muse_endpoint"],
             "https://fixture.example/personal-muse/mcp"
         );
         assert!(endpoints["grok_endpoint"].is_null());
+        assert_eq!(paths, json!({"muse":"/personal-muse/mcp"}));
         fs::remove_file(&policy).unwrap();
         assert!(
             preflight(&a).await.is_err(),
@@ -1152,6 +1193,10 @@ mod tests {
             "grok_enabled":false,"dot_enabled":false,
             "codex_enabled":true,"receiver_enabled":true,"instinct_enabled":false,"cue_enabled":false,"codex_events_enabled":false});
         assert_eq!(profile(&ready, &a), Ok(()));
+        assert_eq!(
+            public_health_paths(&a, &ready),
+            json!({"codex-cloud":"/codex/mcp"})
+        );
         for key in ["codex_enabled", "receiver_enabled", "codex_events_enabled"] {
             let mut wrong = ready.clone();
             wrong[key] = json!(!ready[key].as_bool().unwrap());
@@ -1251,6 +1296,7 @@ mod tests {
         assert_eq!(state["public_origin"], "https://pigeon.example");
         assert_eq!(state["public_origin_source"], "configured");
         assert_eq!(state["remote_verified"], false);
+        assert_eq!(state["health_public_paths"], json!({"muse":"/muse/mcp"}));
         assert_eq!(state["muse_endpoint"], "https://pigeon.example/muse/mcp");
         assert!(state["dot_endpoint"].is_null());
         assert!(state.get("receiver_endpoint").is_none());
@@ -1597,12 +1643,17 @@ exec /bin/sleep 30
 "#,
         );
         let home = a.home.clone();
+        let muse_policy = home.join(catalog::http_by_id("muse").unwrap().policy_file);
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let mut attempts = 0;
         let task = tokio::spawn(run_with(
             a,
             move |_, _| {
                 attempts += 1;
+                if attempts == 1 {
+                    // The live child already validated and loaded this profile.
+                    fs::remove_file(&muse_policy).unwrap();
+                }
                 let event = json!({"event":"tunnel","stable":true,
                     "url":format!("https://fixture-{attempts}.tunnl.gg")});
                 let mut command = Command::new("/bin/sh");
@@ -1639,6 +1690,7 @@ exec /bin/sleep 30
             .await
             .unwrap();
             assert_eq!(state["muse_endpoint"], format!("{origin}/muse/mcp"));
+            assert_eq!(state["health_public_paths"], json!({"muse":"/muse/mcp"}));
             observed.push(state);
         }
         assert_eq!(observed[0]["host_pid"], observed[1]["host_pid"]);
@@ -1696,7 +1748,7 @@ exec /bin/sleep 30
             );
             return;
         }
-        pigeonmq::logging::init();
+        radio999k::logging::init();
         let (_dir, args) = fixture(
             r#"#!/bin/sh
 if [ "$1" != serve-hub ]; then exit 0; fi
@@ -1911,7 +1963,7 @@ exec /bin/sleep 30
             return;
         }
 
-        pigeonmq::logging::init();
+        radio999k::logging::init();
         let (_dir, a) = fixture(
             "#!/bin/sh\nprintf '%s\\n' MUSE_STDOUT_PRIVATE\nprintf '%s\\n' MUSE_STDERR_PRIVATE >&2\nexit 42\n",
         );
@@ -2056,6 +2108,7 @@ exec /bin/sleep 30
                 .unwrap();
         assert_eq!(value["public_origin"], "https://fixture.tunnl.gg");
         assert_eq!(value["reason"], "transient_host_start");
+        assert!(value.get("health_public_paths").is_none());
         fs::remove_file(d.path().join("pigeonmq-cloud-state.json")).unwrap();
         fs::create_dir(d.path().join("pigeonmq-cloud-state.json")).unwrap();
         assert_eq!(finish(&a, "stopped", None, false), 0);
@@ -2073,7 +2126,8 @@ exec /bin/sleep 30
     }
     #[tokio::test]
     async fn connected_fixture_records_only_origin_and_detects_host_exit() {
-        let (d, a) = fixture("fixture");
+        let (d, mut a) = fixture("fixture");
+        a.health_public_paths = json!({"muse":"/muse/mcp"});
         let mut host = Command::new("/bin/sleep")
             .arg("0.3")
             .kill_on_drop(true)

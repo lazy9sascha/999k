@@ -1,6 +1,6 @@
 //! Exercise the actual runner with local stand-ins, never launchd or a remote service.
 #![cfg(target_os = "macos")]
-use pigeonmq::{Envelope, Queue, hub_http, mailbox_catalog as catalog};
+use radio999k::{Envelope, Queue, hub_http, mailbox_catalog as catalog};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq");
+const BIN: &str = env!("CARGO_BIN_EXE_999k");
 const DOT: &str = "dot_tunnel";
 const CODEX: &str = "codex_tunnel";
 const EMAIL: &str = "email_relay";
@@ -317,7 +317,7 @@ printf '%s %s\n' "$1" "$2" >> "$0.out"
             "/dot/mcp",
             TOKEN,
             &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-                "name":"pigeonmq_read","arguments":{"message_id":self.id}
+                "name":"radio999k_read","arguments":{"message_id":self.id}
             }}),
         )
         .unwrap();

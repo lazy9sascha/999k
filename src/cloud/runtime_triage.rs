@@ -1,6 +1,6 @@
 //! Validate an operator's triage record, then select only supported local tools.
 use super::{Capability, error, owner_directory};
-use pigeonmq::{mcp_request::strict_json, private_file};
+use radio999k::{mcp_request::strict_json, private_file};
 use serde_json::Value;
 use std::{
     collections::HashSet,

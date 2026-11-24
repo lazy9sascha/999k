@@ -1,5 +1,5 @@
 //! Prepare Cloud bearers and explicit private handoffs. Agent use requires separate verification.
-use pigeonmq::mailbox_catalog as catalog;
+use radio999k::mailbox_catalog as catalog;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -97,7 +97,7 @@ fn read_token_file(path: &Path) -> io::Result<Vec<u8>> {
     if !path.is_absolute() {
         return Err(io::Error::other("absolute private token path required"));
     }
-    let file = pigeonmq::private_file::open_private_file(path)
+    let file = radio999k::private_file::open_private_file(path)
         .map_err(|_| io::Error::other("private token file unavailable"))?;
     let mut bytes = Vec::new();
     file.take(259).read_to_end(&mut bytes)?;
@@ -230,7 +230,7 @@ fn read_repair_file(path: &Path) -> io::Result<Vec<u8>> {
     if !path.is_absolute() {
         return Err(io::Error::other("absolute private repair path required"));
     }
-    let file = pigeonmq::private_file::open_private_file(path)
+    let file = radio999k::private_file::open_private_file(path)
         .map_err(|_| io::Error::other("private repair file unavailable"))?;
     let mut bytes = Vec::new();
     file.take(65).read_to_end(&mut bytes)?;
@@ -406,7 +406,7 @@ fn credentials_with_rng(
                 } else {
                     updated["token_sha256"] = current_digest.into();
                 }
-                pigeonmq::private_file::replace_private(
+                radio999k::private_file::replace_private(
                     &policy_path,
                     &serde_json::to_vec_pretty(&updated)?,
                 )?;
@@ -508,7 +508,7 @@ fn private_json(path: &Path) -> io::Result<Value> {
 }
 
 fn private_bytes(path: &Path) -> io::Result<Vec<u8>> {
-    let file = pigeonmq::private_file::open_private_file(path)
+    let file = radio999k::private_file::open_private_file(path)
         .map_err(|_| io::Error::other("private hub file unavailable"))?;
     let mut bytes = Vec::new();
     file.take(16385).read_to_end(&mut bytes)?;
@@ -605,7 +605,7 @@ pub(crate) fn provision(policy: &Path, app: App) -> io::Result<()> {
         // FIXME: remote-agent token delivery is undecided. See .local/design/token-passing.md.
         let bearer = keychain::get_or_create(&account(home, app)?)?;
         value["token_sha256"] = sha256(&bearer).into();
-        pigeonmq::private_file::replace_private(policy, &serde_json::to_vec_pretty(&value)?)
+        radio999k::private_file::replace_private(policy, &serde_json::to_vec_pretty(&value)?)
     }
 }
 
@@ -621,7 +621,7 @@ pub(crate) fn read_grok_wake_keychain(home: &Path) -> io::Result<Vec<u8>> {
     #[cfg(target_os = "macos")]
     {
         let account = account_for(home, "grok-wake")?;
-        keychain::get_raw(&account, pigeonmq::grok_wake::MAX_KEYCHAIN_PAIR)?
+        keychain::get_raw(&account, radio999k::grok_wake::MAX_KEYCHAIN_PAIR)?
             .ok_or_else(|| io::Error::other("No Grok webhook in Keychain"))
     }
     #[cfg(not(target_os = "macos"))]
@@ -633,7 +633,7 @@ pub(crate) fn read_grok_wake_keychain(home: &Path) -> io::Result<Vec<u8>> {
 
 #[cfg(any(target_os = "macos", test))]
 fn import_grok_wake_pair(home: &Path, expected_host: &str) -> io::Result<Vec<u8>> {
-    use pigeonmq::grok_wake;
+    use radio999k::grok_wake;
     let url = grok_wake::read_wake_file(&home.join(grok_wake::URL_FILE))?;
     let target = grok_wake::parse_url(&url).map_err(io::Error::other)?;
     if !target
@@ -652,7 +652,7 @@ fn import_grok_wake_pair(home: &Path, expected_host: &str) -> io::Result<Vec<u8>
 #[cfg(test)]
 #[test]
 fn grok_wake_file_import_checks_host_and_descriptor_without_changing_sources() {
-    use pigeonmq::grok_wake::{AUTH_FILE, KEYCHAIN_MARKER, URL_FILE, encode_keychain_pair};
+    use radio999k::grok_wake::{AUTH_FILE, KEYCHAIN_MARKER, URL_FILE, encode_keychain_pair};
     use std::{
         fs,
         os::unix::fs::{PermissionsExt, symlink},
@@ -663,8 +663,8 @@ fn grok_wake_file_import_checks_host_and_descriptor_without_changing_sources() {
     let auth = dir.path().join(AUTH_FILE);
     let original_url = b"https://wake.invalid/routine\n";
     let original_auth = b"Authorization: Bearer synthetic\n";
-    pigeonmq::private_file::replace_private(&url, original_url).unwrap();
-    pigeonmq::private_file::replace_private(&auth, original_auth).unwrap();
+    radio999k::private_file::replace_private(&url, original_url).unwrap();
+    radio999k::private_file::replace_private(&auth, original_auth).unwrap();
     assert_eq!(
         import_grok_wake_pair(dir.path(), "wake.invalid").unwrap(),
         encode_keychain_pair(
@@ -709,17 +709,17 @@ pub(crate) fn setup_grok_wake(
         } else {
             let url = hidden_tty(c"Grok webhook HTTPS URL: ")?;
             let auth = hidden_tty(c"Grok webhook Authorization: ")?;
-            pigeonmq::grok_wake::encode_keychain_pair(url.trim(), auth.trim())
+            radio999k::grok_wake::encode_keychain_pair(url.trim(), auth.trim())
                 .map_err(io::Error::other)?
         };
         let account = account_for(home, "grok-wake")?;
-        keychain::put_raw_missing(&account, &pair, pigeonmq::grok_wake::MAX_KEYCHAIN_PAIR)?;
+        keychain::put_raw_missing(&account, &pair, radio999k::grok_wake::MAX_KEYCHAIN_PAIR)?;
         if stage_only {
             println!("Grok webhook item staged in Keychain. Wake selection did not change.");
             return Ok(());
         }
-        pigeonmq::private_file::replace_private(
-            &home.join(pigeonmq::grok_wake::KEYCHAIN_MARKER),
+        radio999k::private_file::replace_private(
+            &home.join(radio999k::grok_wake::KEYCHAIN_MARKER),
             b"keychain\n",
         )?;
         println!("Grok webhook stored in Keychain. Restart the hub to select it.");
@@ -828,7 +828,7 @@ pub(crate) fn handoff(home: &Path, app: App, copy_token: bool) -> io::Result<()>
         }
     };
     copy(format!(
-        "Set up a new MCP connector named pigeonmq-cloud-{} at {endpoint}. Keep any existing PigeonMQ connector unchanged. {secret_input} Never ask me to send the token in chat. After setup, list the connector tools and report whether it connected. Do not send or acknowledge a message.",
+        "Set up a new MCP connector named 999k-{} at {endpoint}. Keep any existing 999K connector unchanged. {secret_input} Never ask me to send the token in chat. After setup, list the connector tools and report whether it connected. Do not send or acknowledge a message.",
         app.slug()
     ).as_bytes())?;
     println!("Copied the connector prompt.");

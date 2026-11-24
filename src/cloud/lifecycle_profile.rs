@@ -1,6 +1,6 @@
 //! Readiness and owner-private Bearer staging for the existing built-in adapters.
 use crate::{auth, codex_events, local_http, mailbox_startup::Binding};
-use pigeonmq::{
+use radio999k::{
     dot_profile,
     dot_service_preflight::DotEvents,
     mailbox_catalog::{Adapter, EventsCapability},
@@ -153,7 +153,7 @@ fn parse_template(binding: &Binding, bytes: &[u8]) -> io::Result<Template> {
                 if !settings.resolver.is_absolute() {
                     return Err(io::Error::other(UNSUPPORTED));
                 }
-                pigeonmq::events::policy::EventsPolicy::for_dot_mailbox(
+                radio999k::events::policy::EventsPolicy::for_dot_mailbox(
                     policy.principal,
                     policy.token_sha256,
                     Vec::new(),
@@ -200,7 +200,7 @@ fn parse_template(binding: &Binding, bytes: &[u8]) -> io::Result<Template> {
                 {
                     return Err(io::Error::other(UNSUPPORTED));
                 }
-                pigeonmq::events::policy::EventsPolicy::for_codex(
+                radio999k::events::policy::EventsPolicy::for_codex(
                     grant.token_sha256.to_ascii_lowercase(),
                     Vec::new(),
                     settings.callback_hosts,
@@ -368,7 +368,7 @@ pub(crate) fn stage_replacement(dir: &Path, binding: &Binding) -> io::Result<(Pa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pigeonmq::{Queue, mailbox_catalog::http_by_id, private_file::replace_private};
+    use radio999k::{Queue, mailbox_catalog::http_by_id, private_file::replace_private};
     use serde_json::json;
     use std::fs;
 

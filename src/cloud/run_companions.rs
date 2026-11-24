@@ -1,6 +1,6 @@
 //! The optional private launchd companions.
 use super::{Args, QUEUE};
-use pigeonmq::{mailbox_catalog as catalog, private_file::MAX_PRIVATE_CONFIG_BYTES};
+use radio999k::{mailbox_catalog as catalog, private_file::MAX_PRIVATE_CONFIG_BYTES};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -111,7 +111,7 @@ impl Manifest {
                 || !absolute(&relay.state)
                 || !absolute(&relay.command)
                 || !(1..=3600).contains(&relay.interval_secs)
-                || pigeonmq::arrival_notify::validate_static_mailboxes(&relay.mailboxes).is_err())
+                || radio999k::arrival_notify::validate_static_mailboxes(&relay.mailboxes).is_err())
         {
             return Err(invalid());
         }
@@ -487,4 +487,23 @@ fn leader_exited(pid: u32) -> bool {
     }
     // SAFETY: waitid returns a SIGCHLD siginfo or leaves the zeroed pid.
     unsafe { info.si_pid() != 0 }
+}
+
+pub(super) fn status_snapshot(roles: &[Role]) -> Value {
+    Value::Object(
+        roles
+            .iter()
+            .map(|role| {
+                let (name, state) = role.status();
+                (name.into(), state)
+            })
+            .collect(),
+    )
+}
+
+pub(super) async fn tick_and_status(roles: &mut [Role], a: &Args, lock: &std::fs::File) -> Value {
+    for role in roles.iter_mut() {
+        role.tick(&a.binary, lock).await;
+    }
+    status_snapshot(roles)
 }

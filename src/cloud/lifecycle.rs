@@ -2,11 +2,12 @@
 use crate::{
     lifecycle_profile,
     lifecycle_service::{
-        HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist, verify_plist,
+        HOSTED_LABEL, HUB_LABEL, LaunchControl, RELAY_LABEL, SystemLaunchctl, ensure_plist,
+        verify_plist,
     },
     mailbox_startup::{Binding, Manifest, QUEUE, REGISTRATION, bindings, valid_route},
 };
-use pigeonmq::{
+use radio999k::{
     arrival_notify::{RelayConfig, RelayTarget, lock_state},
     mailbox_catalog as catalog, mailbox_generation as generation, private_file,
 };
@@ -28,6 +29,7 @@ const DIRECTORY: &str = ".pigeonmq-lifecycle";
 const STATE: &str = "profiles.json";
 const RELAY_CONFIG: &str = "relay-profiles.json";
 const RELAY_STATE: &str = "relay-state.json";
+const HOSTED_OWNER: &str = "hosted-unix-owner.json";
 const DEFAULT_PORT: u16 = 54843;
 
 fn error(reason: &'static str) -> io::Error {
@@ -110,6 +112,14 @@ struct Registry {
     registration: PathBuf,
     relay_command: Option<PathBuf>,
     profiles: BTreeMap<String, Profile>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    local_stdio: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finite_cue_installation: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl Profile {
@@ -139,6 +149,7 @@ pub(crate) struct Options<'a> {
     pub(crate) email_recipient: Option<&'a str>,
     pub(crate) relay_command: Option<&'a Path>,
     pub(crate) port: Option<u16>,
+    pub(crate) local_stdio: bool,
     pub(crate) apply: bool,
 }
 
@@ -147,7 +158,7 @@ fn private_dir(path: &Path) -> io::Result<PathBuf> {
         if cause.kind() == io::ErrorKind::NotFound {
             io::Error::new(
                 cause.kind(),
-                "lifecycle home is missing; run bare pigeonmq init or create an owner-private directory",
+                "lifecycle home is missing; run bare 999k init or create an owner-private directory",
             )
         } else {
             cause
@@ -197,6 +208,10 @@ fn write_json(path: &Path, data: &impl Serialize) -> io::Result<()> {
 }
 
 fn lock(dir: &Path) -> io::Result<File> {
+    lock_until(dir, std::time::Duration::ZERO)
+}
+
+fn lock_until(dir: &Path, wait: std::time::Duration) -> io::Result<File> {
     let path = dir.join("lifecycle.lock");
     let file = OpenOptions::new()
         .read(true)
@@ -207,11 +222,21 @@ fn lock(dir: &Path) -> io::Result<File> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(&path)?;
     open_private(&path)?;
-    // SAFETY: the lock is held by the live returned descriptor.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(error("another lifecycle change is in progress"));
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        // SAFETY: the lock is held by the live returned descriptor.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let cause = io::Error::last_os_error();
+        if cause.kind() != io::ErrorKind::WouldBlock {
+            return Err(cause);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(error("another lifecycle change is in progress"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    Ok(file)
 }
 
 fn configured(home: &Path, name: &str, manifest: Option<&Path>) -> io::Result<Binding> {
@@ -279,7 +304,7 @@ fn validate_command(command: &Path) -> io::Result<()> {
 }
 
 fn registration_data(path: &Path) -> io::Result<Value> {
-    pigeonmq::registration::load_registrations(path)
+    radio999k::registration::load_registrations(path)
         .map_err(|_| error("invalid mailbox registration"))?;
     read_json(path)
 }
@@ -337,7 +362,7 @@ fn init_home(home: &Path, name: &str, manifest: Option<&Path>) -> io::Result<Pat
                 .sync_all()?;
         }
         open_private(&queue)?;
-        pigeonmq::Queue::open(&queue).map_err(io::Error::other)?;
+        radio999k::Queue::open(&queue).map_err(io::Error::other)?;
     }
     Ok(home)
 }
@@ -501,6 +526,158 @@ fn path_arg(path: &Path) -> io::Result<String> {
         .ok_or_else(|| error("lifecycle path must be UTF-8"))
 }
 
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct HostedOwner {
+    installation: String,
+    binary: PathBuf,
+    cloudflared: PathBuf,
+}
+
+fn read_hosted_owner(home: &Path) -> io::Result<Option<HostedOwner>> {
+    let path = home.join(DIRECTORY).join(HOSTED_OWNER);
+    if absent(&path)? {
+        Ok(None)
+    } else {
+        read_json(&path).map(Some)
+    }
+}
+
+pub(crate) fn hosted_cue_mode(home: &Path, installation: uuid::Uuid) -> io::Result<bool> {
+    let state: Registry = read_json(&home.join(DIRECTORY).join(STATE))?;
+    match state.finite_cue_installation {
+        None => Ok(false),
+        Some(value) if value == installation.to_string() => Ok(true),
+        _ => Err(error(
+            "finite hosted Cue mode belongs to another installation",
+        )),
+    }
+}
+
+pub(crate) fn hosted_cue_bearer_status(home: &Path) -> io::Result<Value> {
+    let home = private_dir(home)?;
+    let owner = read_hosted_owner(&home)?.ok_or_else(|| error("no managed hosted Unix owner"))?;
+    let (installation, _) = hosted_scope(&home, &owner)?;
+    if !hosted_cue_mode(&home, installation)? {
+        return Ok(json!({"state":"legacy"}));
+    }
+    let scope = crate::hosted_mailbox_bearer::Scope::new(&home, installation);
+    let _guard = scope.lock(false)?;
+    Ok(scope.status())
+}
+
+pub(crate) fn hosted_cue_bearer(home: &Path, rotate: Option<(u64, &Path)>) -> io::Result<()> {
+    let home = private_dir(home)?;
+    let dir = private_dir(&home.join(DIRECTORY))?;
+    let _owner_guard = lock(&dir)?;
+    let owner = read_hosted_owner(&home)?.ok_or_else(|| error("no managed hosted Unix owner"))?;
+    let (installation, descriptor) = hosted_scope(&home, &owner)?;
+    let state_path = dir.join(STATE);
+    let mut state: Registry = read_json(&state_path)?;
+    if !scope_matches(&state, &descriptor)
+        || !descriptor.mcp_paths.iter().any(|path| path == "/cue/mcp")
+        || !state
+            .profiles
+            .get("cue")
+            .is_some_and(|row| row.phase == Phase::Active && row.source.route == "/cue/mcp")
+    {
+        return Err(error("managed hosted Cue route is unavailable"));
+    }
+    // A previous binary does not enforce finite grants. Require the owned
+    // managed job to be stopped before the first activation, and hold the
+    // existing queue lease so another application hub cannot enter.
+    let _first_activation_queue = if rotate.is_some()
+        && state.finite_cue_installation.as_deref() != Some(&owner.installation)
+    {
+        let (directory, executable, installation_paths) = system_jobs()?;
+        let jobs = Jobs {
+            service: &SystemLaunchctl,
+            directory: &directory,
+            executable: &executable,
+            installation: Some(&installation_paths),
+        };
+        if managed_hub_job(&jobs, &home)?.loaded {
+            return Err(error(
+                "stop the owned managed hub before enabling finite hosted Cue Bearers",
+            ));
+        }
+        Some(crate::local_http::lock_hub_queue(&home.join(QUEUE))?)
+    } else {
+        None
+    };
+    let scope = crate::hosted_mailbox_bearer::Scope::new(&home, installation);
+    let _grant_guard = scope.lock(true)?;
+    if let Some((seconds, path)) = rotate {
+        // Once opted in, an interrupted rotation or deleted grant fails closed.
+        scope.rotate_locked(seconds, path, || {
+            if state.finite_cue_installation.as_deref() != Some(&owner.installation) {
+                state.finite_cue_installation = Some(owner.installation.clone());
+                write_json(&state_path, &state)?;
+            }
+            Ok(())
+        })
+    } else if state.finite_cue_installation.as_deref() == Some(&owner.installation) {
+        scope.revoke_locked()
+    } else {
+        Err(error("finite hosted Cue Bearer mode is not enabled"))
+    }
+}
+
+fn hosted_scope(
+    home: &Path,
+    owner: &HostedOwner,
+) -> io::Result<(uuid::Uuid, crate::hosted_registration::OriginDescriptor)> {
+    let (id, scope) = crate::hosted_enrollment::staged_unix(home)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| error("hosted Unix enrollment is not staged"))?;
+    if id.to_string() != owner.installation {
+        return Err(error("hosted ownership does not match the installation"));
+    }
+    Ok((id, scope))
+}
+
+fn scope_matches(state: &Registry, scope: &crate::hosted_registration::OriginDescriptor) -> bool {
+    let active = active_routes(state);
+    state.port == scope.hub_port && scope.mcp_paths.iter().all(|route| active.contains(route))
+}
+
+fn hosted_job(jobs: &Jobs<'_>, home: &Path) -> io::Result<Job> {
+    Job::inspect(
+        jobs,
+        HOSTED_LABEL,
+        vec![
+            "serve-hosted-connector".into(),
+            "--home".into(),
+            path_arg(home)?,
+        ],
+    )
+}
+
+fn managed_hub_job(jobs: &Jobs<'_>, home: &Path) -> io::Result<Job> {
+    Job::inspect(
+        jobs,
+        HUB_LABEL,
+        vec!["serve-managed".into(), "--home".into(), path_arg(home)?],
+    )
+}
+
+fn stop_hosted(jobs: &Jobs<'_>, home: &Path, owner: &HostedOwner) -> io::Result<()> {
+    if owner.binary != jobs.executable {
+        return Err(error("hosted LaunchAgent belongs to another installation"));
+    }
+    let job = hosted_job(jobs, home)?;
+    if job.loaded {
+        jobs.service.bootout(HOSTED_LABEL)?;
+    }
+    if job.exists {
+        fs::remove_file(job.path)?;
+        File::open(jobs.directory)?.sync_all()?;
+    }
+    let dir = home.join(DIRECTORY);
+    fs::remove_file(dir.join(HOSTED_OWNER))?;
+    File::open(dir)?.sync_all()
+}
+
 fn relay_config(state: &Registry) -> io::Result<RelayConfig> {
     state
         .profiles
@@ -583,6 +760,7 @@ fn change(
 ) -> io::Result<()> {
     let dir = home.join(DIRECTORY);
     let queue = home.join(QUEUE);
+    let stdio_changed = next.local_stdio && !current.local_stdio;
     let want_relay = next
         .profiles
         .values()
@@ -626,7 +804,13 @@ fn change(
     } else {
         None
     };
-    if phase_changed && hub.loaded {
+    if next.profiles[name].phase == Phase::Retired
+        && let Some(owner) = read_hosted_owner(home)?
+        && !hosted_scope(home, &owner).is_ok_and(|(_, scope)| scope_matches(&next, &scope))
+    {
+        stop_hosted(jobs, home, &owner)?;
+    }
+    if (phase_changed || stdio_changed) && hub.loaded {
         jobs.service.bootout(HUB_LABEL)?;
     }
     let transition = (|| {
@@ -657,26 +841,36 @@ fn change(
             }
             write_json(&dir.join(STATE), &next)?;
         }
+        if stdio_changed && !phase_changed {
+            write_json(&dir.join(STATE), &next)?;
+        }
         let routes = active_routes(&next);
         if !routes.is_empty() {
-            if !hub.loaded || phase_changed {
+            if !hub.loaded || phase_changed || stdio_changed {
                 hub.start(jobs)?;
             }
             jobs.service.hub_ready(&hub.path, next.port, &routes)?;
+            if next.local_stdio {
+                jobs.service.stdio_ready(&hub.path, home, &routes)?;
+            }
         }
         Ok::<_, io::Error>(())
     })();
     if let Err(err) = transition {
-        if let Some(registration_before) = registration_before {
+        if registration_before.is_some() || (stdio_changed && !phase_changed) {
             // An unsuccessful start leaves the attempted profile staged. If a fresh
             // storage identity was allocated, the same staged Bearer can still retry it.
             // The former generation remains retired and the relay map is still unchanged.
+            // Stdio-only activation reuses this rollback so an unloaded prior hub is
+            // not started and a loaded prior hub is restored.
             if jobs.service.loaded(HUB_LABEL, &hub.path)? {
                 jobs.service.bootout(HUB_LABEL)?;
             }
             write_json(&dir.join(STATE), current)?;
-            if fs::read(&current.registration)? != registration_before {
-                private_file::replace_private(&current.registration, &registration_before)?;
+            if let Some(registration_before) = registration_before.as_ref()
+                && fs::read(&current.registration)? != *registration_before
+            {
+                private_file::replace_private(&current.registration, registration_before)?;
             }
             if hub.loaded && !active_routes(current).is_empty() {
                 hub.start(jobs)?;
@@ -709,6 +903,9 @@ fn change(
         return Err(err);
     }
 
+    if stdio_changed && !phase_changed {
+        return Ok(());
+    }
     let current_relay = relay_config(&next)?;
     if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
         write_json(&relay_path, &current_relay)?;
@@ -816,6 +1013,10 @@ impl InstallPaths {
 }
 
 fn system_jobs() -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
+    system_jobs_for(&std::env::current_exe()?)
+}
+
+fn system_jobs_for(binary: &Path) -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -832,10 +1033,162 @@ fn system_jobs() -> io::Result<(PathBuf, PathBuf, InstallPaths)> {
             .filter(|root| root.is_absolute())
             .collect(),
     };
-    let executable = installation.require_executable(&std::env::current_exe()?)?;
+    let executable = installation.require_executable(binary)?;
     Ok((directory, executable, installation))
 }
 
+pub(crate) fn schedule_hosted_unix(home: &Path) -> io::Result<bool> {
+    let dir = home.join(DIRECTORY);
+    if absent(&dir)? {
+        return Ok(false);
+    }
+    let dir = private_dir(&dir)?;
+    let state = dir.join(STATE);
+    if absent(&state)? {
+        return Ok(false);
+    }
+    let Some((_, scope)) = crate::hosted_enrollment::staged_unix(home).map_err(io::Error::other)?
+    else {
+        return Ok(false);
+    };
+    if !scope_matches(&read_json(&state)?, &scope) {
+        return Ok(false);
+    }
+    let (directory, executable, installation) = system_jobs()?;
+    let cloudflared = crate::hosted_connector::preflight(None).map_err(io::Error::other)?;
+    let cloudflared = installation.require_executable(&cloudflared)?;
+    let jobs = Jobs {
+        service: &SystemLaunchctl,
+        directory: &directory,
+        executable: &executable,
+        installation: Some(&installation),
+    };
+    schedule_hosted_with(&jobs, home, &cloudflared)
+}
+
+fn schedule_hosted_with(jobs: &Jobs<'_>, home: &Path, cloudflared: &Path) -> io::Result<bool> {
+    let dir = private_dir(&home.join(DIRECTORY))?;
+    let _guard = lock(&dir)?;
+    let state: Registry = read_json(&dir.join(STATE))?;
+    let Some((id, scope)) =
+        crate::hosted_enrollment::staged_unix(home).map_err(io::Error::other)?
+    else {
+        return Ok(false);
+    };
+    if !scope_matches(&state, &scope) {
+        return Ok(false);
+    }
+    let owner = HostedOwner {
+        installation: id.to_string(),
+        binary: jobs.executable.into(),
+        cloudflared: cloudflared.into(),
+    };
+    let previous = read_hosted_owner(home)?;
+    if previous.as_ref().is_some_and(|old| old != &owner) {
+        return Err(error("hosted LaunchAgent belongs to another installation"));
+    }
+    let hosted = hosted_job(jobs, home)?;
+    if previous.is_none() && hosted.exists {
+        return Err(error(
+            "hosted LaunchAgent is not owned by the selected home",
+        ));
+    }
+    let hub = managed_hub_job(jobs, home)?;
+    let origin = scope.origin().map_err(io::Error::other)?;
+    let socket = origin.socket_path();
+    let was_hosted = previous.is_some();
+    if !was_hosted {
+        write_json(&dir.join(HOSTED_OWNER), &owner)?;
+    }
+    let readiness = || {
+        jobs.service.hosted_ready(
+            &hub.path,
+            Path::new(&socket),
+            scope.hub_port,
+            &scope.mcp_paths,
+        )
+    };
+    if !hub.loaded {
+        hub.start(jobs)?;
+    } else if !was_hosted || (!hosted.loaded && readiness().is_err()) {
+        // An interrupted first apply may have saved the receipt before restarting
+        // the former TCP-only hub. Reload only the verified hub job.
+        jobs.service.bootout(HUB_LABEL)?;
+        hub.start(jobs)?;
+    }
+    readiness()?;
+    if !hosted.loaded {
+        hosted.start(jobs)?;
+    }
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn serve_hosted_connector(home: &Path) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let home = private_dir(home)?;
+    let dir = private_dir(&home.join(DIRECTORY))?;
+    let owner = read_hosted_owner(&home)?
+        .ok_or_else(|| error("hosted LaunchAgent is not owned by this home"))?;
+    let (id, scope) = hosted_scope(&home, &owner)?;
+    let (directory, executable, installation) = system_jobs()?;
+    if owner.binary != executable
+        || owner.cloudflared != installation.require_executable(&owner.cloudflared)?
+    {
+        return Err(error("hosted LaunchAgent executable changed"));
+    }
+    let jobs = Jobs {
+        service: &SystemLaunchctl,
+        directory: &directory,
+        executable: &executable,
+        installation: Some(&installation),
+    };
+    let hosted = hosted_job(&jobs, &home)?;
+    if !hosted.loaded
+        || !SystemLaunchctl::owns_running_job(HOSTED_LABEL, &hosted.path, std::process::id())?
+    {
+        return Err(error(
+            "connector process is not the owned hosted LaunchAgent",
+        ));
+    }
+    let hub = managed_hub_job(&jobs, &home)?;
+    if !hub.loaded {
+        return Err(error("owned managed hub is not loaded"));
+    }
+    let origin = scope.origin().map_err(io::Error::other)?;
+    let socket = crate::hosted_origin_local::attest_system_path(&origin, id)?;
+    jobs.service
+        .hosted_ready(&hub.path, &socket, scope.hub_port, &scope.mcp_paths)?;
+    // An in-progress retirement still owns this lock. Do not start within it.
+    let _owner = lock(&dir)?;
+    if read_hosted_owner(&home)?.as_ref() != Some(&owner)
+        || !scope_matches(&read_json(&dir.join(STATE))?, &scope)
+        || hosted_scope(&home, &owner)? != (id, scope)
+    {
+        return Err(error("hosted LaunchAgent scope changed"));
+    }
+    Err(std::process::Command::new(&owner.cloudflared)
+        .args(["tunnel", "run", "--token-file"])
+        .arg(home.join(crate::hosted_connector::TOKEN_FILE))
+        .exec())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn serve_hosted_connector(_: &Path) -> io::Result<()> {
+    Err(error("999K hosted LaunchAgents require macOS"))
+}
+
+/// Return the existing managed hub queue path without opening it.
+#[allow(dead_code)]
+pub(crate) fn managed_hub_queue(home: &Path) -> Option<PathBuf> {
+    let queue = home.join("pigeonmq-cloud-queue.sqlite3");
+    let state = home.join(DIRECTORY).join(STATE);
+    if queue.is_file() && state.is_file() {
+        Some(queue)
+    } else {
+        None
+    }
+}
 pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result<Value> {
     if options.apply {
         let (directory, executable, installation) = system_jobs()?;
@@ -849,6 +1202,141 @@ pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result
     } else {
         init_with(home, name, options, None)
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn codex_preview_stdio() -> io::Result<()> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+
+    const MARKER: &[u8] = b"pigeonmq-codex-local-preview-v1\n";
+    const MAILBOX: &str = "cue";
+
+    fn digest(reader: &mut impl Read) -> io::Result<[u8; 32]> {
+        let mut hash = Sha256::new();
+        let mut bytes = [0; 64 * 1024];
+        loop {
+            let count = reader.read(&mut bytes)?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&bytes[..count]);
+        }
+        Ok(hash.finalize().into())
+    }
+
+    let user = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| error("Codex preview needs an absolute user home"))?
+        .canonicalize()?;
+    let prefix = private_dir(&user.join(".pmq-codex-preview"))?;
+    let mut marker = Vec::new();
+    open_private(&prefix.join("enable"))?
+        .take((MARKER.len() + 1) as u64)
+        .read_to_end(&mut marker)?;
+    if marker != MARKER {
+        return Err(error(
+            "enable this Codex preview in a disposable macOS account",
+        ));
+    }
+    // Codex can open a discovery connection while the thread connection starts.
+    let guard = lock_until(&prefix, std::time::Duration::from_secs(8))?;
+    let home = prefix.join("hub");
+    let durable = prefix.join("pigeonmq");
+    let running = std::env::current_exe()?;
+    let expected = digest(&mut File::open(&running)?)?;
+    if absent(&durable)? {
+        let temporary = prefix.join(format!(".binary-{}", uuid::Uuid::new_v4()));
+        let stage = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .mode(0o700)
+                .open(&temporary)?;
+            io::copy(&mut File::open(&running)?, &mut file)?;
+            file.flush()?;
+            file.sync_all()?;
+            if digest(&mut open_private(&temporary)?)? != expected {
+                return Err(error("Codex preview binary changed during installation"));
+            }
+            crate::lifecycle_service::publish_new(&temporary, &durable)?;
+            Ok(())
+        })();
+        // Only remove this attempt's unique staging file.
+        if stage.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        stage?;
+        File::open(&prefix)?.sync_all()?;
+    }
+    if digest(&mut open_private(&durable)?)? != expected {
+        return Err(error("a different Codex preview binary is installed"));
+    }
+    let (directory, executable, installation) = system_jobs_for(&durable)?;
+    let jobs = Jobs {
+        service: &SystemLaunchctl,
+        directory: &directory,
+        executable: &executable,
+        installation: Some(&installation),
+    };
+    managed_hub_job(&jobs, &home)?;
+    for label in [HOSTED_LABEL, RELAY_LABEL] {
+        let path = directory.join(format!("{label}.plist"));
+        if !absent(&path)? || jobs.service.loaded(label, &path)? {
+            return Err(error(
+                "an existing hosted or relay job conflicts with the preview",
+            ));
+        }
+    }
+    mkdir_private(&home)?;
+    let credentials = home.join(DIRECTORY).join("initial-cue");
+    let state_path = home.join(DIRECTORY).join(STATE);
+    if !absent(&state_path)? {
+        let state: Registry = read_json(&state_path)?;
+        if state.registration != home.join(REGISTRATION)
+            || state.relay_command.is_some()
+            || state.profiles.len() != 1
+            || !state.profiles.get(MAILBOX).is_some_and(|profile| {
+                profile.provisioned
+                    && profile.phase != Phase::Retired
+                    && profile.email_recipient.is_none()
+                    && profile.source.route == "/cue/mcp"
+                    && profile
+                        .token_file
+                        .as_deref()
+                        .is_some_and(|token| token.parent() == Some(&credentials))
+            })
+        {
+            return Err(error("Codex preview refuses an existing foreign hub home"));
+        }
+    }
+    let result = init_with(
+        &home,
+        MAILBOX,
+        &Options {
+            profiles_file: None,
+            email_recipient: None,
+            relay_command: None,
+            port: None,
+            local_stdio: true,
+            apply: true,
+        },
+        Some(&jobs),
+    )?;
+    let bearer = result["token_file"]
+        .as_str()
+        .map(Path::new)
+        .filter(|path| path.parent() == Some(&credentials))
+        .ok_or_else(|| error("Codex preview mailbox bearer is unavailable"))?;
+    drop(guard);
+    crate::stdio_mcp::run(&home, MAILBOX, bearer, None)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn codex_preview_stdio() -> io::Result<()> {
+    Err(error("Codex preview requires macOS"))
 }
 
 fn init_with(
@@ -899,10 +1387,17 @@ fn init_with(
             registration,
             relay_command: None,
             profiles: BTreeMap::new(),
+            local_stdio: false,
+            finite_cue_installation: None,
         }
     } else {
         read_json::<Registry>(&state_path)?
     };
+    if options.local_stdio && !options.apply {
+        return Err(error(
+            "enable managed stdio with --apply on an active profile in this home",
+        ));
+    }
     if options.port.is_some_and(|value| value != state.port)
         || options.relay_command.is_some_and(|value| {
             state
@@ -1035,6 +1530,7 @@ fn init_with(
     }
     if let Some(jobs) = jobs {
         let mut next = state.clone();
+        next.local_stdio |= options.local_stdio;
         let row = next
             .profiles
             .get_mut(name)
@@ -1118,13 +1614,23 @@ pub(crate) fn serve(home: &Path) -> io::Result<()> {
     let state: Registry = read_json(&home.join(DIRECTORY).join(STATE))?;
     let queue = home.join(QUEUE);
     let ports = state.port;
+    let hosted = (|| {
+        let owner = read_hosted_owner(&home).ok()??;
+        let (id, scope) = hosted_scope(&home, &owner).ok()?;
+        scope_matches(&state, &scope).then_some((id, scope))
+    })();
+    let local_stdio = state.local_stdio && !active_routes(&state).is_empty();
     let routes = state
         .profiles
         .into_iter()
         .filter(|(_, p)| p.phase == Phase::Active)
         .map(|(name, profile)| profile.binding(&name, &state.registration))
         .collect::<io::Result<Vec<_>>>()?;
-    crate::local_http::serve_managed_hub(queue, routes, ports)
+    if let Some((id, scope)) = hosted {
+        crate::local_http::serve_managed_hosted_hub(queue, routes, ports, id, &scope, local_stdio)
+    } else {
+        crate::local_http::serve_managed_hub(queue, routes, ports, local_stdio)
+    }
 }
 
 #[cfg(test)]

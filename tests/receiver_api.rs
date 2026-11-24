@@ -1,4 +1,4 @@
-use pigeonmq::{
+use radio999k::{
     Delivery, Envelope, Error, Message, Queue,
     receiver_api::{self, Action, Request},
     runtime_admission::Record,
@@ -45,7 +45,7 @@ impl Fixture {
             action,
         }
     }
-    fn run(&self, action: Action) -> pigeonmq::Result<Value> {
+    fn run(&self, action: Action) -> radio999k::Result<Value> {
         receiver_api::execute(
             &self.db,
             &self.registry,
@@ -110,7 +110,12 @@ impl Fixture {
         })
         .unwrap()
     }
-    fn complete(&self, d: &Delivery, body: Option<&str>, failure: bool) -> pigeonmq::Result<Value> {
+    fn complete(
+        &self,
+        d: &Delivery,
+        body: Option<&str>,
+        failure: bool,
+    ) -> radio999k::Result<Value> {
         self.run(Action::Complete {
             message_id: d.message.id.clone(),
             receipt: d.receipt.clone(),

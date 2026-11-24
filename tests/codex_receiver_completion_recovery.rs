@@ -1,7 +1,7 @@
 //! Receiver-level completion failure recovery, not a live native transport test.
 //! Synthetic native responses are supplied once; SQLite failure and restart must
 //! preserve the final result without producing another native-admission request.
-use pigeonmq::{Envelope, Queue, adapters::codex::receiver::Binding};
+use radio999k::{Envelope, Queue, adapters::codex::receiver::Binding};
 mod receiver_support;
 use receiver_support::open;
 use rusqlite::Connection;

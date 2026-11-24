@@ -5,10 +5,12 @@ use std::{ffi::OsStr, io::Read, path::Path};
 mod providers;
 pub(crate) use providers::Provider;
 
-const TUNNEL_ENV: &str = "PIGEONMQ_TUNNEL";
-const PUBLIC_URL_ENV: &str = "PIGEONMQ_PUBLIC_URL";
+const TUNNEL_ENV: &str = "RADIO999K_TUNNEL";
+const LEGACY_TUNNEL_ENV: &str = "PIGEONMQ_TUNNEL";
+const PUBLIC_URL_ENV: &str = "RADIO999K_PUBLIC_URL";
+const LEGACY_PUBLIC_URL_ENV: &str = "PIGEONMQ_PUBLIC_URL";
 const MAX_ENV_FILE_BYTES: usize = 4096;
-pub(crate) const TUNNEL_MODE_REQUIRED: &str = "tunnel_mode_required. Set PIGEONMQ_TUNNEL=external and PIGEONMQ_PUBLIC_URL for a reverse tunnel on your own domain, for example Cloudflare Tunnel. This is the recommended option. For testing without a domain, set PIGEONMQ_TUNNEL=tunnl. tunnl.gg can read your traffic. Its free URLs expire. For loopback testing only, pass --local-only.";
+pub(crate) const TUNNEL_MODE_REQUIRED: &str = "tunnel_mode_required. Set RADIO999K_TUNNEL=external and RADIO999K_PUBLIC_URL for a reverse tunnel on your own domain, for example Cloudflare Tunnel. This is the recommended option. For testing without a domain, set RADIO999K_TUNNEL=tunnl. tunnl.gg can read your traffic. Its free URLs expire. For loopback testing only, pass --local-only.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Transport {
@@ -27,14 +29,18 @@ impl Transport {
             return Self::from_env_file(path);
         }
         Self::from_config(
-            std::env::var_os(TUNNEL_ENV).as_deref(),
-            std::env::var_os(PUBLIC_URL_ENV).as_deref(),
+            std::env::var_os(TUNNEL_ENV)
+                .or_else(|| std::env::var_os(LEGACY_TUNNEL_ENV))
+                .as_deref(),
+            std::env::var_os(PUBLIC_URL_ENV)
+                .or_else(|| std::env::var_os(LEGACY_PUBLIC_URL_ENV))
+                .as_deref(),
         )
     }
 
     fn from_env_file(path: &Path) -> Result<Self, &'static str> {
         let mut contents = String::new();
-        pigeonmq::private_file::open_private_file(path)
+        radio999k::private_file::open_private_file(path)
             .map_err(|_| "tunnel_env_file_unavailable")?
             .take(MAX_ENV_FILE_BYTES as u64 + 1)
             .read_to_string(&mut contents)
@@ -50,8 +56,8 @@ impl Transport {
             }
             let (key, value) = line.split_once('=').ok_or("invalid_tunnel_env_file")?;
             let slot = match key.trim() {
-                TUNNEL_ENV => &mut mode,
-                PUBLIC_URL_ENV => &mut public_url,
+                TUNNEL_ENV | LEGACY_TUNNEL_ENV => &mut mode,
+                PUBLIC_URL_ENV | LEGACY_PUBLIC_URL_ENV => &mut public_url,
                 _ => return Err("invalid_tunnel_env_file"),
             };
             let value = value.trim();
@@ -205,6 +211,14 @@ mod tests {
             (
                 "PIGEONMQ_TUNNEL=tunnl\n",
                 Ok(Transport::Managed(Provider::TUNNL)),
+            ),
+            (
+                "RADIO999K_TUNNEL=external\nRADIO999K_PUBLIC_URL=https://fixture.example\n",
+                Ok(Transport::External("https://fixture.example".into())),
+            ),
+            (
+                "RADIO999K_TUNNEL=external\nPIGEONMQ_TUNNEL=tunnl\n",
+                Err("invalid_tunnel_env_file"),
             ),
             (
                 "PIGEONMQ_PUBLIC_URL=https://pigeon.example\n",

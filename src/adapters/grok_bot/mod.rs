@@ -3,8 +3,8 @@ use super::{
     transport::Input,
 };
 use crate::mcp_sdk;
-use pigeonmq::{Error, Queue};
-use pigeonmq::{
+use radio999k::{Error, Queue};
+use radio999k::{
     mailbox_tools::registered_mailbox_tools,
     mcp_request::{
         accepted_cancellation, check_streamable_mailbox_body, registered_mailbox_fields,
@@ -103,7 +103,7 @@ impl GrokState {
         operation: policy::GrokOperation,
         active: &ActiveGrokRequest<'_>,
         deadline: Instant,
-    ) -> Result<pigeonmq::grok_mailbox::GrokScope, Fault> {
+    ) -> Result<radio999k::grok_mailbox::GrokScope, Fault> {
         self.check_open(active, deadline)?;
         policy::authenticate_grok(&self.policy, authorization)?.scope(operation)
     }
@@ -128,7 +128,7 @@ impl GrokState {
         authorization: &[Vec<u8>],
         active: &ActiveGrokRequest<'_>,
         deadline: Instant,
-    ) -> Result<pigeonmq::grok_mailbox::GrokScope, Fault> {
+    ) -> Result<radio999k::grok_mailbox::GrokScope, Fault> {
         // Reload at each checkpoint, not once per request or per individual grant.
         self.check_open(active, deadline)?;
         let principal = policy::authenticate_grok(&self.policy, authorization)?;
@@ -139,7 +139,7 @@ impl GrokState {
     }
 }
 
-fn grok_fault(error: pigeonmq::grok_mailbox::MailboxError) -> Fault {
+fn grok_fault(error: radio999k::grok_mailbox::MailboxError) -> Fault {
     let status = match error.reason {
         "forbidden" => 403,
         "unauthorized" | "credential_expired" => 401,
@@ -174,7 +174,7 @@ pub(super) fn dispatch_grok(
     let request = mcp_sdk::streamable_request(&input.path, &input.sdk_headers, body)?;
     let mut active = None;
     let response = mcp_sdk::dispatch_streamable(
-        "pigeonmq-cloud-grok-bot",
+        "999k-grok-bot",
         registered_mailbox_tools("Grok Bot", "grok-bot"),
         request,
         authority,
@@ -217,7 +217,7 @@ fn call_grok_tool(
     arguments: &Value,
 ) -> Result<Value, Fault> {
     Ok(match name {
-        "pigeonmq_inbox" => inbox_page::list_with(
+        "radio999k_inbox" => inbox_page::list_with(
             &state.db,
             "grok-bot",
             arguments,
@@ -228,14 +228,14 @@ fn call_grok_tool(
                     .map(|scope| scope.allowed_senders)
             },
             || {
-                if pigeonmq::grok_mailbox::is_prepared(&state.db).map_err(|e| (503, e.reason))? {
+                if radio999k::grok_mailbox::is_prepared(&state.db).map_err(|e| (503, e.reason))? {
                     Ok(())
                 } else {
                     Err((503, "mailbox_not_prepared"))
                 }
             },
             |id, allowed| {
-                use pigeonmq::grok_mailbox::{GrokScope, read};
+                use radio999k::grok_mailbox::{GrokScope, read};
                 match read(
                     &state.db,
                     id,
@@ -256,13 +256,13 @@ fn call_grok_tool(
                 }
             },
         )?,
-        "pigeonmq_recipients" => {
+        "radio999k_recipients" => {
             registered_mailbox_fields(arguments, &[], &[])?;
             let scope =
                 state.scope(authorization, policy::GrokOperation::Send, active, deadline)?;
             json!({"recipients":scope.allowed_senders,"connection_status":"unknown"})
         }
-        "pigeonmq_confirm_terminal" => {
+        "radio999k_confirm_terminal" => {
             let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             if message_id.trim().is_empty() || message_id.len() > 128 {
@@ -280,7 +280,7 @@ fn call_grok_tool(
                     Err((404, "not_found"))
                 }
             };
-            let observed = pigeonmq::grok_mailbox::read(&state.db, message_id, &confirm_scope()?)
+            let observed = radio999k::grok_mailbox::read(&state.db, message_id, &confirm_scope()?)
                 .map_err(|error| terminal_observation_fault(grok_fault(error)))?;
             if observed.in_reply_to.is_none() {
                 visible(&observed.sender)?;
@@ -299,10 +299,10 @@ fn call_grok_tool(
             })?;
             json!({"state":"acknowledged","message_id":message_id,"duplicate":duplicate})
         }
-        pigeonmq::mailbox_tools::READ_THREAD => pigeonmq::conversation::read_thread_tool(
+        radio999k::mailbox_tools::READ_THREAD => radio999k::conversation::read_thread_tool(
             &state.db,
             "grok-bot",
-            pigeonmq::grok_mailbox::MAX_TEXT as i64,
+            radio999k::grok_mailbox::MAX_TEXT as i64,
             arguments,
             || {
                 state
@@ -310,13 +310,13 @@ fn call_grok_tool(
                     .map(|s| s.allowed_senders)
             },
         )?,
-        "pigeonmq_read" => {
+        "radio999k_read" => {
             let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             let scope =
                 state.scope(authorization, policy::GrokOperation::Read, active, deadline)?;
             let observed =
-                pigeonmq::grok_mailbox::read(&state.db, message_id, &scope).map_err(grok_fault)?;
+                radio999k::grok_mailbox::read(&state.db, message_id, &scope).map_err(grok_fault)?;
             let current =
                 state.scope(authorization, policy::GrokOperation::Read, active, deadline)?;
             if !current.allowed_senders.contains(&observed.sender) {
@@ -324,7 +324,7 @@ fn call_grok_tool(
             }
             serde_json::to_value(observed).map_err(|_| (500, "serialization_failed"))?
         }
-        "pigeonmq_wait" => {
+        "radio999k_wait" => {
             let args = registered_mailbox_fields(arguments, &["timeout_ms"], &[])?;
             let timeout = args["timeout_ms"]
                 .as_u64()
@@ -353,7 +353,7 @@ fn call_grok_tool(
                     break json!({"state":"timeout","message":null});
                 }
                 let page =
-                    pigeonmq::grok_mailbox::scan_page(&state.db, &scope, after_seq, terminal)
+                    radio999k::grok_mailbox::scan_page(&state.db, &scope, after_seq, terminal)
                         .map_err(grok_fault)?;
                 let current =
                     state.scope(authorization, policy::GrokOperation::Wait, active, deadline)?;
@@ -366,7 +366,7 @@ fn call_grok_tool(
                     }
                     break json!({"state":"message","message":observed});
                 }
-                if page.scanned == pigeonmq::grok_mailbox::SCAN_PAGE_SIZE {
+                if page.scanned == radio999k::grok_mailbox::SCAN_PAGE_SIZE {
                     if timeout == 0 {
                         // Do not misreport an incomplete zero-wait scan as
                         // an empty mailbox. Use a bounded wait or read by ID.
@@ -389,11 +389,11 @@ fn call_grok_tool(
                 thread::sleep((until - now).min(Duration::from_millis(100)));
             }
         }
-        "pigeonmq_reply" => {
+        "radio999k_reply" => {
             let args = registered_mailbox_fields(arguments, &["message_id", "body"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             let body = args["body"].as_str().ok_or((400, "invalid_fields"))?;
-            let result = pigeonmq::grok_mailbox::reply(&state.db, message_id, body, || {
+            let result = radio999k::grok_mailbox::reply(&state.db, message_id, body, || {
                 state
                     .scope(
                         authorization,
@@ -401,15 +401,15 @@ fn call_grok_tool(
                         active,
                         deadline,
                     )
-                    .map_err(|(_, reason)| pigeonmq::grok_mailbox::MailboxError { reason })
+                    .map_err(|(_, reason)| radio999k::grok_mailbox::MailboxError { reason })
             })
             .map_err(grok_fault)?;
             serde_json::to_value(result).map_err(|_| (500, "serialization_failed"))?
         }
-        "pigeonmq_send" => super::send_registered(
+        "radio999k_send" => super::send_registered(
             &state.db,
             "grok-bot",
-            pigeonmq::grok_mailbox::MAX_TEXT as i64,
+            radio999k::grok_mailbox::MAX_TEXT as i64,
             arguments,
             || {
                 state
@@ -429,14 +429,14 @@ pub fn check_grok(db: &std::path::Path, policy: &std::path::Path) -> io::Result<
     auth::require_private_file(db).map_err(|_| io::Error::other("private database required"))?;
     policy::validate_grok(policy)
         .map_err(|(_, reason)| auth::local_policy_error(reason, "invalid Cloud Grok Bot policy"))?;
-    pigeonmq::grok_mailbox::is_prepared(db)
+    radio999k::grok_mailbox::is_prepared(db)
         .map_err(|_| io::Error::other("Cloud Grok Bot storage unavailable"))
 }
 
 /// Read scope for the wake notifier, with Wait as the fallback.
 pub(super) fn observation_scope(
     path: &std::path::Path,
-) -> Result<pigeonmq::grok_mailbox::GrokScope, Fault> {
+) -> Result<radio999k::grok_mailbox::GrokScope, Fault> {
     match policy::local_grok_scope(path, policy::GrokOperation::Read) {
         Err((403, "forbidden")) => policy::local_grok_scope(path, policy::GrokOperation::Wait),
         result => result,
@@ -449,7 +449,7 @@ pub fn prepare_grok(db: &std::path::Path, policy: &std::path::Path) -> io::Resul
     policy::local_grok_scope(policy, policy::GrokOperation::Reply).map_err(|(_, reason)| {
         auth::local_policy_error(reason, "Cloud Grok Bot preparation forbidden")
     })?;
-    pigeonmq::grok_mailbox::prepare(db)
+    radio999k::grok_mailbox::prepare(db)
         .map_err(|_| io::Error::other("Cloud Grok Bot preparation failed"))
 }
 #[cfg(all(test, unix))]
@@ -479,7 +479,7 @@ mod grok_authority_tests {
             authority,
             &input,
             body,
-            pigeonmq::mailbox_catalog::by_adapter(pigeonmq::mailbox_catalog::Adapter::Grok)
+            radio999k::mailbox_catalog::by_adapter(radio999k::mailbox_catalog::Adapter::Grok)
                 .body_limit(super::super::MAX_HEADERS),
         )
     }
@@ -490,7 +490,7 @@ mod grok_authority_tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let db = dir.path().join("queue.db");
         drop(Queue::open(&db).unwrap());
-        pigeonmq::grok_mailbox::prepare(&db).unwrap();
+        radio999k::grok_mailbox::prepare(&db).unwrap();
         let policy = dir.path().join("policy.json");
         let registry = dir.path().join("registration.json");
         private(
@@ -512,7 +512,7 @@ mod grok_authority_tests {
         let state = GrokState::new(db, policy, None);
         let cancel =
             br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"42"}}"#;
-        let wait = br#"{"jsonrpc":"2.0","id":"42","method":"tools/call","params":{"name":"pigeonmq_wait","arguments":{"timeout_ms":10000}}}"#;
+        let wait = br#"{"jsonrpc":"2.0","id":"42","method":"tools/call","params":{"name":"radio999k_wait","arguments":{"timeout_ms":10000}}}"#;
         let send = |token, headers, body| post(&state, token, headers, body);
         thread::scope(|scope| {
             let in_flight = scope.spawn(|| send("public-fixture", ACCEPT, wait));
@@ -557,7 +557,7 @@ mod grok_authority_tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let db = dir.path().join("queue.db");
         let mut queue = Queue::open(&db).unwrap();
-        pigeonmq::grok_mailbox::prepare(&db).unwrap();
+        radio999k::grok_mailbox::prepare(&db).unwrap();
         let registry = dir.path().join("registration.json");
         let mut entries = json!({"grok-bot":{"mailbox":"grok-bot","revoked":false},"hermes":{"mailbox":"hermes","revoked":false}});
         private(&registry, &entries);
@@ -619,16 +619,19 @@ mod grok_authority_tests {
         );
         assert_eq!(tool("unknown_tool", json!({}))["error"]["code"], -32602);
         assert_eq!(
-            tool("pigeonmq_read", json!({"message_id":8}))["error"]["code"],
+            tool("radio999k_read", json!({"message_id":8}))["error"]["code"],
             -32602
         );
         failed(
-            tool("pigeonmq_read", json!({"message_id":"missing-fixture"})),
+            tool("radio999k_read", json!({"message_id":"missing-fixture"})),
             "message_not_available",
         );
         let send = json!({"recipient":"hermes","body":"fixture","idempotency_key":"fixture-send"});
-        failed(tool("pigeonmq_send", send.clone()), "forbidden");
-        assert_eq!(call("pigeonmq_send", send.clone()), Err((403, "forbidden")));
+        failed(tool("radio999k_send", send.clone()), "forbidden");
+        assert_eq!(
+            call("radio999k_send", send.clone()),
+            Err((403, "forbidden"))
+        );
         assert!(
             queue
                 .receive("hermes", Duration::from_secs(1))
@@ -643,29 +646,29 @@ mod grok_authority_tests {
         );
         policy["operations"] = json!(["send", "read", "wait", "reply"]);
         private(&policy_path, &policy);
-        assert!(call("pigeonmq_send", send.clone()).is_ok());
+        assert!(call("radio999k_send", send.clone()).is_ok());
         failed(
             tool(
-                "pigeonmq_send",
+                "radio999k_send",
                 json!({"recipient":"hermes,unknown,hermes","body":"fixture","idempotency_key":"multi"}),
             ),
             "subset_recipient_not_authorized",
         );
         active.cancelled.store(true, Ordering::Release);
         assert_eq!(
-            call("pigeonmq_send", send.clone()),
+            call("radio999k_send", send.clone()),
             Err((499, "request_cancelled"))
         );
         active.cancelled.store(false, Ordering::Release);
 
         assert_eq!(
             call(
-                "pigeonmq_send",
+                "radio999k_send",
                 json!({"recipient":"hermes","body":"x","idempotency_key":"fixture-invalid","correlation_id":3})
             ),
             Err((400, "invalid_fields"))
         );
-        let envelope = |sender: &str, recipient: &str| pigeonmq::Envelope {
+        let envelope = |sender: &str, recipient: &str| radio999k::Envelope {
             sender: sender.into(),
             recipient: recipient.into(),
             body: "fixture".into(),
@@ -678,9 +681,9 @@ mod grok_authority_tests {
             .unwrap()
             .message
             .id;
-        assert!(call("pigeonmq_read", json!({"message_id":id})).is_ok());
+        assert!(call("radio999k_read", json!({"message_id":id})).is_ok());
         assert_eq!(
-            call("pigeonmq_wait", json!({"timeout_ms":0})).unwrap()["message"]["id"],
+            call("radio999k_wait", json!({"timeout_ms":0})).unwrap()["message"]["id"],
             id
         );
         let unknown = queue
@@ -688,10 +691,10 @@ mod grok_authority_tests {
             .unwrap()
             .message
             .id;
-        assert!(call("pigeonmq_read", json!({"message_id":unknown})).is_err());
+        assert!(call("radio999k_read", json!({"message_id":unknown})).is_err());
         let other = queue.send(envelope("hermes", "dot")).unwrap().message.id;
-        assert!(call("pigeonmq_read", json!({"message_id":other})).is_err());
-        let inbox = call("pigeonmq_inbox", json!({})).unwrap();
+        assert!(call("radio999k_read", json!({"message_id":other})).is_err());
+        let inbox = call("radio999k_inbox", json!({})).unwrap();
         let messages = inbox["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["id"], id);
@@ -700,37 +703,37 @@ mod grok_authority_tests {
         assert_eq!(inbox["metadata_only"], true);
         policy["operations"] = json!(["wait"]);
         private(&policy_path, &policy);
-        assert_eq!(call("pigeonmq_inbox", json!({})), Err((403, "forbidden")));
+        assert_eq!(call("radio999k_inbox", json!({})), Err((403, "forbidden")));
         policy["operations"] = json!(["send", "read", "wait", "reply"]);
         private(&policy_path, &policy);
-        let completion = call("pigeonmq_reply", json!({"message_id":id,"body":"reply"})).unwrap();
+        let completion = call("radio999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
         assert_eq!(completion["state"], "replied");
         assert_eq!(completion["duplicate"], false);
-        let replay = call("pigeonmq_reply", json!({"message_id":id,"body":"reply"})).unwrap();
+        let replay = call("radio999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
         assert_eq!(replay["duplicate"], true);
         assert_eq!(replay["reply_id"], completion["reply_id"]);
         failed(
             tool(
-                "pigeonmq_reply",
+                "radio999k_reply",
                 json!({"message_id":id,"body":"different reply"}),
             ),
             "reply_conflict",
         );
-        let replay = call("pigeonmq_reply", json!({"message_id":id,"body":"reply"})).unwrap();
+        let replay = call("radio999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
         assert_eq!(replay["reply_id"], completion["reply_id"]);
         entries["hermes"]["revoked"] = json!(true);
         private(&registry, &entries);
-        assert!(call("pigeonmq_read", json!({"message_id":id})).is_err());
-        assert!(call("pigeonmq_send", send).is_err());
-        assert!(call("pigeonmq_reply", json!({"message_id":id,"body":"reply"})).is_err());
+        assert!(call("radio999k_read", json!({"message_id":id})).is_err());
+        assert!(call("radio999k_send", send).is_err());
+        assert!(call("radio999k_reply", json!({"message_id":id,"body":"reply"})).is_err());
         assert_eq!(
-            call("pigeonmq_wait", json!({"timeout_ms":0})).unwrap()["state"],
+            call("radio999k_wait", json!({"timeout_ms":0})).unwrap()["state"],
             "timeout"
         );
         policy["enabled"] = json!(false);
         private(&policy_path, &policy);
         assert_eq!(
-            call("pigeonmq_read", json!({"message_id":id})),
+            call("radio999k_read", json!({"message_id":id})),
             Err((401, "unauthorized"))
         );
         policy["enabled"] = json!(true);
@@ -738,7 +741,7 @@ mod grok_authority_tests {
         private(&policy_path, &policy);
         assert_eq!(
             call(
-                "pigeonmq_send",
+                "radio999k_send",
                 json!({"recipient":"hermes","body":"x","idempotency_key":"fixture-expired"})
             ),
             Err((401, "unauthorized"))
@@ -747,10 +750,10 @@ mod grok_authority_tests {
         private(&policy_path, &policy);
         std::fs::write(&registry, "invalid").unwrap();
         assert_eq!(
-            call("pigeonmq_read", json!({"message_id":id})),
+            call("radio999k_read", json!({"message_id":id})),
             Err((503, "auth_unavailable"))
         );
         std::fs::remove_file(&registry).unwrap();
-        assert!(call("pigeonmq_wait", json!({"timeout_ms":0})).is_err());
+        assert!(call("radio999k_wait", json!({"timeout_ms":0})).is_err());
     }
 }

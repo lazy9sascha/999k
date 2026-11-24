@@ -45,6 +45,7 @@ fn fresh_options<'a>(
         email_recipient,
         relay_command,
         port: None,
+        local_stdio: false,
         apply: false,
     }
 }
@@ -215,7 +216,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let original = tool(
         &instinct_profile,
         &instinct_token,
-        "pigeonmq_send",
+        "radio999k_send",
         send.clone(),
     )
     .unwrap();
@@ -223,7 +224,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let observed = tool(
         &cue_profile,
         &cue_token,
-        "pigeonmq_read",
+        "radio999k_read",
         json!({"message_id":original_id}),
     )
     .unwrap();
@@ -231,7 +232,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let answer = tool(
         &cue_profile,
         &cue_token,
-        "pigeonmq_reply",
+        "radio999k_reply",
         json!({"message_id":original_id,"body":"synthetic terminal"}),
     )
     .unwrap();
@@ -239,7 +240,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let terminal = tool(
         &instinct_profile,
         &instinct_token,
-        "pigeonmq_read",
+        "radio999k_read",
         json!({"message_id":answer_id}),
     )
     .unwrap();
@@ -248,7 +249,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &instinct_profile,
             &instinct_token,
-            "pigeonmq_confirm_terminal",
+            "radio999k_confirm_terminal",
             json!({"message_id":answer_id}),
         )
         .unwrap()["state"],
@@ -276,7 +277,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &cue_profile,
             &cue_token,
-            "pigeonmq_read",
+            "radio999k_read",
             json!({"message_id":original_id}),
         )
         .is_err()
@@ -296,17 +297,17 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &current_cue,
             &cue_token,
-            "pigeonmq_read",
+            "radio999k_read",
             json!({"message_id":original_id}),
         ),
         Err(401)
     );
     for name in [
-        "pigeonmq_read",
-        "pigeonmq_reply",
-        "pigeonmq_confirm_terminal",
+        "radio999k_read",
+        "radio999k_reply",
+        "radio999k_confirm_terminal",
     ] {
-        let args = if name == "pigeonmq_reply" {
+        let args = if name == "radio999k_reply" {
             json!({"message_id":original_id,"body":"must be rejected"})
         } else {
             json!({"message_id":original_id})
@@ -317,7 +318,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &current_cue,
             &new_cue_token,
-            "pigeonmq_inbox",
+            "radio999k_inbox",
             json!({"scope":"all","query":"synthetic"}),
         )
         .unwrap()["messages"],
@@ -327,7 +328,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &current_cue,
             &new_cue_token,
-            "pigeonmq_read_thread",
+            "radio999k_read_thread",
             json!({"conversation_id":original_id}),
         )
         .unwrap()["messages"],
@@ -337,20 +338,20 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &current_cue,
             &new_cue_token,
-            "pigeonmq_wait",
+            "radio999k_wait",
             json!({"timeout_ms":0})
         )
         .unwrap()["message"],
         Value::Null
     );
-    let next = tool(&instinct_profile, &instinct_token, "pigeonmq_send", send).unwrap();
+    let next = tool(&instinct_profile, &instinct_token, "radio999k_send", send).unwrap();
     let next_id = next["message"]["id"].as_str().unwrap();
     assert_ne!(next_id, original_id);
     assert_eq!(
         tool(
             &current_cue,
             &new_cue_token,
-            "pigeonmq_read",
+            "radio999k_read",
             json!({"message_id":next_id})
         )
         .unwrap()["id"],

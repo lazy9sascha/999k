@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 - 2026-11-24
+
+- PigeonMQ is now **999K**. New examples use the `999k` executable and the `radio999k_*` mailbox tools.
+- The release packages target Apple Silicon Macs and Linux on x86-64 and ARM64.
+- Connect a local MCP client to the running hub with `999k stdio-mcp`. The hub authenticates the mailbox and uses the existing queue.
+- Enable the private socket on an existing managed macOS hub with `init <active-profile> --apply --stdio-socket`.
+- Set up Orca relay bots for existing peers with the separate 999K plugin and `init --orca`. Each bot's local tool sends to one peer and retrieves replies linked to its original request.
+
+## 0.1.6 (candidate)
+
+- Build native archives with both release executables and their checksums.
+- Generate direct, npm, and Homebrew installer candidates from the same pinned archives.
+- Add a loopback smoke test and an install-to-MCP Quickstart.
+- Native Linux and Intel Mac checks remain pending. Installer assets and wrappers are not published.
+
 ## 0.1.5
 
 - Run an existing private hub, its secure tunnels, and its email relay under [one macOS LaunchAgent](docs/launchd.md).

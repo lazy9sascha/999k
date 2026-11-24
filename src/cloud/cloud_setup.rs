@@ -3,7 +3,7 @@ use crate::{
     cloud_credentials::{self, App, KEYCHAIN_SERVICE},
     mailbox_startup::{QUEUE, REGISTRATION as REGISTRY},
 };
-use pigeonmq::mailbox_catalog as catalog;
+use radio999k::mailbox_catalog as catalog;
 use serde_json::{Value, json};
 use std::{
     env, fs,
@@ -49,7 +49,7 @@ fn create_private(path: &Path) -> io::Result<Option<fs::File>> {
 }
 
 fn check_private(path: &Path) -> io::Result<()> {
-    pigeonmq::private_file::open_private_file(path)
+    radio999k::private_file::open_private_file(path)
         .map(|_| ())
         .map_err(|_| io::Error::other("expected an owner-private hub file"))
 }
@@ -119,7 +119,7 @@ fn existing_dot_tunnel_inputs(dir: &Path) -> io::Result<bool> {
         || io::Error::other("Saved Dot tunnel inputs are incomplete or unsafe. No files changed.");
     let dir = require_home(dir).map_err(|_| invalid())?;
     let open =
-        |name| pigeonmq::private_file::open_private_file(&dir.join(name)).map_err(|_| invalid());
+        |name| radio999k::private_file::open_private_file(&dir.join(name)).map_err(|_| invalid());
     let settings: Value =
         serde_json::from_reader(open("settings.json")?.take(16385)).map_err(|_| invalid())?;
     if !settings["tunnel_id"].as_str().is_some_and(valid_tunnel_id)
@@ -140,7 +140,7 @@ fn prepare_dot(home: &Path) -> io::Result<()> {
     let queue = home.join(QUEUE);
     check_private(&queue)?;
     let registration = home.join(REGISTRY);
-    let registrations = pigeonmq::registration::load_registrations(&registration)
+    let registrations = radio999k::registration::load_registrations(&registration)
         .map_err(|(_, reason)| io::Error::other(reason))?;
     let policy = cloud_credentials::policy_path(home, App::Dot);
 
@@ -162,7 +162,7 @@ fn prepare_dot(home: &Path) -> io::Result<()> {
         }
         if !entries.contains_key("dot") {
             entries.insert("dot".into(), json!({"mailbox": "dot", "revoked": false}));
-            pigeonmq::private_file::replace_private(
+            radio999k::private_file::replace_private(
                 &registration,
                 &serde_json::to_vec_pretty(&entries)?,
             )?;
@@ -177,7 +177,7 @@ fn prepare_dot(home: &Path) -> io::Result<()> {
     }
 
     cloud_credentials::provision(&policy, App::Dot)?;
-    pigeonmq::dot_profile::check(&queue, &policy, true)?;
+    radio999k::dot_profile::check(&queue, &policy, true)?;
     let bearer = cloud_credentials::read_keychain_bearer(home, App::Dot)?;
     let bearer =
         std::str::from_utf8(&bearer).map_err(|_| io::Error::other("Invalid Cloud bearer"))?;
@@ -187,8 +187,8 @@ fn prepare_dot(home: &Path) -> io::Result<()> {
 #[cfg(any(target_os = "macos", test))]
 // NOTE: canonical Dot/OpenAI tunnel design; not wired yet, do not remove.
 fn probe_dot(queue: PathBuf, policy: PathBuf, bearer: &str) -> io::Result<()> {
-    let host = pigeonmq::dot_profile::DotBackend::host(queue, policy);
-    let context = pigeonmq::dot_mcp_host::Context::new(
+    let host = radio999k::dot_profile::DotBackend::host(queue, policy);
+    let context = radio999k::dot_mcp_host::Context::new(
         std::time::Instant::now() + std::time::Duration::from_secs(3),
         &|| false,
     );
@@ -219,7 +219,10 @@ fn probe_dot(queue: PathBuf, policy: PathBuf, bearer: &str) -> io::Result<()> {
         }
     });
     let initialize = dispatch(&serde_json::to_vec(&request)?)?;
-    if initialize["result"]["serverInfo"]["name"] != "pigeonmq-cloud-dot" {
+    if !matches!(
+        initialize["result"]["serverInfo"]["name"].as_str(),
+        Some("999k-dot" | "pigeonmq-cloud-dot")
+    ) {
         return Err(io::Error::other("Local Dot MCP initialize failed"));
     }
     let listed = dispatch(br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)?;
@@ -311,7 +314,7 @@ fn discover_at(home: &Path, app_roots: &[PathBuf]) -> io::Result<Vec<Value>> {
         };
         let settings = json!({
             "connector": {
-                "name": format!("pigeonmq-cloud-{}", app.slug()),
+                "name": format!("999k-{}", app.slug()),
                 "endpoint": {
                     "state_file": home.join("pigeonmq-cloud-state.json"),
                     "required_state": "connected",
@@ -354,7 +357,7 @@ fn discover_at(home: &Path, app_roots: &[PathBuf]) -> io::Result<Vec<Value>> {
     };
     let codex = json!({
         "connector": {
-            "name": "pigeonmq-cloud-codex",
+            "name": "999k-codex",
             "transport": "openai_secure_mcp_tunnel",
             "route": catalog::codex_http().route,
             "mailbox": catalog::codex().mailbox,
@@ -393,6 +396,70 @@ fn settings_result(
     )
 }
 
+pub(crate) fn resolve_home(home: Option<PathBuf>) -> PathBuf {
+    if let Some(h) = home {
+        return h;
+    }
+    if let Some(path) = ["RADIO999K_HOME", "PIGEONMQ_HOME"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .find(|path| path.is_absolute())
+    {
+        return path;
+    }
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let new_default = user_home.join(".999k");
+    let legacy_user_home = user_home.join(".pigeonmq");
+    for path in [&new_default, &legacy_user_home] {
+        // Treat invalid or inaccessible entries as present. Setup must surface a
+        // bad existing home rather than silently starting a second queue.
+        if !fs::symlink_metadata(path).is_err_and(|err| err.kind() == io::ErrorKind::NotFound) {
+            return path.to_path_buf();
+        }
+    }
+    // An unrelated project .local directory must not become a 999K home.
+    let legacy_checkout_home = Path::new(".local");
+    if legacy_checkout_home.exists() {
+        let staged = |name: &str| legacy_checkout_home.join(name).symlink_metadata().is_ok();
+        if [
+            QUEUE,
+            REGISTRY,
+            "pigeonmq-cloud-state.json",
+            ".pigeonmq-lifecycle",
+            "local-mailboxes",
+            "hosted-enrollment.json",
+            "hosted-connection.json",
+            "hosted-connector.token",
+            "pigeonmq-cloud-codex-header",
+            "grok-webhook-keychain",
+        ]
+        .into_iter()
+        .any(staged)
+            || catalog::http_profiles().iter().any(|profile| {
+                staged(profile.policy_file)
+                    || staged(&format!("pigeonmq-cloud-{}-header", profile.id))
+            })
+        {
+            return legacy_checkout_home.to_path_buf();
+        }
+    }
+    new_default
+}
+pub(crate) fn quickstart(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if home.exists() {
+        return Err("quickstart_home_exists".into());
+    }
+    let (home, _) = initialize_home(home)?;
+    let result = crate::reply_mailbox_setup::stage(&home, "instinct")?;
+    println!("quickstart_home={}", home.display());
+    println!("mcp_url=http://127.0.0.1:54843/instinct/mcp");
+    println!("token_file={}", result["token_file"]);
+    println!("next: 999k run --home {} --local-only", home.display());
+    Ok(())
+}
 pub(crate) fn initialize_home(path: &Path) -> Result<(PathBuf, bool), Box<dyn std::error::Error>> {
     match fs::DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => {}
@@ -402,11 +469,11 @@ pub(crate) fn initialize_home(path: &Path) -> Result<(PathBuf, bool), Box<dyn st
     let home = require_home(path)?;
     let queue = home.join(QUEUE);
     let created = if create_private(&queue)?.is_some() {
-        pigeonmq::Queue::open(&queue)?;
+        radio999k::Queue::open(&queue)?;
         true
     } else {
         check_private(&queue)?;
-        pigeonmq::Queue::open_existing(&queue)?;
+        radio999k::Queue::open_existing(&queue)?;
         false
     };
     Ok((home, created))
@@ -418,7 +485,7 @@ fn muse_settings(home: &Path, peer: &str) -> io::Result<PathBuf> {
     let policy = cloud_credentials::policy_path(home, App::Muse);
     let policy_exists = match policy.symlink_metadata() {
         Ok(_) => {
-            let file = pigeonmq::private_file::open_private_file(&policy)
+            let file = radio999k::private_file::open_private_file(&policy)
                 .map_err(|_| io::Error::other("Unsafe existing Muse policy"))?;
             let value: Value = serde_json::from_reader(file.take(16385))?;
             if value.get("senders").is_some() {
@@ -441,7 +508,7 @@ fn muse_settings(home: &Path, peer: &str) -> io::Result<PathBuf> {
     };
     let entries = match registry.symlink_metadata() {
         Ok(_) => {
-            pigeonmq::registration::load_registrations(&registry)
+            radio999k::registration::load_registrations(&registry)
                 .map_err(|(_, reason)| io::Error::other(reason))?
                 .0
         }
@@ -474,7 +541,7 @@ fn muse_settings(home: &Path, peer: &str) -> io::Result<PathBuf> {
                 .entry(name.to_owned())
                 .or_insert_with(|| json!({"mailbox": name, "revoked": false}));
         }
-        pigeonmq::private_file::replace_private(&registry, &serde_json::to_vec_pretty(&entries)?)?;
+        radio999k::private_file::replace_private(&registry, &serde_json::to_vec_pretty(&entries)?)?;
     }
     if !policy_exists {
         create_settings(
@@ -508,10 +575,10 @@ fn setup_muse_with(
     let custody = credential(&home, &policy)?;
     let home_arg = format!("'{}'", home.to_string_lossy().replace('\'', "'\\''"));
     if custody["local_available"] != true {
-        return Err(format!("Muse local_available=false. Import a surviving token:\n  pigeonmq credentials --home {home_arg} --app muse import --token-file /ABSOLUTE_PRIVATE_TOKEN_FILE\nIf no copy survives, explicitly reissue:\n  pigeonmq credentials --home {home_arg} --app muse reissue --token-file /ABSOLUTE_PRIVATE_NEW_TOKEN_FILE\nUpdate the connector after reissue.").into());
+        return Err(format!("Muse local_available=false. Import a surviving token:\n  999k credentials --home {home_arg} --app muse import --token-file /ABSOLUTE_PRIVATE_TOKEN_FILE\nIf no copy survives, explicitly reissue:\n  999k credentials --home {home_arg} --app muse reissue --token-file /ABSOLUTE_PRIVATE_NEW_TOKEN_FILE\nUpdate the connector after reissue.").into());
     }
     if custody["matches_policy"] != true {
-        return Err(format!("Muse matches_policy=false. Check local custody:\n  pigeonmq credentials --home {home_arg} --app muse status\nIf Keychain is authoritative, explicitly select its existing token:\n  pigeonmq credentials --home {home_arg} --app muse reissue --token-file /ABSOLUTE_PRIVATE_TOKEN_FILE --use-stored-token\nUpdate the connector after repair.").into());
+        return Err(format!("Muse matches_policy=false. Check local custody:\n  999k credentials --home {home_arg} --app muse status\nIf Keychain is authoritative, explicitly select its existing token:\n  999k credentials --home {home_arg} --app muse reissue --token-file /ABSOLUTE_PRIVATE_TOKEN_FILE --use-stored-token\nUpdate the connector after repair.").into());
     }
     crate::local_http::prepare_muse(&home.join(QUEUE), &policy)?;
     if !crate::local_http::check_muse(&home.join(QUEUE), &policy)? {
@@ -546,7 +613,7 @@ pub(crate) fn setup_muse(path: &Path, peer: &str) -> Result<(), Box<dyn std::err
 }
 
 fn grok_registration_snapshot(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    use pigeonmq::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
+    use radio999k::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
     use std::io::Read;
 
     match path.symlink_metadata() {
@@ -566,7 +633,7 @@ fn grok_registration_snapshot(path: &Path) -> io::Result<Option<Vec<u8>>> {
 }
 
 fn setup_grok_config(path: &Path, token_sha256: &str) -> io::Result<Value> {
-    use pigeonmq::{private_file, registration::Registrations};
+    use radio999k::{private_file, registration::Registrations};
 
     if token_sha256.len() != 64 || !token_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(io::Error::other(
@@ -601,7 +668,7 @@ fn setup_grok_config(path: &Path, token_sha256: &str) -> io::Result<Value> {
     let update = if registration_created {
         entries.insert(
             grok.id.into(),
-            pigeonmq::registration::RegistrationEntry {
+            radio999k::registration::RegistrationEntry {
                 mailbox: grok.id.into(),
                 revoked: false,
             },
@@ -654,7 +721,7 @@ fn setup_grok_config(path: &Path, token_sha256: &str) -> io::Result<Value> {
             private_file::replace_private(&registration, &bytes)?;
         }
     }
-    pigeonmq::registration::validate_registration(&registration, grok.id, grok.id)
+    radio999k::registration::validate_registration(&registration, grok.id, grok.id)
         .map_err(|(_, reason)| io::Error::other(reason))?;
     Ok(
         json!({"state":"grok_configured_local_only", "policy":policy, "registration":registration,
@@ -691,6 +758,10 @@ pub(crate) fn setup(path: &Path, init: bool) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+pub(crate) fn reserve_address(home: &Path, unix: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::hosted_enrollment::run(home, unix).map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,6 +777,7 @@ mod tests {
             email_recipient: None,
             relay_command: None,
             port: None,
+            local_stdio: false,
             apply: false,
         };
         let staged = crate::lifecycle::init(&home, "cue", &options).unwrap();
@@ -741,7 +813,7 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         value["token_sha256"] = json!(hash);
-        pigeonmq::private_file::replace_private(&policy, &serde_json::to_vec(&value).unwrap())
+        radio999k::private_file::replace_private(&policy, &serde_json::to_vec(&value).unwrap())
             .unwrap();
         crate::local_http::prepare_muse(&home.join(QUEUE), &policy).unwrap();
         assert!(crate::local_http::check_muse(&home.join(QUEUE), &policy).unwrap());
@@ -774,7 +846,7 @@ mod tests {
             assert_eq!(fs::metadata(home.join(file)).unwrap().mode() & 0o777, 0o600);
         }
         value["operations"] = json!(["read", "reply"]);
-        pigeonmq::private_file::replace_private(&policy, &serde_json::to_vec(&value).unwrap())
+        radio999k::private_file::replace_private(&policy, &serde_json::to_vec(&value).unwrap())
             .unwrap();
         let restricted = fs::read(&policy).unwrap();
         muse_settings(&home, "cloud-test-peer").unwrap();
@@ -787,7 +859,7 @@ mod tests {
         value["senders"] = json!(["legacy-fixture-peer"]);
         value["token_sha256"] = json!("keychain");
         let obsolete = serde_json::to_vec(&value).unwrap();
-        pigeonmq::private_file::replace_private(&policy, &obsolete).unwrap();
+        radio999k::private_file::replace_private(&policy, &obsolete).unwrap();
         let error = setup_muse_with(&home, "unregistered-fixture-peer", |_, _| {
             panic!("legacy policy must fail before credential provisioning")
         })
@@ -808,7 +880,7 @@ mod tests {
         let policy = muse_settings(&home, "cloud-test-peer").unwrap();
         let mut value: Value = serde_json::from_slice(&fs::read(&policy).unwrap()).unwrap();
         value["token_sha256"] = json!("a".repeat(64));
-        pigeonmq::private_file::replace_private(&policy, &serde_json::to_vec(&value).unwrap())
+        radio999k::private_file::replace_private(&policy, &serde_json::to_vec(&value).unwrap())
             .unwrap();
         let before_policy = fs::read(&policy).unwrap();
         let before_registry = fs::read(home.join(REGISTRY)).unwrap();
@@ -839,7 +911,7 @@ mod tests {
             json!({"alias": {"mailbox": "muse", "revoked": false}}),
         ] {
             let bytes = serde_json::to_vec(&conflict).unwrap();
-            pigeonmq::private_file::replace_private(&home.join(REGISTRY), &bytes).unwrap();
+            radio999k::private_file::replace_private(&home.join(REGISTRY), &bytes).unwrap();
             assert!(muse_settings(&home, "cloud-test-peer").is_err());
             assert_eq!(fs::read(home.join(REGISTRY)).unwrap(), bytes);
             assert!(!cloud_credentials::policy_path(&home, App::Muse).exists());
@@ -878,7 +950,7 @@ mod tests {
         fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
         let queue = home.join(QUEUE);
         create_private(&queue).unwrap().unwrap();
-        pigeonmq::Queue::open(&queue).unwrap();
+        radio999k::Queue::open(&queue).unwrap();
         let registration = home.join(REGISTRY);
         create_settings(
             &registration,
@@ -897,7 +969,7 @@ mod tests {
             "registration":registration,"enabled":true,"token_sha256":digest}),
         )
         .unwrap();
-        pigeonmq::dot_profile::check(&queue, &policy, true).unwrap();
+        radio999k::dot_profile::check(&queue, &policy, true).unwrap();
         probe_dot(queue.clone(), policy.clone(), bearer).unwrap();
         assert!(probe_dot(queue, policy, "wrong").is_err());
     }
@@ -1028,7 +1100,7 @@ mod tests {
         assert_eq!(fs::metadata(&settings).unwrap().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(&registry).unwrap().mode() & 0o777, 0o600);
         let draft: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
-        assert_eq!(draft["connector"]["name"], "pigeonmq-cloud-muse");
+        assert_eq!(draft["connector"]["name"], "999k-muse");
         assert_eq!(draft["connector"]["endpoint"]["route"], "/muse/mcp");
         assert_eq!(
             draft["connector"]["auth"]["keychain_service"],

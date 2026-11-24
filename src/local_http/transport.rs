@@ -3,6 +3,10 @@ use serde_json::{Value, json};
 use std::{
     io::{self, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::net::{UnixListener, UnixStream},
+    },
     sync::Arc,
     thread,
     time::{Duration, Instant},
@@ -20,11 +24,95 @@ impl From<Response> for WireResponse {
         Self::Json(response)
     }
 }
-pub(super) type ProfileHandler = dyn Fn(TcpStream, &str) + Send + Sync;
+pub(super) enum ProfileListener {
+    Tcp(TcpListener),
+    Unix(UnixListener, String),
+}
+
+impl ProfileListener {
+    fn prepare(&self) -> io::Result<String> {
+        match self {
+            Self::Tcp(listener) => {
+                listener.set_nonblocking(true)?;
+                Ok(listener.local_addr()?.to_string())
+            }
+            Self::Unix(listener, authority) => {
+                listener.set_nonblocking(true)?;
+                Ok(authority.clone())
+            }
+        }
+    }
+
+    fn accept(&self) -> io::Result<ProfileStream> {
+        match self {
+            Self::Tcp(listener) => listener.accept().map(|(stream, _)| stream.into()),
+            Self::Unix(listener, _) => listener
+                .accept()
+                .map(|(stream, _)| ProfileStream::Unix(stream)),
+        }
+    }
+}
+
+pub(super) enum ProfileStream {
+    Tcp(TcpStream),
+    Unix(UnixStream),
+}
+
+impl From<TcpStream> for ProfileStream {
+    fn from(stream: TcpStream) -> Self {
+        Self::Tcp(stream)
+    }
+}
+
+macro_rules! socket_call {
+    ($self:expr, $operation:ident($($argument:expr),*)) => {
+        match $self {
+            ProfileStream::Tcp(stream) => stream.$operation($($argument),*),
+            ProfileStream::Unix(stream) => stream.$operation($($argument),*),
+        }
+    };
+}
+
+impl ProfileStream {
+    fn set_nonblocking(&self, value: bool) -> io::Result<()> {
+        socket_call!(self, set_nonblocking(value))
+    }
+    fn set_read_timeout(&self, value: Option<Duration>) -> io::Result<()> {
+        socket_call!(self, set_read_timeout(value))
+    }
+    fn set_write_timeout(&self, value: Option<Duration>) -> io::Result<()> {
+        socket_call!(self, set_write_timeout(value))
+    }
+    fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        socket_call!(self, shutdown(how))
+    }
+}
+
+impl AsRawFd for ProfileStream {
+    fn as_raw_fd(&self) -> RawFd {
+        socket_call!(self, as_raw_fd())
+    }
+}
+impl Read for ProfileStream {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        socket_call!(self, read(bytes))
+    }
+}
+impl Write for ProfileStream {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        socket_call!(self, write(bytes))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        socket_call!(self, flush())
+    }
+}
+
+pub(super) type ProfileHandler = dyn Fn(ProfileStream, &str) + Send + Sync;
 pub(super) struct Input {
     pub(super) path: String,
     length: usize,
     pub(super) authorization: Vec<Vec<u8>>,
+    pub(super) access_assertions: Vec<Vec<u8>>,
     pub(super) sdk_headers: Vec<(String, Vec<u8>)>,
 }
 // FIXME(lib: hyper): hand-rolled HTTP/1.1 server on httparse+TcpStream; hyper is already in the lockfile via reqwest.
@@ -120,9 +208,17 @@ pub(super) fn parse_head(
             .into_iter()
             .map(|v| v.to_vec())
             .collect(),
+        access_assertions: values("cf-access-jwt-assertion")
+            .into_iter()
+            .map(|v| v.to_vec())
+            .collect(),
     })
 }
-fn read_part(stream: &mut TcpStream, buffer: &mut [u8], deadline: Instant) -> Result<usize, Fault> {
+fn read_part(
+    stream: &mut ProfileStream,
+    buffer: &mut [u8],
+    deadline: Instant,
+) -> Result<usize, Fault> {
     let left = deadline
         .checked_duration_since(Instant::now())
         .filter(|d| !d.is_zero())
@@ -145,7 +241,7 @@ fn read_part(stream: &mut TcpStream, buffer: &mut [u8], deadline: Instant) -> Re
     }
 }
 fn read_input(
-    stream: &mut TcpStream,
+    stream: &mut ProfileStream,
     authority: &str,
     route_body_limit: impl Fn(&str) -> Result<usize, Fault>,
 ) -> Result<(Input, Vec<u8>), Fault> {
@@ -175,7 +271,7 @@ fn read_input(
     }
     Ok((input, bytes[offset..].to_vec()))
 }
-fn reply(stream: &mut TcpStream, status: u16, value: Value) -> io::Result<()> {
+fn reply(stream: &mut ProfileStream, status: u16, value: Value) -> io::Result<()> {
     let body = serde_json::to_vec(&value)?;
     stream.set_write_timeout(Some(IO_BUDGET))?;
     let allow = if status == 405 { "Allow: POST\r\n" } else { "" };
@@ -187,7 +283,7 @@ fn reply(stream: &mut TcpStream, status: u16, value: Value) -> io::Result<()> {
     stream.write_all(&body)
 }
 fn finish_profile_connection_with_status(
-    mut stream: TcpStream,
+    mut stream: ProfileStream,
     result: Result<Option<Value>, Fault>,
     status: u16,
 ) {
@@ -207,15 +303,14 @@ fn finish_profile_connection_with_status(
 }
 
 pub(super) fn serve_profile_listeners(
-    listeners: Vec<(TcpListener, Arc<ProfileHandler>)>,
+    listeners: Vec<(ProfileListener, Arc<ProfileHandler>)>,
     deadline: Option<Instant>,
     max_workers: usize,
 ) -> io::Result<()> {
     let listeners = listeners
         .into_iter()
         .map(|(listener, handler)| {
-            listener.set_nonblocking(true)?;
-            let authority = listener.local_addr()?.to_string();
+            let authority = listener.prepare()?;
             Ok((listener, authority, handler))
         })
         .collect::<io::Result<Vec<_>>>()?;
@@ -233,7 +328,7 @@ pub(super) fn serve_profile_listeners(
         let mut accepted = false;
         for (listener, authority, handler) in &listeners {
             match listener.accept() {
-                Ok((mut stream, _)) => {
+                Ok(mut stream) => {
                     accepted = true;
                     // BSD/macOS may inherit O_NONBLOCK from the listener.
                     // Per-request read/write timeouts require a blocking stream.
@@ -287,7 +382,7 @@ pub(super) fn serve_profile_listeners(
 }
 
 pub(super) fn handle_connection(
-    mut stream: TcpStream,
+    mut stream: ProfileStream,
     authority: &str,
     route_body_limit: impl Fn(&str) -> Result<usize, Fault>,
     dispatch: impl FnOnce(&Input, &[u8], &(dyn Fn() -> bool + Sync)) -> WireResponse,
@@ -296,7 +391,7 @@ pub(super) fn handle_connection(
         Ok(request) => request,
         Err(error) => return finish_profile_connection_with_status(stream, Err(error), 200),
     };
-    let peer_closed = || pigeonmq::dot_mcp_host::peer_closed(&stream);
+    let peer_closed = || radio999k::dot_mcp_host::peer_closed(&stream);
     match dispatch(&input, &body, &peer_closed) {
         WireResponse::Json((result, status)) => {
             finish_profile_connection_with_status(stream, result, status);
@@ -308,7 +403,10 @@ pub(super) fn handle_connection(
     }
 }
 
-fn write_sdk_response(stream: &mut TcpStream, response: http::Response<Vec<u8>>) -> io::Result<()> {
+fn write_sdk_response(
+    stream: &mut ProfileStream,
+    response: http::Response<Vec<u8>>,
+) -> io::Result<()> {
     let (parts, body) = response.into_parts();
     stream.set_write_timeout(Some(IO_BUDGET))?;
     write!(

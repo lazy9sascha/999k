@@ -1,27 +1,13 @@
 //! Bearer and central registration checks for the isolated Cloud Grok Bot profile.
 use super::Fault;
-use crate::auth::{RETIRED_SENDERS_CODE, public_policy_fault, retired_senders_present};
-use pigeonmq::{
-    grok_mailbox::GrokScope, private_file::open_private_file, registration::load_registrations,
+use crate::auth::{
+    RETIRED_SENDERS_CODE, presented_token_digest, public_policy_fault, retired_senders_present,
 };
+use radio999k::{grok_mailbox::GrokScope, registration::load_registrations};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use std::{collections::HashSet, io::Read, path::Path};
+use std::{collections::HashSet, path::Path};
 use subtle::ConstantTimeEq;
 
-// FIXME(yagni): 16 KiB size cap on an owner-private policy file - no stated basis
-const MAX_POLICY: u64 = 16384;
-
-fn digest(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 || !text.is_ascii() {
-        return None;
-    }
-    let mut out = [0; 32];
-    for (index, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
-    }
-    Some(out)
-}
 fn now_ms() -> Result<u64, Fault> {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -97,19 +83,12 @@ fn grok_sender(value: &str) -> bool {
 // FIXME(yagni): load_grok/authenticate_grok copy load_muse/authenticate_muse in auth.rs - one shared single-principal loader is enough
 fn load_grok(path: &Path) -> Result<(GrokPrincipal, [u8; 32]), Fault> {
     let fail = (503, "auth_unavailable");
-    let mut bytes = Vec::new();
-    open_private_file(path)?
-        .take(MAX_POLICY + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| fail)?;
-    if bytes.len() as u64 > MAX_POLICY {
-        return Err(fail);
-    }
+    let bytes = crate::auth::read_private_policy(path)?;
     let policy: GrokPolicy = serde_json::from_slice(&bytes).map_err(|_| fail)?;
     if policy.retired_senders {
         return Err((503, RETIRED_SENDERS_CODE));
     }
-    let hash = digest(&policy.token_sha256).ok_or(fail)?;
+    let hash = crate::auth::digest(&policy.token_sha256).ok_or(fail)?;
     let mut operations = HashSet::new();
     if policy.principal != "grok-bot"
         || policy.mailbox != "grok-bot"
@@ -138,7 +117,7 @@ pub(crate) fn validate_grok_setup_policy(
 ) -> Result<(), Fault> {
     let (principal, hash) = load_grok(path)?;
     if principal.registration_path().map(Path::new) != Some(registration)
-        || digest(token_sha256) != Some(hash)
+        || crate::auth::digest(token_sha256) != Some(hash)
     {
         return Err((409, "grok_setup_policy_conflict"));
     }
@@ -154,19 +133,9 @@ pub(super) fn authenticate_grok(
     authorization: &[Vec<u8>],
 ) -> Result<GrokPrincipal, Fault> {
     let (principal, hash) = load_grok(path).map_err(public_policy_fault)?;
-    let bad = (401, "unauthorized");
-    if authorization.len() != 1 {
-        return Err(bad);
-    }
-    let value = std::str::from_utf8(&authorization[0]).map_err(|_| bad)?;
-    let token = value.strip_prefix("Bearer ").ok_or(bad)?;
-    // FIXME(yagni): 256-byte/graphic bearer pre-check - the hash compare already rejects bad tokens
-    if token.is_empty() || token.len() > 256 || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(bad);
-    }
-    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    let presented = presented_token_digest(authorization)?;
     if hash.ct_eq(&presented).unwrap_u8() != 1 {
-        return Err(bad);
+        return Err((401, "unauthorized"));
     }
     Ok(principal)
 }
@@ -212,7 +181,7 @@ mod tests {
         let registry = directory.path().join("registration.json");
         let policy = directory.path().join("policy.json");
         let write = |path: &Path, value: serde_json::Value| {
-            pigeonmq::private_file::replace_private(path, value.to_string().as_bytes()).unwrap();
+            radio999k::private_file::replace_private(path, value.to_string().as_bytes()).unwrap();
         };
         write(
             &registry,

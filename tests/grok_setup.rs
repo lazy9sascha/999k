@@ -1,4 +1,4 @@
-use pigeonmq::private_file::replace_private;
+use radio999k::private_file::replace_private;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -13,7 +13,7 @@ const QUEUE: &str = "pigeonmq-cloud-queue.sqlite3";
 const WAKE: &str = "grok-webhook-keychain";
 
 fn run(home: &Path, digest: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+    Command::new(env!("CARGO_BIN_EXE_999k"))
         .env_clear()
         .args(["setup-grok", "--home"])
         .arg(home)

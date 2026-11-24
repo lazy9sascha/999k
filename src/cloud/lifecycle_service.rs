@@ -1,4 +1,4 @@
-//! Install and inspect only the two owner-selected PigeonMQ LaunchAgents.
+//! Install and inspect only the two owner-selected 999K LaunchAgents.
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, DirBuilder, File, OpenOptions},
@@ -9,6 +9,7 @@ use std::{
 
 pub(crate) const HUB_LABEL: &str = "pigeonmq.hub";
 pub(crate) const RELAY_LABEL: &str = "pigeonmq.email-relay";
+pub(crate) const HOSTED_LABEL: &str = "pigeonmq.hosted-connector";
 const PLIST_LIMIT: u64 = 32 * 1024;
 
 pub(crate) trait LaunchControl {
@@ -19,6 +20,24 @@ pub(crate) trait LaunchControl {
     fn hub_ready(&self, plist: &Path, port: u16, routes: &[String]) -> io::Result<()>;
     #[cfg(test)]
     fn hub_ready(&self, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
+        Ok(())
+    }
+    #[cfg(not(test))]
+    fn hosted_ready(
+        &self,
+        plist: &Path,
+        socket: &Path,
+        port: u16,
+        routes: &[String],
+    ) -> io::Result<()>;
+    #[cfg(test)]
+    fn hosted_ready(&self, plist: &Path, _: &Path, port: u16, routes: &[String]) -> io::Result<()> {
+        self.hub_ready(plist, port, routes)
+    }
+    #[cfg(not(test))]
+    fn stdio_ready(&self, plist: &Path, home: &Path, routes: &[String]) -> io::Result<()>;
+    #[cfg(test)]
+    fn stdio_ready(&self, _: &Path, _: &Path, _: &[String]) -> io::Result<()> {
         Ok(())
     }
 }
@@ -39,10 +58,10 @@ fn fail(message: &'static str) -> io::Error {
 }
 
 fn check_label(label: &str) -> io::Result<()> {
-    if matches!(label, HUB_LABEL | RELAY_LABEL) {
+    if matches!(label, HUB_LABEL | RELAY_LABEL | HOSTED_LABEL) {
         return Ok(());
     }
-    Err(fail("invalid PigeonMQ service label"))
+    Err(fail("invalid 999K service label"))
 }
 
 fn expected_job(directory: &Path, label: &str, args: &[String]) -> io::Result<(PathBuf, Job)> {
@@ -51,7 +70,7 @@ fn expected_job(directory: &Path, label: &str, args: &[String]) -> io::Result<(P
         || !args.first().is_some_and(|arg| Path::new(arg).is_absolute())
         || args.iter().any(|arg| arg.chars().any(char::is_control))
     {
-        return Err(fail("invalid PigeonMQ LaunchAgent arguments"));
+        return Err(fail("invalid 999K LaunchAgent arguments"));
     }
     Ok((
         directory.join(format!("{label}.plist")),
@@ -76,7 +95,7 @@ fn check_directory(directory: &Path) -> io::Result<bool> {
         {
             Ok(true)
         }
-        Ok(_) => Err(fail("unsafe PigeonMQ LaunchAgents directory")),
+        Ok(_) => Err(fail("unsafe 999K LaunchAgents directory")),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
@@ -99,19 +118,19 @@ fn verify_expected(path: &Path, expected: &Job) -> io::Result<bool> {
         || metadata.nlink() != 1
         || metadata.len() > PLIST_LIMIT
     {
-        return Err(fail("unsafe existing PigeonMQ LaunchAgent plist"));
+        return Err(fail("unsafe existing 999K LaunchAgent plist"));
     }
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
         .take(PLIST_LIMIT + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > PLIST_LIMIT {
-        return Err(fail("existing PigeonMQ LaunchAgent plist is too large"));
+        return Err(fail("existing 999K LaunchAgent plist is too large"));
     }
-    let actual: Job = plist::from_bytes(&bytes)
-        .map_err(|_| fail("invalid existing PigeonMQ LaunchAgent plist"))?;
+    let actual: Job =
+        plist::from_bytes(&bytes).map_err(|_| fail("invalid existing 999K LaunchAgent plist"))?;
     if actual != *expected {
-        return Err(fail("existing PigeonMQ LaunchAgent plist conflicts"));
+        return Err(fail("existing 999K LaunchAgent plist conflicts"));
     }
     Ok(true)
 }
@@ -142,7 +161,7 @@ pub(crate) fn ensure_plist(
             .mode(0o700)
             .create(directory)?;
         if !check_directory(directory)? {
-            return Err(fail("PigeonMQ LaunchAgents directory unavailable"));
+            return Err(fail("999K LaunchAgents directory unavailable"));
         }
     }
     if verify_expected(&path, &expected)? {
@@ -151,9 +170,9 @@ pub(crate) fn ensure_plist(
 
     let mut bytes = Vec::new();
     plist::to_writer_xml(&mut bytes, &expected)
-        .map_err(|_| fail("could not encode PigeonMQ LaunchAgent plist"))?;
+        .map_err(|_| fail("could not encode 999K LaunchAgent plist"))?;
     if bytes.len() as u64 > PLIST_LIMIT {
-        return Err(fail("PigeonMQ LaunchAgent plist is too large"));
+        return Err(fail("999K LaunchAgent plist is too large"));
     }
     let temp = directory.join(format!(".pigeonmq-{}.tmp", uuid::Uuid::new_v4()));
     let mut file = OpenOptions::new()
@@ -188,7 +207,7 @@ pub(crate) fn ensure_plist(
 }
 
 #[cfg(target_os = "macos")]
-fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let temporary = CString::new(temporary.as_os_str().as_bytes())?;
     let destination = CString::new(destination.as_os_str().as_bytes())?;
@@ -202,7 +221,7 @@ fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
     // The local staging format can be verified without launchd on other Unix targets.
     fs::hard_link(temporary, destination)?;
     fs::remove_file(temporary)
@@ -233,11 +252,11 @@ fn inspect_from_print(
         return if missing {
             Ok(None)
         } else {
-            Err(fail("could not inspect PigeonMQ LaunchAgent"))
+            Err(fail("could not inspect 999K LaunchAgent"))
         };
     }
     let printed = std::str::from_utf8(&output.stdout)
-        .map_err(|_| fail("invalid PigeonMQ LaunchAgent inspection output"))?;
+        .map_err(|_| fail("invalid 999K LaunchAgent inspection output"))?;
     let mut paths = printed
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("path = "));
@@ -245,11 +264,11 @@ fn inspect_from_print(
         .next()
         .map(Path::new)
         .filter(|path| path.is_absolute())
-        .ok_or_else(|| fail("loaded PigeonMQ LaunchAgent path is unknown"))?;
+        .ok_or_else(|| fail("loaded 999K LaunchAgent path is unknown"))?;
     if paths.next().is_some()
         || path != expected_plist && expected_plist.canonicalize().ok().as_deref() != Some(path)
     {
-        return Err(fail("loaded PigeonMQ LaunchAgent uses a different plist"));
+        return Err(fail("loaded 999K LaunchAgent uses a different plist"));
     }
 
     let mut pids = printed
@@ -260,7 +279,7 @@ fn inspect_from_print(
         .and_then(|pid| pid.parse().ok())
         .filter(|pid| *pid > 0);
     if pids.next().is_some() {
-        return Err(fail("ambiguous PigeonMQ LaunchAgent process"));
+        return Err(fail("ambiguous 999K LaunchAgent process"));
     }
     Ok(Some(JobInspection { pid }))
 }
@@ -305,7 +324,7 @@ async fn capture(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| fail("could not start PigeonMQ service inspection"))?;
+        .map_err(|_| fail("could not start 999K service inspection"))?;
     let mut stdout = child
         .stdout
         .take()
@@ -321,7 +340,7 @@ async fn capture(
         let mut err = Vec::new();
         tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
         if out.len() as u64 > MAX_OUTPUT || err.len() as u64 > MAX_ERROR {
-            return Err(fail("PigeonMQ service inspection output limit exceeded"));
+            return Err(fail("999K service inspection output limit exceeded"));
         }
         Ok(Captured {
             exit_code: child.wait().await?.code(),
@@ -339,7 +358,7 @@ async fn capture(
                 Ok(Err(error)) => Err(error),
                 _ => Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "PigeonMQ service inspection timed out",
+                    "999K service inspection timed out",
                 )),
             }
         }
@@ -375,7 +394,7 @@ async fn probe_mcp_route(port: u16, route: &str, timeout: std::time::Duration) -
         Ok(unauthorized_status(&status))
     })
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "PigeonMQ hub probe timed out"))?
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "999K hub probe timed out"))?
 }
 
 #[cfg(target_os = "macos")]
@@ -443,8 +462,109 @@ async fn wait_for_hub(plist: &Path, port: u16, routes: &[String]) -> io::Result<
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        "PigeonMQ hub did not prove loopback route readiness",
+        "999K hub did not prove loopback route readiness",
     ))
+}
+
+#[cfg(target_os = "macos")]
+async fn probe_private_socket(
+    socket: &Path,
+    pid: u32,
+    authority: &str,
+    route: &str,
+) -> io::Result<bool> {
+    use std::{os::fd::AsRawFd, time::Duration};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    const BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+    tokio::time::timeout(Duration::from_millis(900), async {
+        let mut client = tokio::net::UnixStream::connect(socket).await?;
+        let mut uid = 0;
+        let mut gid = 0;
+        let mut peer = 0 as libc::pid_t;
+        let mut peer_len = std::mem::size_of_val(&peer) as libc::socklen_t;
+        // SAFETY: Both system calls write into live stack objects of the expected types.
+        let owned = unsafe {
+            libc::getpeereid(client.as_raw_fd(), &mut uid, &mut gid) == 0
+                && libc::getsockopt(
+                    client.as_raw_fd(), libc::SOL_LOCAL, libc::LOCAL_PEERPID,
+                    (&mut peer as *mut libc::pid_t).cast(), &mut peer_len,
+                ) == 0
+        };
+        if !owned || uid != euid() || peer <= 0 || peer as u32 != pid
+            || peer_len as usize != std::mem::size_of_val(&peer)
+        {
+            return Ok(false);
+        }
+        let request = format!(
+            "POST {route} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{BODY}",
+            BODY.len()
+        );
+        client.write_all(request.as_bytes()).await?;
+        let mut status = Vec::new();
+        BufReader::new(client.take(256)).read_until(b'\n', &mut status).await?;
+        Ok(unauthorized_status(&status))
+    }).await.map_err(|_| fail("hosted socket probe timed out"))?
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_private_socket(
+    plist: &Path,
+    socket: &Path,
+    authority: &str,
+    routes: &[String],
+) -> io::Result<()> {
+    use std::time::{Duration, Instant};
+    if !plist.is_absolute()
+        || !socket.is_absolute()
+        || authority.is_empty()
+        || routes.is_empty()
+        || routes
+            .iter()
+            .any(|route| !radio999k::mailbox_catalog::valid_mcp_route(route))
+    {
+        return Err(fail("invalid hosted socket readiness plan"));
+    }
+    let end = Instant::now() + Duration::from_secs(12);
+    let target = format!("gui/{}/{HUB_LABEL}", euid());
+    let print = ["print".as_ref(), target.as_ref()];
+    while Instant::now() < end {
+        let budget = || {
+            end.saturating_duration_since(Instant::now())
+                .min(Duration::from_secs(2))
+        };
+        let status = capture("/bin/launchctl", &print, budget()).await?;
+        if let Some(pid) = inspect_from_print(&status, plist)?.and_then(|job| job.pid) {
+            let mut ready = true;
+            for route in routes {
+                if Instant::now() >= end
+                    || !probe_private_socket(socket, pid, authority, route)
+                        .await
+                        .unwrap_or(false)
+                {
+                    ready = false;
+                    break;
+                }
+            }
+            if ready {
+                let status = capture("/bin/launchctl", &print, budget()).await?;
+                if inspect_from_print(&status, plist)?.and_then(|job| job.pid) == Some(pid) {
+                    return Ok(());
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(fail("managed hub did not prove private socket identity"))
+}
+
+#[cfg(target_os = "macos")]
+impl SystemLaunchctl {
+    pub(crate) fn owns_running_job(label: &str, plist: &Path, pid: u32) -> io::Result<bool> {
+        check_label(label)?;
+        let target = format!("gui/{}/{label}", euid());
+        let output = launchctl(&["print".as_ref(), target.as_ref()])?;
+        Ok(inspect_from_print(&output, plist)?.and_then(|job| job.pid) == Some(pid))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -452,7 +572,7 @@ impl LaunchControl for SystemLaunchctl {
     fn loaded(&self, label: &str, expected_plist: &Path) -> io::Result<bool> {
         check_label(label)?;
         if !expected_plist.is_absolute() {
-            return Err(fail("expected PigeonMQ LaunchAgent path must be absolute"));
+            return Err(fail("expected 999K LaunchAgent path must be absolute"));
         }
         let target = format!("gui/{}/{label}", euid());
         let output = launchctl(&["print".as_ref(), target.as_ref()])?;
@@ -463,15 +583,19 @@ impl LaunchControl for SystemLaunchctl {
         if !path.is_absolute()
             || !matches!(
                 path.file_name().and_then(|name| name.to_str()),
-                Some("pigeonmq.hub.plist" | "pigeonmq.email-relay.plist")
+                Some(
+                    "pigeonmq.hub.plist"
+                        | "pigeonmq.email-relay.plist"
+                        | "pigeonmq.hosted-connector.plist"
+                )
             )
         {
-            return Err(fail("invalid PigeonMQ LaunchAgent path"));
+            return Err(fail("invalid 999K LaunchAgent path"));
         }
         let domain = format!("gui/{}", euid());
         let output = launchctl(&["bootstrap".as_ref(), domain.as_ref(), path.as_os_str()])?;
         if output.exit_code != Some(0) {
-            return Err(fail("could not bootstrap PigeonMQ LaunchAgent"));
+            return Err(fail("could not bootstrap 999K LaunchAgent"));
         }
         Ok(())
     }
@@ -481,7 +605,7 @@ impl LaunchControl for SystemLaunchctl {
         let target = format!("gui/{}/{label}", euid());
         let output = launchctl(&["bootout".as_ref(), target.as_ref()])?;
         if output.exit_code != Some(0) {
-            return Err(fail("could not boot out PigeonMQ LaunchAgent"));
+            return Err(fail("could not boot out 999K LaunchAgent"));
         }
         Ok(())
     }
@@ -492,34 +616,113 @@ impl LaunchControl for SystemLaunchctl {
             || routes.is_empty()
             || routes
                 .iter()
-                .any(|route| !pigeonmq::mailbox_catalog::valid_mcp_route(route))
+                .any(|route| !radio999k::mailbox_catalog::valid_mcp_route(route))
         {
-            return Err(fail("invalid PigeonMQ hub readiness plan"));
+            return Err(fail("invalid 999K hub readiness plan"));
         }
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
             .block_on(wait_for_hub(plist, port, routes))
     }
+    fn hosted_ready(
+        &self,
+        plist: &Path,
+        socket: &Path,
+        port: u16,
+        routes: &[String],
+    ) -> io::Result<()> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(wait_for_private_socket(
+                plist,
+                socket,
+                &format!("127.0.0.1:{port}"),
+                routes,
+            ))
+    }
+
+    fn stdio_ready(&self, plist: &Path, home: &Path, routes: &[String]) -> io::Result<()> {
+        let socket = crate::stdio_mcp::socket_path(home);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(wait_for_private_socket(
+                plist,
+                &socket,
+                crate::stdio_mcp::AUTHORITY,
+                routes,
+            ))
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 impl LaunchControl for SystemLaunchctl {
     fn loaded(&self, _: &str, _: &Path) -> io::Result<bool> {
-        Err(fail("PigeonMQ LaunchAgents require macOS"))
+        Err(fail("999K LaunchAgents require macOS"))
     }
 
     fn bootstrap(&self, _: &Path) -> io::Result<()> {
-        Err(fail("PigeonMQ LaunchAgents require macOS"))
+        Err(fail("999K LaunchAgents require macOS"))
     }
 
     fn bootout(&self, _: &str) -> io::Result<()> {
-        Err(fail("PigeonMQ LaunchAgents require macOS"))
+        Err(fail("999K LaunchAgents require macOS"))
     }
 
     fn hub_ready(&self, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
-        Err(fail("PigeonMQ LaunchAgents require macOS"))
+        Err(fail("999K LaunchAgents require macOS"))
     }
+    fn hosted_ready(&self, _: &Path, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
+        Err(fail("999K hosted LaunchAgents require macOS"))
+    }
+    fn stdio_ready(&self, _: &Path, _: &Path, _: &[String]) -> io::Result<()> {
+        Err(fail("managed stdio LaunchAgents require macOS"))
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[tokio::test]
+async fn hosted_probe_checks_kernel_pid_before_using_http() {
+    use std::os::unix::net::UnixListener;
+    let root = tempfile::Builder::new()
+        .prefix("po")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let path = root.path().join("hub.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let worker = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut foreign, _) = listener.accept().unwrap();
+        // The negative probe can close before accept returns. Do not change
+        // the timeout on its already-closed endpoint on Darwin.
+        let mut body = [0; 512];
+        // A wrong PID cannot trick the probe into sending HTTP.
+        assert_eq!(foreign.read(&mut body).unwrap(), 0);
+        let (mut expected, _) = listener.accept().unwrap();
+        expected
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let n = expected.read(&mut body).unwrap();
+        let request = std::str::from_utf8(&body[..n]).unwrap();
+        assert!(request.starts_with("POST /dot/mcp HTTP/1.1\r\nHost: 127.0.0.1:54843\r\n"));
+        expected
+            .write_all(b"HTTP/1.1 401 Unauthorized\r\n\r\n")
+            .unwrap();
+    });
+    let own = std::process::id();
+    assert!(
+        !probe_private_socket(&path, own + 1, "127.0.0.1:54843", "/dot/mcp")
+            .await
+            .unwrap()
+    );
+    assert!(
+        probe_private_socket(&path, own, "127.0.0.1:54843", "/dot/mcp")
+            .await
+            .unwrap()
+    );
+    worker.join().unwrap();
 }
 
 #[cfg(test)]

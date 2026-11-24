@@ -1,4 +1,4 @@
-use pigeonmq::{Error, Queue};
+use radio999k::{Error, Queue};
 use rusqlite::Connection;
 
 #[test]
@@ -25,7 +25,7 @@ fn wal_is_rejected_by_both_open_paths_without_conversion() {
         let version: i64 = db
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, pigeonmq::SCHEMA_VERSION);
+        assert_eq!(version, radio999k::SCHEMA_VERSION);
     }
 }
 
