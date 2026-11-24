@@ -121,9 +121,9 @@ impl Backend for DotBackend {
                 .ok_or(Fault::new(-32602, "invalid_string"))
         };
         match name {
-            "pigeonmq_recipients" => self.mailbox.recipients(owner, bearer, context),
-            "pigeonmq_inbox" => self.mailbox.inbox(owner, bearer, args, context),
-            "pigeonmq_send" => self.mailbox.send_with_conversation(
+            "radio999k_recipients" => self.mailbox.recipients(owner, bearer, context),
+            "radio999k_inbox" => self.mailbox.inbox(owner, bearer, args, context),
+            "radio999k_send" => self.mailbox.send_with_conversation(
                 owner,
                 bearer,
                 string("recipient")?,
@@ -142,21 +142,21 @@ impl Backend for DotBackend {
             crate::mailbox_tools::READ_THREAD => {
                 self.mailbox.read_thread(owner, bearer, args, context)
             }
-            "pigeonmq_read" => self
+            "radio999k_read" => self
                 .mailbox
                 .read(owner, bearer, string("message_id")?, context),
-            "pigeonmq_confirm_terminal" => {
+            "radio999k_confirm_terminal" => {
                 self.mailbox
                     .confirm_terminal(owner, bearer, string("message_id")?, context)
             }
-            "pigeonmq_reply" => self.mailbox.reply(
+            "radio999k_reply" => self.mailbox.reply(
                 owner,
                 bearer,
                 string("message_id")?,
                 string("body")?,
                 context,
             ),
-            "pigeonmq_wait" => self.mailbox.wait_filtered(
+            "radio999k_wait" => self.mailbox.wait_filtered(
                 owner,
                 bearer,
                 args["timeout_ms"]

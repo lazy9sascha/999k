@@ -1,4 +1,4 @@
-use pigeonmq::{Envelope, Queue, grok_mailbox, grok_wake, hub_http};
+use radio999k::{Envelope, Queue, grok_mailbox, grok_wake, hub_http};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq");
+const BIN: &str = env!("CARGO_BIN_EXE_999k");
 const ORIGIN: &str = "https://private-origin.example";
 const TOKEN: &str = "fixture-bearer-sentinel";
 const WAKE_URL: &str = "http://private-wake.example";
@@ -335,7 +335,7 @@ fn assert_isolated_runner_restart(explicit: bool) {
             TOKEN,
             &json!({
                 "jsonrpc":"2.0","id":1,"method":"tools/call",
-                "params":{"name":"pigeonmq_read","arguments":{"message_id":id}}
+                "params":{"name":"radio999k_read","arguments":{"message_id":id}}
             }),
         )
         .unwrap();

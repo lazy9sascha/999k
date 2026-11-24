@@ -1,2 +1,2 @@
 #!/usr/bin/env node
-require("./run.cjs")("pigeonmq-dot-resolve");
+require("./run.cjs")("999k-dot-resolve");

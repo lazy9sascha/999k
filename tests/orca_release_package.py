@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "plugins" / "orca-pigeonmq"
+SOURCE = ROOT / "plugins" / "orca-999k"
 
 
 class OrcaReleasePackage(unittest.TestCase):
@@ -24,13 +24,14 @@ class OrcaReleasePackage(unittest.TestCase):
                 result = subprocess.run(command, capture_output=True, text=True, check=True)
                 archives.append(Path(result.stdout.strip()))
             self.assertEqual(archives[0].read_bytes(), archives[1].read_bytes())
-            folder = f"orca-pigeonmq-{version}"
+            folder = f"999k-orca-{version}"
             self.assertEqual(archives[0].name, f"{folder}.tar.gz")
             files = {
                 f"{folder}/orca-plugin.json": SOURCE / "orca-plugin.json",
                 f"{folder}/panel.tsx": SOURCE / "panel.tsx",
                 f"{folder}/setup.ts": SOURCE / "setup.ts",
                 f"{folder}/worker.ts": SOURCE / "worker.ts",
+                f"{folder}/999k-field-radio-ink.png": SOURCE / "999k-field-radio-ink.png",
                 f"{folder}/LICENSE": ROOT / "LICENSE",
             }
             with tarfile.open(archives[0], "r:gz") as tar:

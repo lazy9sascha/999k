@@ -3,7 +3,7 @@ use super::{
     cloudflare_access::{CloudflareAccessVerifier, KEYS_UNAVAILABLE},
     transport::Fault,
 };
-use pigeonmq::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
+use radio999k::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
 use serde::Deserialize;
 use std::{
     fs,

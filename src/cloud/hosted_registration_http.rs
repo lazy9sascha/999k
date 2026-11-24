@@ -377,10 +377,10 @@ pub(crate) fn login_form(
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Register PigeonMQ</title>
-<h1>Register PigeonMQ</h1>
+<title>Register 999K</title>
+<h1>Register 999K</h1>
 <p>Proposed hostname: <strong>{hostname}</strong></p>
-<p id="missing">Open the installation link from PigeonMQ on your Mac.</p>
+<p id="missing">Open the installation link from 999K on your Mac.</p>
 <form id="request" method="post" action="/register/{installation_id}">
 <input id="handoff" name="handoff" type="hidden" value="">
 <label for="email">Email address</label>
@@ -405,7 +405,7 @@ pub(crate) fn login_form(
 pub(crate) fn otp_form(installation_id: Uuid, attempt: Uuid) -> RegistrationResponse {
     let mut response = html_response(format!(
         r#"<!doctype html><html lang="en"><meta charset="utf-8">
-<title>Verify PigeonMQ registration</title><h1>Verify PigeonMQ registration</h1>
+<title>Verify 999K registration</title><h1>Verify 999K registration</h1>
 <p>Check your inbox for a code. If it does not arrive, try the registration link again after the current attempt expires.</p>
 <form method="post" action="/register/{installation_id}/verify">
 <label for="otp">Email code</label>
@@ -423,8 +423,8 @@ pub(crate) fn otp_form(installation_id: Uuid, attempt: Uuid) -> RegistrationResp
 pub(crate) fn approval_result() -> RegistrationResponse {
     let mut response = html_response(
         "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
-         <title>PigeonMQ registration approved</title><h1>Registration approved</h1>\
-         <p>Return to PigeonMQ on your Mac to finish setup.</p></html>"
+         <title>999K registration approved</title><h1>Registration approved</h1>\
+         <p>Return to 999K on your Mac to finish setup.</p></html>"
             .to_owned(),
     );
     set_attempt_cookie(&mut response, "", 0);

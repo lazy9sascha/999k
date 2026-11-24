@@ -1,8 +1,8 @@
 //! Source: PigeonMQ e399161, src/codex_events.rs (MIT).
 //! Codex binding of the shared Events runtime. No alternate listener or queue.
 use crate::{auth, codex_mcp::Profile};
-use pigeonmq::mailbox_catalog as catalog;
-use pigeonmq::{
+use radio999k::mailbox_catalog as catalog;
+use radio999k::{
     events::callback_transport::{
         CallbackError, CallbackResponse, CallbackTransport, SignedCallback,
     },
@@ -56,44 +56,42 @@ impl Runtime {
         let queue = profile.db.clone();
         let mailbox = catalog::codex().mailbox;
         let generation = generation.unwrap_or(mailbox).to_owned();
-        let policy: PolicySource =
-            Arc::new(move || {
-                let current = pigeonmq::mailbox_generation::active_storage(&queue, mailbox)
-                    .map_err(|error| match error {
-                        pigeonmq::Error::Schema(_) | pigeonmq::Error::Invalid(_) => {
-                            PreflightError {
-                                code: -32602,
-                                reason: "requires_current_schema_queue",
-                            }
-                        }
-                        _ => PreflightError {
-                            code: -32003,
-                            reason: "mailbox_generation_unavailable",
-                        },
-                    })?;
-                if current.as_deref() != Some(generation.as_str()) {
-                    return Err(PreflightError {
+        let policy: PolicySource = Arc::new(move || {
+            let current = radio999k::mailbox_generation::active_storage(&queue, mailbox).map_err(
+                |error| match error {
+                    radio999k::Error::Schema(_) | radio999k::Error::Invalid(_) => PreflightError {
+                        code: -32602,
+                        reason: "requires_current_schema_queue",
+                    },
+                    _ => PreflightError {
                         code: -32003,
-                        reason: "mailbox_generation_retired",
-                    });
-                }
-                let (settings, policy) = auth::codex_events(&policy_path, &registration)
-                    .map_err(|(_, reason)| PreflightError {
-                        code: -32003,
-                        reason,
-                    })?
-                    .ok_or(PreflightError {
-                        code: -32003,
-                        reason: "events_disabled",
-                    })?;
-                if settings != expected {
-                    return Err(PreflightError {
-                        code: -32003,
-                        reason: "events_configuration_changed",
-                    });
-                }
-                Ok(policy)
-            });
+                        reason: "mailbox_generation_unavailable",
+                    },
+                },
+            )?;
+            if current.as_deref() != Some(generation.as_str()) {
+                return Err(PreflightError {
+                    code: -32003,
+                    reason: "mailbox_generation_retired",
+                });
+            }
+            let (settings, policy) = auth::codex_events(&policy_path, &registration)
+                .map_err(|(_, reason)| PreflightError {
+                    code: -32003,
+                    reason,
+                })?
+                .ok_or(PreflightError {
+                    code: -32003,
+                    reason: "events_disabled",
+                })?;
+            if settings != expected {
+                return Err(PreflightError {
+                    code: -32003,
+                    reason: "events_configuration_changed",
+                });
+            }
+            Ok(policy)
+        });
         events_runtime::validate_startup(&events_runtime::Config {
             db: profile.db.clone(),
             policy: profile.policy.clone(),

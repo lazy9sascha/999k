@@ -52,14 +52,14 @@ pub fn save_connection(home: &Path, origin: &str, registration: &str) -> Result<
         "registration": registration,
     }))
     .map_err(|_| "hosted_config_invalid".to_string())?;
-    pigeonmq::private_file::replace_private(&path, &bytes)
+    radio999k::private_file::replace_private(&path, &bytes)
         .map_err(|_| "hosted_config_write_failed".to_string())
 }
 
 /// Save the connector token in a separate owner-only file.
 pub fn save_token(home: &Path, token: &str) -> Result<PathBuf, String> {
     let path = home.join(TOKEN_FILE);
-    pigeonmq::private_file::replace_private(&path, token.as_bytes())
+    radio999k::private_file::replace_private(&path, token.as_bytes())
         .map_err(|_| "hosted_config_write_failed".to_string())?;
     Ok(path)
 }
@@ -67,7 +67,7 @@ pub fn save_token(home: &Path, token: &str) -> Result<PathBuf, String> {
 /// Load the hosted connection metadata, if present.
 pub fn load_connection(home: &Path) -> Result<Option<(String, String)>, String> {
     let path = home.join("hosted-connection.json");
-    let file = match pigeonmq::private_file::open_private_file(&path) {
+    let file = match radio999k::private_file::open_private_file(&path) {
         Ok(f) => f,
         Err(e) => {
             if path
@@ -81,10 +81,10 @@ pub fn load_connection(home: &Path) -> Result<Option<(String, String)>, String> 
     };
     use std::io::Read;
     let mut bytes = Vec::new();
-    file.take(pigeonmq::private_file::MAX_PRIVATE_CONFIG_BYTES + 1)
+    file.take(radio999k::private_file::MAX_PRIVATE_CONFIG_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "hosted_config_unreadable".to_string())?;
-    if bytes.len() as u64 > pigeonmq::private_file::MAX_PRIVATE_CONFIG_BYTES {
+    if bytes.len() as u64 > radio999k::private_file::MAX_PRIVATE_CONFIG_BYTES {
         return Err("hosted_config_too_large".to_string());
     }
     let value: serde_json::Value =
@@ -120,7 +120,7 @@ pub fn hosted_health(home: &Path) -> serde_json::Value {
         _ => return serde_json::json!({ "hosted": "not_configured" }),
     };
     let token_path = home.join(TOKEN_FILE);
-    let token_present = pigeonmq::private_file::open_private_file(&token_path).is_ok();
+    let token_present = radio999k::private_file::open_private_file(&token_path).is_ok();
     let public_reachable = probe_public(&conn.0);
     serde_json::json!({
         "hosted": "configured",
@@ -239,7 +239,7 @@ mod tests {
     fn debug_open_private() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("hosted-connection.json");
-        pigeonmq::private_file::replace_private(&path, b"{}").unwrap();
+        radio999k::private_file::replace_private(&path, b"{}").unwrap();
         let parent = path.parent().unwrap();
         let pm = std::fs::metadata(parent).unwrap();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -255,7 +255,7 @@ mod tests {
             fm.uid(),
             fm.nlink()
         );
-        let res = pigeonmq::private_file::open_private_file(&path);
+        let res = radio999k::private_file::open_private_file(&path);
         eprintln!("open result: {:?}", res.map(|_| "ok"));
     }
 

@@ -21,7 +21,7 @@ import tempfile
 import time
 
 
-BINARIES = ("pigeonmq", "pigeonmq-dot-resolve")
+BINARIES = ("999k", "999k-dot-resolve")
 LICENSE = "LICENSE"
 PROTOCOL = "2025-03-26"
 MUSE = "/muse/mcp"
@@ -99,7 +99,7 @@ def mcp_client(port, bearer):
         return result["result"]
 
     hello = {"protocolVersion": PROTOCOL, "capabilities": {},
-             "clientInfo": {"name": "pigeonmq-release-smoke", "version": "1"}}
+             "clientInfo": {"name": "999k-release-smoke", "version": "1"}}
     post(port, MUSE, {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": hello},
          None, expected=401)
     check(call("initialize", hello, None)["protocolVersion"] == PROTOCOL,
@@ -160,14 +160,14 @@ def run_demo(bins, version, root):
         return subprocess.run([binary, *args], env=env, cwd=root, text=True,
                               capture_output=True, timeout=15, **options)
 
-    check(cli(executable, "--version", check=True).stdout.strip() == "pigeonmq " + version,
+    check(cli(executable, "--version", check=True).stdout.strip() == "999k " + version,
           "installed CLI version does not match")
     # Numeric only: parse and classify addresses without a DNS lookup or connection.
     check(json.loads(cli(resolver, "--dot-resolve", "9.9.9.9", check=True).stdout) == ["9.9.9.9"],
           "resolver did not return the numeric public address")
     check(cli(resolver, "--dot-resolve", "127.0.0.1").returncode == 1,
           "resolver did not reject loopback")
-    print(f"pigeonmq {version}; resolver numeric checks passed", flush=True)
+    print(f"999k {version}; resolver numeric checks passed", flush=True)
 
     home = root / "hub"
     cli(executable, "init", "--home", home, check=True)
@@ -186,25 +186,29 @@ def run_demo(bins, version, root):
                     {"sender": "a", "recipient": "muse", "body": REQUEST}, sender)["message"]
         message_id = sent["id"]
         args = {"message_id": message_id}
-        read = tool("pigeonmq_read", **args)
+        read = tool("radio999k_read", **args)
         check((read["message_id"], read["state"], read["body"]) == (message_id, "pending", REQUEST),
               "the expected pending message was not read")
-        reply = tool("pigeonmq_reply", **args, body=REPLY)
+        reply = tool("radio999k_reply", **args, body=REPLY)
         reply_id = reply["reply_id"]
         check(reply_id and reply_id != message_id and not reply["duplicate"],
               "no new linked reply was created")
-        read = tool("pigeonmq_read", **args)
+        read = tool("radio999k_read", **args)
         check((read["state"], read["reply_id"]) == ("replied", reply_id),
               "the original did not reference the reply")
+        legacy = tool("pigeonmq_read", **args)
+        check((legacy["message_id"], legacy["state"], legacy["reply_id"]) ==
+              (message_id, "replied", reply_id),
+              "the legacy MCP read alias did not return the same reply")
         print("Local authenticated send, read, and linked reply passed", flush=True)
 
     with running_hub(command, env, home, port):
         tool = mcp_client(port, muse)
-        read = tool("pigeonmq_read", **args)
+        read = tool("radio999k_read", **args)
         check((read["message_id"], read["state"], read["reply_id"]) == (
             message_id, "replied", reply_id
         ), "the original linked reply ID changed after restart")
-        thread = tool("pigeonmq_read_thread", conversation_id=sent["conversation_id"])
+        thread = tool("radio999k_read_thread", conversation_id=sent["conversation_id"])
         check(any((msg["message_id"], msg["in_reply_to"], msg["body"], msg["sender"],
                    msg["recipient"]) == (reply_id, message_id, REPLY, "muse", "a")
                   for msg in thread["messages"]), "the linked reply was not present after restart")
@@ -223,13 +227,13 @@ args = parser.parse_args()
 signal.signal(signal.SIGTERM, interrupted)
 os.umask(0o077)
 try:
-    with tempfile.TemporaryDirectory(prefix="pigeonmq-release-smoke-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="999k-release-smoke-") as tmp:
         root = Path(tmp).resolve()
         bins = args.path.absolute() if args.installed else root / "bin"
         if not args.installed:
             unpack(args.path, bins)
         check(all((bins / name).is_file() and os.access(bins / name, os.X_OK) for name in BINARIES),
-              "both pigeonmq and pigeonmq-dot-resolve must be executable")
+              "both 999k and 999k-dot-resolve must be executable")
         run_demo(bins, args.version, root)
 except (TypeError, ValueError, KeyError, IndexError, OSError, HTTPException, tarfile.TarError,
         subprocess.SubprocessError) as error:

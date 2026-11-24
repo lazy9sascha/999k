@@ -11,7 +11,7 @@ mod operator_health;
 #[path = "run_companions.rs"]
 mod run_companions;
 pub(crate) use diagnostics::health;
-use pigeonmq::mailbox_catalog as catalog;
+use radio999k::mailbox_catalog as catalog;
 pub(crate) use run_companions::{guard as companion_guard, keep_hub_lease};
 use serde_json::{Value, json};
 use std::{
@@ -81,7 +81,7 @@ fn queue_identity(a: &Args) -> Result<(u64, u64), &'static str> {
 }
 
 fn private(path: &Path) -> Result<fs::File, &'static str> {
-    pigeonmq::private_file::open_private_file(path).map_err(|_| "unsafe_private_path")
+    radio999k::private_file::open_private_file(path).map_err(|_| "unsafe_private_path")
 }
 fn private_home(home: &Path) -> std::io::Result<fs::File> {
     let directory = fs::OpenOptions::new()
@@ -208,17 +208,17 @@ fn add_public_endpoints(value: &mut Value, paths: &Value, origin: &str) {
 
 // Process diagnostics never format an I/O error or relay a child's output.
 fn process_io_failure(stage: &'static str, error: &io::Error) {
-    tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+    tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
         stage, outcome = "io_failed", io_kind = ?error.kind(), os_error = error.raw_os_error());
 }
 
 fn process_exited(stage: &'static str, status: ExitStatus) {
-    tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+    tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
         stage, outcome = "exited", exit_code = status.code(), signal = status.signal());
 }
 
 fn process_timeout(stage: &'static str) {
-    tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+    tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
         stage, outcome = "timed_out");
 }
 
@@ -243,12 +243,12 @@ async fn preflight(a: &Args) -> Result<(), &'static str> {
             private(&binding.policy)?;
             cloud_credentials::provision(&binding.policy, app).map_err(|error| {
                 if error.get_ref().is_some_and(|e| e.is::<crate::auth::RetiredSenders>()) {
-                    tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                    tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
                         stage = "policy", outcome = "rejected", profile = app.slug(),
                         error_code = crate::auth::RETIRED_SENDERS_CODE, guidance = crate::auth::RETIRED_SENDERS_HELP);
                     return crate::auth::RETIRED_SENDERS_CODE;
                 }
-                tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
                     stage = "credentials", outcome = "failed", profile = app.slug(),
                     error_code = "cloud_credential_provision_failed");
                 "cloud_credential_provision_failed"
@@ -261,7 +261,7 @@ async fn preflight(a: &Args) -> Result<(), &'static str> {
         match binding.descriptor.adapter {
             catalog::Adapter::Muse => muse = Some(policy),
             catalog::Adapter::Dot => {
-                pigeonmq::dot_profile::check(&queue, policy, false)
+                radio999k::dot_profile::check(&queue, policy, false)
                     .map_err(|_| "dot_policy_or_existing_queue_unavailable")?;
             }
             catalog::Adapter::Grok => {
@@ -296,9 +296,9 @@ async fn preflight(a: &Args) -> Result<(), &'static str> {
                     .registration
                     .as_deref()
                     .ok_or("receiver_registration_unavailable")?;
-                pigeonmq::registration::load_registrations(registration)
+                radio999k::registration::load_registrations(registration)
                     .map_err(|_| "receiver_registration_unavailable")?;
-                pigeonmq::Queue::open_existing(&queue)
+                radio999k::Queue::open_existing(&queue)
                     .map_err(|_| "receiver_existing_queue_unavailable")?;
             }
         }
@@ -368,16 +368,16 @@ fn status(a: &Args, mut value: Value) {
         }
     }
     if record(&a.home, value).is_err() {
-        tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "status_write", outcome = "failed", error_code = "state_write_failed");
     }
 }
 fn local_state(a: &Args, host: &Child, tunnel: &str, reason: Option<&str>) {
     if let Some(error_code) = reason {
-        tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "tunnel", outcome = tunnel, error_code);
     } else {
-        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "tunnel", outcome = tunnel);
     }
     status(
@@ -534,7 +534,7 @@ async fn supervise(
                         });
                         add_public_endpoints(&mut state, &a.health_public_paths, &url);
                         status(a, state);
-                        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
                             stage = "tunnel", outcome = "connected");
                         println!("{}", json!({"state": "connected", "public_origin": url}));
                         managed.ready(url, Instant::now());
@@ -600,7 +600,7 @@ async fn run_with(
         None
     };
     let tunnel_mode = a.transport.mode();
-    tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+    tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
         stage = "run", outcome = "started", tunnel_mode);
     tokio::pin!(shutdown);
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -625,12 +625,12 @@ async fn run_with(
         }
         let checked = tokio::select! { result=preflight(&a)=>result, _=term.recv()=>Err("stopped"), _=interrupt.recv()=>Err("stopped"), _=&mut shutdown=>Err("stopped") };
         if let Err(reason) = checked {
-            tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+            tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "preflight", outcome = if reason == "stopped" { "stopped" } else { "failed" },
             error_code = reason);
             return finish(&a, reason, None, reason.starts_with("transient_"));
         }
-        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
         stage = "preflight", outcome = "completed");
         if expected_queue.is_none() {
             expected_queue = match queue_identity(&a) {
@@ -676,12 +676,12 @@ async fn run_with(
                 continue;
             }
         };
-        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
         stage = "host", outcome = "spawned");
         let stdout = match host.stdout.take() {
             Some(stdout) => stdout,
             None => {
-                tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
                     stage = "host_ready", outcome = "missing_stdout");
                 let _ = host.kill().await;
                 backoff = (backoff * 2).min(Duration::from_secs(5));
@@ -698,7 +698,7 @@ async fn run_with(
                 .map_err(host_read_error)?
                 == 0
             {
-                tracing::warn!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                tracing::warn!(target: "radio999k::cloud_service", component = "cloud_service",
                     stage = "host_ready", outcome = "eof");
                 return Err("transient_host_start");
             }
@@ -739,7 +739,7 @@ async fn run_with(
             Ok(Ok((delivery_enabled, health_public_paths))) => {
                 a.delivery_enabled = delivery_enabled;
                 a.health_public_paths = health_public_paths;
-                tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+                tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
                 stage = "host", outcome = "ready");
                 let supervise_ready_host = async {
                     match a.transport.managed_provider() {
@@ -918,7 +918,7 @@ async fn run_with(
                 &a,
                 json!({"state":"recovering","local_hub":"stopped","tunnel":"stopped","public_origin":null,"reason":reason}),
             );
-            tracing::warn!(target: "pigeonmq::cloud_service", component="cloud_service",
+            tracing::warn!(target: "radio999k::cloud_service", component="cloud_service",
             stage="host_recovery", outcome="retrying", error_code=reason);
             let stopped = tokio::select! {
                 _=term.recv()=>true, _=interrupt.recv()=>true, _=&mut shutdown=>true,
@@ -940,10 +940,10 @@ async fn run_with(
 
 fn finish(a: &Args, reason: &str, public_origin: Option<String>, retryable: bool) -> i32 {
     if reason == "stopped" {
-        tracing::info!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::info!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "run", outcome = "stopped");
     } else {
-        tracing::error!(target: "pigeonmq::cloud_service", component = "cloud_service",
+        tracing::error!(target: "radio999k::cloud_service", component = "cloud_service",
             stage = "run", outcome = "failed", error_code = reason, retry = retryable);
     }
     status(
@@ -1101,7 +1101,7 @@ mod tests {
         )
         .unwrap();
         fs::remove_file(a.home.join(QUEUE)).unwrap();
-        pigeonmq::Queue::open(a.home.join(QUEUE)).unwrap();
+        radio999k::Queue::open(a.home.join(QUEUE)).unwrap();
         for (name, value) in [
             (
                 catalog::codex_http().policy_file,
@@ -1748,7 +1748,7 @@ exec /bin/sleep 30
             );
             return;
         }
-        pigeonmq::logging::init();
+        radio999k::logging::init();
         let (_dir, args) = fixture(
             r#"#!/bin/sh
 if [ "$1" != serve-hub ]; then exit 0; fi
@@ -1963,7 +1963,7 @@ exec /bin/sleep 30
             return;
         }
 
-        pigeonmq::logging::init();
+        radio999k::logging::init();
         let (_dir, a) = fixture(
             "#!/bin/sh\nprintf '%s\\n' MUSE_STDOUT_PRIVATE\nprintf '%s\\n' MUSE_STDERR_PRIVATE >&2\nexit 42\n",
         );

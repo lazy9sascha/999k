@@ -116,7 +116,7 @@ pub async fn connect_native(binding: &Binding) -> Result<NativeTransport, String
         NativeTransport::connect(&binding.endpoint, Instant::now() + Duration::from_secs(10))
             .await
             .map_err(|e| e.to_string())?;
-    native.initialize(json!({"clientInfo":{"name":"pigeonmq_codex_receiver","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),Instant::now()+Duration::from_secs(10)).await.map_err(|e|e.to_string())?;
+    native.initialize(json!({"clientInfo":{"name":"999k-codex-receiver","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),Instant::now()+Duration::from_secs(10)).await.map_err(|e|e.to_string())?;
     Ok(native)
 }
 

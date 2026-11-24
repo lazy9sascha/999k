@@ -1,4 +1,4 @@
-//! Install and inspect only the two owner-selected PigeonMQ LaunchAgents.
+//! Install and inspect only the two owner-selected 999K LaunchAgents.
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, DirBuilder, File, OpenOptions},
@@ -61,7 +61,7 @@ fn check_label(label: &str) -> io::Result<()> {
     if matches!(label, HUB_LABEL | RELAY_LABEL | HOSTED_LABEL) {
         return Ok(());
     }
-    Err(fail("invalid PigeonMQ service label"))
+    Err(fail("invalid 999K service label"))
 }
 
 fn expected_job(directory: &Path, label: &str, args: &[String]) -> io::Result<(PathBuf, Job)> {
@@ -70,7 +70,7 @@ fn expected_job(directory: &Path, label: &str, args: &[String]) -> io::Result<(P
         || !args.first().is_some_and(|arg| Path::new(arg).is_absolute())
         || args.iter().any(|arg| arg.chars().any(char::is_control))
     {
-        return Err(fail("invalid PigeonMQ LaunchAgent arguments"));
+        return Err(fail("invalid 999K LaunchAgent arguments"));
     }
     Ok((
         directory.join(format!("{label}.plist")),
@@ -95,7 +95,7 @@ fn check_directory(directory: &Path) -> io::Result<bool> {
         {
             Ok(true)
         }
-        Ok(_) => Err(fail("unsafe PigeonMQ LaunchAgents directory")),
+        Ok(_) => Err(fail("unsafe 999K LaunchAgents directory")),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
@@ -118,19 +118,19 @@ fn verify_expected(path: &Path, expected: &Job) -> io::Result<bool> {
         || metadata.nlink() != 1
         || metadata.len() > PLIST_LIMIT
     {
-        return Err(fail("unsafe existing PigeonMQ LaunchAgent plist"));
+        return Err(fail("unsafe existing 999K LaunchAgent plist"));
     }
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
         .take(PLIST_LIMIT + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > PLIST_LIMIT {
-        return Err(fail("existing PigeonMQ LaunchAgent plist is too large"));
+        return Err(fail("existing 999K LaunchAgent plist is too large"));
     }
-    let actual: Job = plist::from_bytes(&bytes)
-        .map_err(|_| fail("invalid existing PigeonMQ LaunchAgent plist"))?;
+    let actual: Job =
+        plist::from_bytes(&bytes).map_err(|_| fail("invalid existing 999K LaunchAgent plist"))?;
     if actual != *expected {
-        return Err(fail("existing PigeonMQ LaunchAgent plist conflicts"));
+        return Err(fail("existing 999K LaunchAgent plist conflicts"));
     }
     Ok(true)
 }
@@ -161,7 +161,7 @@ pub(crate) fn ensure_plist(
             .mode(0o700)
             .create(directory)?;
         if !check_directory(directory)? {
-            return Err(fail("PigeonMQ LaunchAgents directory unavailable"));
+            return Err(fail("999K LaunchAgents directory unavailable"));
         }
     }
     if verify_expected(&path, &expected)? {
@@ -170,9 +170,9 @@ pub(crate) fn ensure_plist(
 
     let mut bytes = Vec::new();
     plist::to_writer_xml(&mut bytes, &expected)
-        .map_err(|_| fail("could not encode PigeonMQ LaunchAgent plist"))?;
+        .map_err(|_| fail("could not encode 999K LaunchAgent plist"))?;
     if bytes.len() as u64 > PLIST_LIMIT {
-        return Err(fail("PigeonMQ LaunchAgent plist is too large"));
+        return Err(fail("999K LaunchAgent plist is too large"));
     }
     let temp = directory.join(format!(".pigeonmq-{}.tmp", uuid::Uuid::new_v4()));
     let mut file = OpenOptions::new()
@@ -252,11 +252,11 @@ fn inspect_from_print(
         return if missing {
             Ok(None)
         } else {
-            Err(fail("could not inspect PigeonMQ LaunchAgent"))
+            Err(fail("could not inspect 999K LaunchAgent"))
         };
     }
     let printed = std::str::from_utf8(&output.stdout)
-        .map_err(|_| fail("invalid PigeonMQ LaunchAgent inspection output"))?;
+        .map_err(|_| fail("invalid 999K LaunchAgent inspection output"))?;
     let mut paths = printed
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("path = "));
@@ -264,11 +264,11 @@ fn inspect_from_print(
         .next()
         .map(Path::new)
         .filter(|path| path.is_absolute())
-        .ok_or_else(|| fail("loaded PigeonMQ LaunchAgent path is unknown"))?;
+        .ok_or_else(|| fail("loaded 999K LaunchAgent path is unknown"))?;
     if paths.next().is_some()
         || path != expected_plist && expected_plist.canonicalize().ok().as_deref() != Some(path)
     {
-        return Err(fail("loaded PigeonMQ LaunchAgent uses a different plist"));
+        return Err(fail("loaded 999K LaunchAgent uses a different plist"));
     }
 
     let mut pids = printed
@@ -279,7 +279,7 @@ fn inspect_from_print(
         .and_then(|pid| pid.parse().ok())
         .filter(|pid| *pid > 0);
     if pids.next().is_some() {
-        return Err(fail("ambiguous PigeonMQ LaunchAgent process"));
+        return Err(fail("ambiguous 999K LaunchAgent process"));
     }
     Ok(Some(JobInspection { pid }))
 }
@@ -324,7 +324,7 @@ async fn capture(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| fail("could not start PigeonMQ service inspection"))?;
+        .map_err(|_| fail("could not start 999K service inspection"))?;
     let mut stdout = child
         .stdout
         .take()
@@ -340,7 +340,7 @@ async fn capture(
         let mut err = Vec::new();
         tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
         if out.len() as u64 > MAX_OUTPUT || err.len() as u64 > MAX_ERROR {
-            return Err(fail("PigeonMQ service inspection output limit exceeded"));
+            return Err(fail("999K service inspection output limit exceeded"));
         }
         Ok(Captured {
             exit_code: child.wait().await?.code(),
@@ -358,7 +358,7 @@ async fn capture(
                 Ok(Err(error)) => Err(error),
                 _ => Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "PigeonMQ service inspection timed out",
+                    "999K service inspection timed out",
                 )),
             }
         }
@@ -394,7 +394,7 @@ async fn probe_mcp_route(port: u16, route: &str, timeout: std::time::Duration) -
         Ok(unauthorized_status(&status))
     })
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "PigeonMQ hub probe timed out"))?
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "999K hub probe timed out"))?
 }
 
 #[cfg(target_os = "macos")]
@@ -462,7 +462,7 @@ async fn wait_for_hub(plist: &Path, port: u16, routes: &[String]) -> io::Result<
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        "PigeonMQ hub did not prove loopback route readiness",
+        "999K hub did not prove loopback route readiness",
     ))
 }
 
@@ -520,7 +520,7 @@ async fn wait_for_private_socket(
         || routes.is_empty()
         || routes
             .iter()
-            .any(|route| !pigeonmq::mailbox_catalog::valid_mcp_route(route))
+            .any(|route| !radio999k::mailbox_catalog::valid_mcp_route(route))
     {
         return Err(fail("invalid hosted socket readiness plan"));
     }
@@ -572,7 +572,7 @@ impl LaunchControl for SystemLaunchctl {
     fn loaded(&self, label: &str, expected_plist: &Path) -> io::Result<bool> {
         check_label(label)?;
         if !expected_plist.is_absolute() {
-            return Err(fail("expected PigeonMQ LaunchAgent path must be absolute"));
+            return Err(fail("expected 999K LaunchAgent path must be absolute"));
         }
         let target = format!("gui/{}/{label}", euid());
         let output = launchctl(&["print".as_ref(), target.as_ref()])?;
@@ -590,12 +590,12 @@ impl LaunchControl for SystemLaunchctl {
                 )
             )
         {
-            return Err(fail("invalid PigeonMQ LaunchAgent path"));
+            return Err(fail("invalid 999K LaunchAgent path"));
         }
         let domain = format!("gui/{}", euid());
         let output = launchctl(&["bootstrap".as_ref(), domain.as_ref(), path.as_os_str()])?;
         if output.exit_code != Some(0) {
-            return Err(fail("could not bootstrap PigeonMQ LaunchAgent"));
+            return Err(fail("could not bootstrap 999K LaunchAgent"));
         }
         Ok(())
     }
@@ -605,7 +605,7 @@ impl LaunchControl for SystemLaunchctl {
         let target = format!("gui/{}/{label}", euid());
         let output = launchctl(&["bootout".as_ref(), target.as_ref()])?;
         if output.exit_code != Some(0) {
-            return Err(fail("could not boot out PigeonMQ LaunchAgent"));
+            return Err(fail("could not boot out 999K LaunchAgent"));
         }
         Ok(())
     }
@@ -616,9 +616,9 @@ impl LaunchControl for SystemLaunchctl {
             || routes.is_empty()
             || routes
                 .iter()
-                .any(|route| !pigeonmq::mailbox_catalog::valid_mcp_route(route))
+                .any(|route| !radio999k::mailbox_catalog::valid_mcp_route(route))
         {
-            return Err(fail("invalid PigeonMQ hub readiness plan"));
+            return Err(fail("invalid 999K hub readiness plan"));
         }
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -660,22 +660,22 @@ impl LaunchControl for SystemLaunchctl {
 #[cfg(not(target_os = "macos"))]
 impl LaunchControl for SystemLaunchctl {
     fn loaded(&self, _: &str, _: &Path) -> io::Result<bool> {
-        Err(fail("PigeonMQ LaunchAgents require macOS"))
+        Err(fail("999K LaunchAgents require macOS"))
     }
 
     fn bootstrap(&self, _: &Path) -> io::Result<()> {
-        Err(fail("PigeonMQ LaunchAgents require macOS"))
+        Err(fail("999K LaunchAgents require macOS"))
     }
 
     fn bootout(&self, _: &str) -> io::Result<()> {
-        Err(fail("PigeonMQ LaunchAgents require macOS"))
+        Err(fail("999K LaunchAgents require macOS"))
     }
 
     fn hub_ready(&self, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
-        Err(fail("PigeonMQ LaunchAgents require macOS"))
+        Err(fail("999K LaunchAgents require macOS"))
     }
     fn hosted_ready(&self, _: &Path, _: &Path, _: u16, _: &[String]) -> io::Result<()> {
-        Err(fail("PigeonMQ hosted LaunchAgents require macOS"))
+        Err(fail("999K hosted LaunchAgents require macOS"))
     }
     fn stdio_ready(&self, _: &Path, _: &Path, _: &[String]) -> io::Result<()> {
         Err(fail("managed stdio LaunchAgents require macOS"))

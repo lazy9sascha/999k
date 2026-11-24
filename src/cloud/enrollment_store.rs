@@ -169,7 +169,7 @@ impl Registry {
             Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
             Err(_) => return Err(RegistryError::Unavailable),
         };
-        let mut file = pigeonmq::private_file::open_private_file(&path)
+        let mut file = radio999k::private_file::open_private_file(&path)
             .map_err(|_| RegistryError::Unavailable)?;
         if !created {
             // Check the SQLite file header before SQLite can open or recover another database.
@@ -1577,7 +1577,7 @@ mod tests {
             Some(RegistryError::Unavailable)
         );
         assert!(fs::read(&path).unwrap().is_empty());
-        drop(pigeonmq::Queue::open(&path).unwrap());
+        drop(radio999k::Queue::open(&path).unwrap());
         let original = fs::read(&path).unwrap();
         assert_eq!(
             Registry::open(&path).err(),

@@ -1,5 +1,5 @@
 //! Real-binary comparison of built-in defaults and explicit synthetic route/policy mounts.
-use pigeonmq::{Envelope, Queue, mailbox_catalog as catalog};
+use radio999k::{Envelope, Queue, mailbox_catalog as catalog};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_pigeonmq");
+const BIN: &str = env!("CARGO_BIN_EXE_999k");
 const DB: &str = "pigeonmq-cloud-queue.sqlite3";
 const REG: &str = "pigeonmq-cloud-registration.json";
 static ROLES: LazyLock<[(&catalog::HttpProfile, &str, &str); 5]> = LazyLock::new(|| {
@@ -121,9 +121,9 @@ impl Fixture {
             entries.push(json!({"adapter":role.id,"route":route,"policy":selected}));
         }
         private(&manifest, &json!({"profiles":entries}));
-        pigeonmq::muse_mailbox::prepare(&db).unwrap();
-        pigeonmq::grok_mailbox::prepare(&db).unwrap();
-        pigeonmq::dot_profile::check(&db, &dot_policy, true).unwrap();
+        radio999k::muse_mailbox::prepare(&db).unwrap();
+        radio999k::grok_mailbox::prepare(&db).unwrap();
+        radio999k::dot_profile::check(&db, &dot_policy, true).unwrap();
         Self {
             home,
             db,
@@ -367,14 +367,14 @@ fn check_inbox_surface(
     let listing = listed["result"]["tools"].as_array().unwrap();
     let mut inbox = listing
         .iter()
-        .filter(|tool| tool["name"] == "pigeonmq_inbox");
+        .filter(|tool| tool["name"] == "radio999k_inbox");
     let tool = inbox
         .next()
         .unwrap_or_else(|| panic!("missing inbox on {route}"));
     assert!(inbox.next().is_none(), "duplicate inbox on {route}");
     assert_eq!(
         tool["inputSchema"],
-        pigeonmq::mailbox_tools::inbox_tool()["inputSchema"],
+        radio999k::mailbox_tools::inbox_tool()["inputSchema"],
         "{route}"
     );
     let properties = &tool["inputSchema"]["properties"];
@@ -409,7 +409,7 @@ fn check_inbox_surface(
         send(mailbox, peer, "sent marker 10%_")
     } else {
         let sent = call_tool(
-            "pigeonmq_send",
+            "radio999k_send",
             json!({"recipient":peer,"body":"sent marker 10%_","idempotency_key":"inbox-parity","continue_from_message_id":oldest}),
         );
         sent["message_id"]
@@ -428,7 +428,7 @@ fn check_inbox_surface(
         "unrelated marker 10%_",
     );
 
-    let call = |arguments| call_tool("pigeonmq_inbox", arguments);
+    let call = |arguments| call_tool("radio999k_inbox", arguments);
     let ids = |page: &Value| {
         assert_eq!(page["metadata_only"], true);
         page["messages"]
@@ -483,7 +483,7 @@ fn check_inbox_surface(
         if mailbox == peer { &outgoing } else { &oldest }
     );
     let thread = call_tool(
-        "pigeonmq_read_thread",
+        "radio999k_read_thread",
         json!({"conversation_id":conversation}),
     );
     let sent = thread["messages"]
@@ -548,7 +548,7 @@ fn explicit_manifest_rejects_collisions_paths_and_pinned_content_drift() {
         (
             [
                 original.clone(),
-                vec![b' '; pigeonmq::private_file::MAX_PRIVATE_CONFIG_BYTES as usize],
+                vec![b' '; radio999k::private_file::MAX_PRIVATE_CONFIG_BYTES as usize],
             ]
             .concat(),
             0o600,
@@ -626,15 +626,15 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
             })
             .unwrap()
     };
-    let common = pigeonmq::MAX_ORDINARY_REQUEST_BYTES;
-    let deferred = pigeonmq::muse_mailbox::MAX_REQUEST_BYTES;
+    let common = radio999k::MAX_ORDINARY_REQUEST_BYTES;
+    let deferred = radio999k::muse_mailbox::MAX_REQUEST_BYTES;
     for (sender, deferred_recipient) in [(muse, grok), (grok, muse)] {
         let tools = request(sender, "tools/list", json!({}));
         let send = tools["result"]["tools"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|tool| tool["name"] == "pigeonmq_send")
+            .find(|tool| tool["name"] == "radio999k_send")
             .unwrap();
         let schema = &send["inputSchema"];
         assert!(
@@ -649,7 +649,7 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
         let valid = json!({"recipient":recipient,"body":"test","idempotency_key":"test"});
         let mut missing = valid.clone();
         missing.as_object_mut().unwrap().remove("idempotency_key");
-        rejected(tool(sender, "pigeonmq_send", missing), "invalid_fields");
+        rejected(tool(sender, "radio999k_send", missing), "invalid_fields");
         for (field, value, reason) in [
             ("idempotency_key", Value::Null, "invalid_fields"),
             (
@@ -678,12 +678,12 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
         ] {
             let mut invalid = valid.clone();
             invalid[field] = value;
-            rejected(tool(sender, "pigeonmq_send", invalid), reason);
+            rejected(tool(sender, "radio999k_send", invalid), reason);
         }
         rejected(
             tool(
                 sender,
-                "pigeonmq_send",
+                "radio999k_send",
                 json!({"recipient":dot.0.id,"body":"é".repeat(common / 2) + "x","idempotency_key":"test"}),
             ),
             "invalid_body",
@@ -692,7 +692,7 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
     rejected(
         tool(
             codex,
-            "pigeonmq_send",
+            "radio999k_send",
             json!({
                 "recipient":muse.0.id,"body":"test","idempotency_key":"test","correlation_id":"café"
             }),
@@ -702,7 +702,7 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
     rejected(
         tool(
             codex,
-            "pigeonmq_send",
+            "radio999k_send",
             json!({
                 "recipient":dot.0.id,"body":" \u{1c}","idempotency_key":"test"
             }),
@@ -711,7 +711,7 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
     );
     let denied = tool(
         dot,
-        "pigeonmq_send",
+        "radio999k_send",
         json!({
             "recipient":grok.0.id,"body":"test","idempotency_key":"test",
             "conversation":{"conversation_id":"café","participants":[{"mailbox":grok.0.id,"role":"to"}]}
@@ -733,17 +733,17 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
         let key = "é".repeat(64);
         let correlation = "c".repeat(128);
         let send = json!({"recipient":recipient.0.id,"body":body,"idempotency_key":key,"correlation_id":correlation});
-        let first = accepted(tool(sender, "pigeonmq_send", send.clone()));
+        let first = accepted(tool(sender, "radio999k_send", send.clone()));
         assert_eq!(first["duplicate"], false);
         let id = &first["message"]["id"];
-        let replay = accepted(tool(sender, "pigeonmq_send", send.clone()));
+        let replay = accepted(tool(sender, "radio999k_send", send.clone()));
         assert_eq!(replay["duplicate"], true);
         assert_eq!(&replay["message"]["id"], id);
         let mut changed = send;
         changed["body"] = json!("different request");
-        rejected(tool(sender, "pigeonmq_send", changed), "conflict");
+        rejected(tool(sender, "radio999k_send", changed), "conflict");
 
-        let read = accepted(tool(recipient, "pigeonmq_read", json!({"message_id":id})));
+        let read = accepted(tool(recipient, "radio999k_read", json!({"message_id":id})));
         let observed = read.get("envelope").unwrap_or(&read);
         assert_eq!(observed["body"], body);
         assert_eq!(observed["correlation_id"], correlation);
@@ -751,16 +751,16 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
         let answer = if recipient.0.adapter == catalog::Adapter::Dot {
             "answer".to_owned()
         } else {
-            "é".repeat(pigeonmq::muse_mailbox::MAX_REPLY_BYTES / 2)
+            "é".repeat(radio999k::muse_mailbox::MAX_REPLY_BYTES / 2)
         };
         let complete = accepted(tool(
             recipient,
-            "pigeonmq_reply",
+            "radio999k_reply",
             json!({"message_id":id,"body":answer}),
         ));
         let reply = accepted(tool(
             sender,
-            "pigeonmq_read",
+            "radio999k_read",
             json!({"message_id":complete["reply_id"]}),
         ));
         assert_eq!(reply["body"], answer);
@@ -771,7 +771,7 @@ fn registered_send_admits_only_readable_idempotent_ordinary_requests() {
     // Mixed recipients keep existing per-copy results. Rejected means no row was inserted.
     let subset = accepted(tool(
         muse,
-        "pigeonmq_send",
+        "radio999k_send",
         json!({
             "recipient":format!("{},{}", grok.0.id, dot.0.id),
             "body":"x".repeat(common + 1),
@@ -799,7 +799,7 @@ fn muse_and_grok_continuations_require_both_read_and_send() {
         };
         let mut policy: Value = serde_json::from_slice(&fs::read(&policy_path).unwrap()).unwrap();
         let parent = queue
-            .send(pigeonmq::Envelope {
+            .send(radio999k::Envelope {
                 sender: "dot".into(),
                 recipient: role.id.into(),
                 body: "fixture parent".into(),
@@ -819,7 +819,7 @@ fn muse_and_grok_continuations_require_both_read_and_send() {
                 token,
                 &json!({
                     "jsonrpc":"2.0","id":1,"method":"tools/call",
-                    "params":{"name":"pigeonmq_send","arguments":arguments}
+                    "params":{"name":"radio999k_send","arguments":arguments}
                 }),
             );
             assert_eq!(status, 200, "{response}");
@@ -874,12 +874,12 @@ fn thread_reads_are_per_mailbox_even_after_an_authorized_continuation() {
         if let Some(cursor) = cursor {
             args["cursor"] = json!(cursor);
         }
-        call(role, "pigeonmq_read_thread", args)
+        call(role, "radio999k_read_thread", args)
     };
     let (a, b, c, outsider) = (1, 0, 2, 3); // Dot, Muse, Grok and Codex fixtures.
     let root = call(
         a,
-        "pigeonmq_send",
+        "radio999k_send",
         json!({"recipient":"muse","body":"A to B","idempotency_key":"root"}),
     );
     let root_id = root["message_id"].as_str().unwrap();
@@ -889,18 +889,18 @@ fn thread_reads_are_per_mailbox_even_after_an_authorized_continuation() {
         thread(outsider, root_id, None),
         thread(c, "unknown-fixture", None)
     );
-    let observed = call(b, "pigeonmq_read", json!({"message_id":root_id}));
+    let observed = call(b, "radio999k_read", json!({"message_id":root_id}));
     assert_eq!(observed["message_id"], root_id);
     assert_eq!(observed["conversation_id"], root_id);
     let reply = call(
         b,
-        "pigeonmq_reply",
+        "radio999k_reply",
         json!({"message_id":root_id,"body":"B to A terminal"}),
     );
     let reply_id = reply["reply_id"].as_str().unwrap();
     let continued = call(
         a,
-        "pigeonmq_send",
+        "radio999k_send",
         json!({"recipient":"grok-bot","body":"A to C, no old bodies","idempotency_key":"new","continue_from_message_id":reply_id}),
     );
     let continued_id = continued["message_id"].as_str().unwrap();
@@ -919,7 +919,7 @@ fn thread_reads_are_per_mailbox_even_after_an_authorized_continuation() {
     let denied = |parent| {
         tool(
             b,
-            "pigeonmq_send",
+            "radio999k_send",
             json!({
                 "recipient":"dot","body":"denied","idempotency_key":"deny","continue_from_message_id":parent
             }),
@@ -928,7 +928,7 @@ fn thread_reads_are_per_mailbox_even_after_an_authorized_continuation() {
     assert_eq!(denied(continued_id), denied("missing-fixture"));
     let new_root = call(
         b,
-        "pigeonmq_send",
+        "radio999k_send",
         json!({"recipient":"dot","body":"raw collision",
         "idempotency_key":"collision","correlation_id":root_id}),
     );
@@ -946,7 +946,7 @@ fn thread_reads_are_per_mailbox_even_after_an_authorized_continuation() {
     for i in 0..20 {
         let result = call(
             a,
-            "pigeonmq_send",
+            "radio999k_send",
             json!({"recipient":"muse","body":"later A to B",
             "idempotency_key":format!("later-{i}"),"continue_from_message_id":root_id}),
         );
@@ -972,7 +972,7 @@ fn thread_reads_are_per_mailbox_even_after_an_authorized_continuation() {
     let cursor_error = |cursor| {
         tool(
             c,
-            "pigeonmq_read_thread",
+            "radio999k_read_thread",
             json!({
                 "conversation_id":root_id,"cursor":cursor
             }),
@@ -1044,7 +1044,7 @@ fn terminal_confirmation_reports_only_in_scope_domain_errors_over_rmcp() {
                 route,
                 token,
                 &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-                    "name":"pigeonmq_confirm_terminal","arguments":{"message_id":id}}}),
+                    "name":"radio999k_confirm_terminal","arguments":{"message_id":id}}}),
             );
             assert_eq!(status, 200, "{response}");
             let result = &response["result"];
@@ -1190,7 +1190,7 @@ fn terminal_confirmation_reports_only_in_scope_domain_errors_over_rmcp() {
             route,
             "wrong-test-token",
             &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-                "name":"pigeonmq_confirm_terminal","arguments":{"message_id":answer}}}),
+                "name":"radio999k_confirm_terminal","arguments":{"message_id":answer}}}),
         );
         assert_eq!(status, 401, "{rejected}");
 
@@ -1327,7 +1327,7 @@ fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
             "test-muse",
             &rpc(
                 "send",
-                "pigeonmq_send",
+                "radio999k_send",
                 json!({"recipient":recipient,"body":"fixture request","idempotency_key":key}),
             ),
         );
@@ -1348,11 +1348,11 @@ fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
             json!({"jsonrpc":"2.0","id":"early","method":"tools/list","params":{}}),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
             json!({"jsonrpc":"2.0","id":"list","method":"tools/list","params":{}}),
-            rpc("read", "pigeonmq_read", json!({"message_id":original})),
-            rpc("outside", "pigeonmq_read", json!({"message_id":other})),
+            rpc("read", "radio999k_read", json!({"message_id":original})),
+            rpc("outside", "radio999k_read", json!({"message_id":other})),
             rpc(
                 "reply",
-                "pigeonmq_reply",
+                "radio999k_reply",
                 json!({"message_id":original,"body":"stdio fixture reply"}),
             ),
         ],
@@ -1370,7 +1370,7 @@ fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
             .as_array()
             .unwrap_or_else(|| panic!("invalid list response: {}", frames[2]))
             .iter()
-            .any(|tool| tool["name"] == "pigeonmq_reply")
+            .any(|tool| tool["name"] == "radio999k_reply")
     );
     let read = extract(&frames[3]);
     assert_eq!(
@@ -1386,7 +1386,7 @@ fn stdio_uses_the_existing_hub_and_is_not_its_owner() {
     let (status, result) = hub.request(
         "/muse/mcp",
         "test-muse",
-        &rpc("linked", "pigeonmq_read", json!({"message_id":reply_id})),
+        &rpc("linked", "radio999k_read", json!({"message_id":reply_id})),
     );
     assert_eq!(status, 200); // Hub still responds after stdio EOF.
     let linked = extract(&result);

@@ -29,10 +29,10 @@ def run(*args, env=None, code=0):
 
 
 def archive(directory, target):
-    path = directory / f"pigeonmq-{VERSION}-{target}.tar.gz"
+    path = directory / f"999k-{VERSION}-{target}.tar.gz"
     files = {
-        "pigeonmq": f'#!/bin/sh\nprintf "%s\\n" "{target}:$1"\n',
-        "pigeonmq-dot-resolve": '#!/bin/sh\nprintf "%s\\n" "resolver:$1"\n',
+        "999k": f'#!/bin/sh\nprintf "%s\\n" "{target}:$1"\n',
+        "999k-dot-resolve": '#!/bin/sh\nprintf "%s\\n" "resolver:$1"\n',
         "LICENSE": "Fixture license\n",
     }
     with tarfile.open(path, "w:gz") as tar:
@@ -69,7 +69,7 @@ while [ "$#" -gt 1 ]; do
     shift
 done
 case $1 in
-    https://github.com/lazy9sascha/pigeonmq/releases/download/0.1.6/pigeonmq-0.1.6-*.tar.gz) ;;
+    https://github.com/lazy9sascha/999k/releases/download/0.1.6/999k-0.1.6-*.tar.gz) ;;
     *) exit 99 ;;
 esac
 printf '%s\\n' "${1##*/}" >> "$FIXTURE_DOWNLOADS"
@@ -87,17 +87,23 @@ fi
     run(*generate, output, env=env)
     installer = output / "install.sh"
     assert installer.read_bytes() == (output / "npm/install.sh").read_bytes()
-    formula = (output / "pigeonmq.rb").read_text()
+    formula = (output / "radio999k.rb").read_text()
     for pins in assets.values():
         digest, filename = pins.split("  ")
         assert f'/{VERSION}/{filename}"\n      sha256 "{digest}"' in formula
     if shutil.which("ruby"):
-        run("ruby", "-c", output / "pigeonmq.rb", env=env)
+        run("ruby", "-c", output / "radio999k.rb", env=env)
 
     # Default and quoted custom install directories. Bad bytes must not replace a good pair.
+    legacy = home / ".local/bin"
+    legacy.mkdir(parents=True)
+    write_command(legacy / "pigeonmq", "exit 91\n")
+    write_command(legacy / "pigeonmq-dot-resolve", "exit 92\n")
     run("sh", installer, env=env)
     assert downloads.read_text().splitlines() == [name]
-    assert run(home / ".local/bin/pigeonmq", "--version", env=env).stdout.strip() == f"{target}:--version"
+    assert run(home / ".local/bin/999k", "--version", env=env).stdout.strip() == f"{target}:--version"
+    run(legacy / "pigeonmq", env=env, code=91)
+    run(legacy / "pigeonmq-dot-resolve", env=env, code=92)
     custom = home / "custom bin"
     run("sh", installer, "--bin-dir", custom, env=env)
     fetched = downloads.read_bytes()
@@ -105,29 +111,29 @@ fi
     assert downloads.read_bytes() == fetched
     old = home / "old"
     old.mkdir()
-    write_command(old / "pigeonmq", "exit 91\n")
+    write_command(old / "999k", "exit 91\n")
     failed = run("sh", installer, "--bin-dir", old, env=env, code=1)
     assert "Existing file differs" in failed.stderr
-    assert run(old / "pigeonmq", env=env, code=91).stdout == ""
-    (old / "pigeonmq").unlink()
-    (old / "pigeonmq-dot-resolve").symlink_to(custom / "pigeonmq-dot-resolve")
+    assert run(old / "999k", env=env, code=91).stdout == ""
+    (old / "999k").unlink()
+    (old / "999k-dot-resolve").symlink_to(custom / "999k-dot-resolve")
     failed = run("sh", installer, "--bin-dir", old, env=env, code=1)
     assert "Cannot replace non-regular file" in failed.stderr
     assert downloads.read_bytes() == fetched
     raced = home / "competing install"
-    foreign = raced / "pigeonmq-dot-resolve"
+    foreign = raced / "999k-dot-resolve"
     failed = run("sh", installer, "--bin-dir", raced,
                  env=dict(env, FIXTURE_COMPETING_FILE=str(foreign)), code=1)
     assert "Existing file differs" in failed.stderr
     assert foreign.read_bytes() == b"other release\n"
-    assert sorted(path.name for path in raced.iterdir()) == ["pigeonmq-dot-resolve"]
+    assert sorted(path.name for path in raced.iterdir()) == ["999k-dot-resolve"]
 
     fixture.write_bytes(good_archive + b"corrupt")
     bad = home / "bad download"
     failed = run("sh", installer, "--bin-dir", bad, env=env, code=1)
     assert "SHA-256 mismatch" in failed.stderr
     assert list(bad.iterdir()) == []
-    assert run(custom / "pigeonmq-dot-resolve", "quoted value", env=env).stdout.strip() == "resolver:quoted value"
+    assert run(custom / "999k-dot-resolve", "quoted value", env=env).stdout.strip() == "resolver:quoted value"
     rejected = root / "rejected"
     run(*generate, rejected, env=env, code=1)
     assert not rejected.exists()
@@ -137,17 +143,19 @@ fi
     pack = run("npm", "pack", "--offline", "--ignore-scripts", "--pack-destination", root,
                output / "npm", env=env).stdout.strip().splitlines()[-1]
     bundled = ("npm", "exec", "--offline", "--ignore-scripts", "--yes", f"--package={root / pack}", "--")
-    assert run(*bundled, "pigeonmq", "two words", env=env).stdout.strip() == f"{target}:two words"
+    assert run(*bundled, "999k", "two words", env=env).stdout.strip() == f"{target}:two words"
     fetched = downloads.read_bytes()
-    assert run(*bundled, "pigeonmq-dot-resolve", "warm", env=env).stdout.strip() == "resolver:warm"
+    assert run(*bundled, "999k-dot-resolve", "warm", env=env).stdout.strip() == "resolver:warm"
     assert downloads.read_bytes() == fetched
-    cached = home / f".local/share/pigeonmq/npm/{VERSION}-{target}/bin/pigeonmq"
+    assert run("sh", installer, "--run", "pigeonmq", "legacy", env=env).stdout.strip() == f"{target}:legacy"
+    assert downloads.read_bytes() == fetched
+    cached = home / f".local/share/999k/npm/{VERSION}-{target}/bin/999k"
     write_command(cached, "exit 91\n")
     fixture.write_bytes(good_archive + b"corrupt")
-    failed = run(*bundled, "pigeonmq", "--version", env=env, code=1)
+    failed = run(*bundled, "999k", "--version", env=env, code=1)
     assert "SHA-256 mismatch" in failed.stderr
     fixture.write_bytes(good_archive)
-    assert run(*bundled, "pigeonmq", "--version", env=env).stdout.strip() == f"{target}:--version"
+    assert run(*bundled, "999k", "--version", env=env).stdout.strip() == f"{target}:--version"
 
     # Unsupported targets cannot fetch anything. Missing optional ARM cannot pick an Intel archive.
     manifest.write_text("\n".join(value for key, value in assets.items()
@@ -157,7 +165,7 @@ fi
     write_command(scripts / "uname", 'case $1 in -s) echo Linux;; -m) echo aarch64;; esac\n')
     fetched = downloads.read_bytes()
     failed = run("sh", partial / "install.sh", env=env, code=1)
-    assert "No PigeonMQ" in failed.stderr
+    assert "No 999K" in failed.stderr
     assert downloads.read_bytes() == fetched
 
     manifest.write_bytes(good_manifest + good_manifest.splitlines()[0] + b"\n")
@@ -166,6 +174,6 @@ fi
 
 
 if __name__ == "__main__":
-    with tempfile.TemporaryDirectory(prefix="pigeonmq-install-test.") as directory:
+    with tempfile.TemporaryDirectory(prefix="999k-install-test.") as directory:
         smoke(Path(directory))
     print("Direct and npm installer smoke tests, pinned archives, and formula checks passed.")

@@ -9,7 +9,7 @@ On a Mac with the same architecture as the guest, build the native release archi
 
 ```sh
 scripts/package-release.sh aarch64-apple-darwin
-archive=target/artifacts/pigeonmq-0.2.0-aarch64-apple-darwin.tar.gz
+archive=target/artifacts/999k-0.2.0-aarch64-apple-darwin.tar.gz
 sha=$(shasum -a 256 "$archive" | cut -d ' ' -f 1)
 python3 packaging/codex/render.py "$archive" "$sha" target/codex-test-catalog
 ```
@@ -30,10 +30,10 @@ mkdir "$HOME/.pmq-codex-preview"
 printf '%s\n' pigeonmq-codex-local-preview-v1 > "$HOME/.pmq-codex-preview/enable"
 export CODEX_HOME="$HOME/pmq-test-codex"
 codex plugin marketplace add /absolute/path/to/codex-test-catalog
-codex plugin add pigeonmq-preview@pigeonmq-local-test
+codex plugin add radio999k-preview@radio999k-local-test
 ```
 
-Start a fresh local Codex session. Check that PigeonMQ appears in the MCP list.
+Start a fresh local Codex session. Check that 999K appears in the MCP list.
 On first use, the plugin copies its binary to the private preview directory.
 It then starts the managed hub and connects to one local Cue mailbox.
 It uses the existing mailbox policy and private Unix socket.
@@ -41,7 +41,7 @@ The plugin does not use an email code, Keychain, or Cloudflare.
 It does not reuse a different existing hub. Concurrent first starts wait briefly for the same hub.
 
 The preview binds the normal hub port on loopback. Do not run it alongside another hub.
-Stop if a different PigeonMQ job or binary exists. No upgrade workflow is provided.
+Stop if a different 999K job or binary exists. No upgrade workflow is provided.
 
 ## Remove the test
 

@@ -391,7 +391,7 @@ pub(super) fn handle_connection(
         Ok(request) => request,
         Err(error) => return finish_profile_connection_with_status(stream, Err(error), 200),
     };
-    let peer_closed = || pigeonmq::dot_mcp_host::peer_closed(&stream);
+    let peer_closed = || radio999k::dot_mcp_host::peer_closed(&stream);
     match dispatch(&input, &body, &peer_closed) {
         WireResponse::Json((result, status)) => {
             finish_profile_connection_with_status(stream, result, status);

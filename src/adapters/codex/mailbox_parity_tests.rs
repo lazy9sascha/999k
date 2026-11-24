@@ -1,6 +1,6 @@
 //! Offline parity through both real adapter APIs. No HTTP, Events or external targets.
 use super::*;
-use pigeonmq::{
+use radio999k::{
     dot_mailbox::Mailbox, grok_mailbox as grok, mcp_request::Context, muse_mailbox as muse,
 };
 use rusqlite::{Connection, OptionalExtension};
@@ -52,13 +52,13 @@ impl Fixture {
         );
         muse::prepare(&db).unwrap();
         grok::prepare(&db).unwrap();
-        pigeonmq::dot_profile::check(&db, &dot_policy, true).unwrap();
+        radio999k::dot_profile::check(&db, &dot_policy, true).unwrap();
         Self {
             dot: Mailbox::new(db.clone(), dot_policy),
             codex: Profile {
                 hosted: None,
                 identity: crate::codex_mcp::Identity::BuiltIn(
-                    pigeonmq::mailbox_catalog::codex().mailbox,
+                    radio999k::mailbox_catalog::codex().mailbox,
                 ),
                 db,
                 policy,
@@ -121,7 +121,7 @@ impl Fixture {
             profile
                 .call(
                     &[format!("Bearer {TOKEN}").into_bytes()],
-                    "pigeonmq_reply",
+                    "radio999k_reply",
                     json!({"message_id":id,"body":body}),
                 )
                 .map_err(|(code, reason)| (i32::from(code), reason))
@@ -235,7 +235,7 @@ fn shared_insert_keeps_adapter_wire_shapes_bindings_and_database_identity() {
         f.connection()
             .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        pigeonmq::SCHEMA_VERSION
+        radio999k::SCHEMA_VERSION
     );
     assert_eq!(
         f.connection()
@@ -370,7 +370,7 @@ fn dot_final_cancellation_and_codex_revocation_leave_no_completion() {
         f.dot
             .reply(OWNER, TOKEN, &id, "answer", &context)
             .unwrap_err(),
-        pigeonmq::mcp_request::Fault::new(-32021, "wait_cancelled")
+        radio999k::mcp_request::Fault::new(-32021, "wait_cancelled")
     );
     assert_eq!(checks.load(Ordering::SeqCst), 3);
     f.pending(&id);

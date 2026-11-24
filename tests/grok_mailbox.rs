@@ -1,4 +1,4 @@
-use pigeonmq::{Envelope, Queue, grok_mailbox as m};
+use radio999k::{Envelope, Queue, grok_mailbox as m};
 use rusqlite::{Connection, params};
 use std::{fs::Permissions, os::unix::fs::PermissionsExt};
 
@@ -89,7 +89,7 @@ fn grok_wake_accepts_pending_ordinary_and_valid_terminal_in_the_same_scope() {
         .reply_unclaimed_checked("alice", &parent.id, answer, || Ok(()))
         .unwrap();
     let denied = queue.send(envelope("mallory", "grok-bot")).unwrap().message;
-    let ids = pigeonmq::grok_wake::pending(&db, i64::MAX).unwrap();
+    let ids = radio999k::grok_wake::pending(&db, i64::MAX).unwrap();
     for (id, conversation) in [
         (&ordinary.id, &ordinary.conversation_id),
         (&terminal.id, &parent.conversation_id),
@@ -99,7 +99,7 @@ fn grok_wake_accepts_pending_ordinary_and_valid_terminal_in_the_same_scope() {
             m::wake_candidate(&db, id, &scope).unwrap(),
             Some(("alice".into(), conversation.clone()))
         );
-        let body = pigeonmq::grok_wake::wake_body(id, conversation);
+        let body = radio999k::grok_wake::wake_body(id, conversation);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
             serde_json::json!({"message_id":id,"conversation_id":conversation,"mailbox":"grok-bot"})
@@ -119,12 +119,12 @@ fn grok_wake_accepts_pending_ordinary_and_valid_terminal_in_the_same_scope() {
     )
     .unwrap();
     assert!(m::wake_candidate(&db, &terminal.id, &scope).is_err());
-    let state = dir.path().join(pigeonmq::grok_wake::STATE_FILE);
-    let mut ledger = pigeonmq::grok_wake::WakeState::load(state.clone());
+    let state = dir.path().join(radio999k::grok_wake::STATE_FILE);
+    let mut ledger = radio999k::grok_wake::WakeState::load(state.clone());
     ledger.delivered(&ordinary.id);
     ledger.delivered(&terminal.id);
     ledger.save().unwrap();
-    let restarted = pigeonmq::grok_wake::WakeState::load(state);
+    let restarted = radio999k::grok_wake::WakeState::load(state);
     assert!(!restarted.due(&ordinary.id));
     assert!(!restarted.due(&terminal.id));
     assert!(restarted.due(&denied.id));

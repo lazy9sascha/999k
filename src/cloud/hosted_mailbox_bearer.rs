@@ -1,6 +1,6 @@
 //! Finite Cue Bearer custody for the opt-in managed hosted Unix origin only.
 use crate::auth;
-use pigeonmq::private_file;
+use radio999k::private_file;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -97,7 +97,7 @@ impl Scope {
 
     fn load(&self) -> io::Result<Grant> {
         let bytes = auth::read_private_policy(&self.home.join(GRANT)).map_err(|_| invalid())?;
-        let value = pigeonmq::mcp_request::strict_json(&bytes).map_err(|_| invalid())?;
+        let value = radio999k::mcp_request::strict_json(&bytes).map_err(|_| invalid())?;
         let grant: Grant = serde_json::from_value(value).map_err(|_| invalid())?;
         if self.installation.is_nil()
             || grant.installation != self.installation.to_string()

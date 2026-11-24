@@ -1,6 +1,6 @@
-//! Attach a separate, peer-scoped PigeonMQ tool to each local Orca relay bot.
+//! Attach a separate, peer-scoped 999K tool to each local Orca relay bot.
 use crate::{cloud_setup, stdio_mcp};
-use pigeonmq::private_file;
+use radio999k::private_file;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -16,7 +16,8 @@ const PEERS: [(&str, &str); 5] = [
     ("muse", "Muse"),
     ("grok-bot", "GrokBot"),
 ];
-const TOOL: &str = "pigeonmq";
+const TOOL: &str = "radio999k";
+const LEGACY_TOOL: &str = "pigeonmq";
 const BOT_CHAT_REQUIRED: &str = "Orca requires a bot-owned chat to propose new bots";
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -101,10 +102,12 @@ struct Bot {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Tool {
     name: String,
     remote: bool,
     detail: String,
+    sign_in: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -115,13 +118,13 @@ struct Inventory {
 
 fn purpose(peer: &str) -> String {
     format!(
-        "PigeonMQ relay for {peer}. Use the local pigeonmq tool to send only to {peer}. Report Queued after acceptance. Wait on the original ID, and return the matching peer reply to its originating chat."
+        "999K relay for {peer}. Use the local radio999k tool and radio999k_send to send only to {peer}. Report Queued after acceptance. Call radio999k_wait with the original ID, and return the matching peer reply to its originating chat."
     )
 }
 
 fn relay_matches(bot: &Bot, peer: &str) -> bool {
     let description = bot.specialty.as_deref().unwrap_or_default().to_lowercase();
-    description.contains("pigeonmq")
+    (description.contains("999k") || description.contains("pigeonmq"))
         && description
             .split(|c: char| !c.is_alphanumeric() && c != '-')
             .any(|s| s == peer)
@@ -192,29 +195,53 @@ fn attach(bot: &Bot, command: &str, run: &impl Fn(&[&str]) -> Result<Value>) -> 
         ])?)?)
     };
     let initial = inventory()?;
-    let matches = |tools: &Inventory| {
-        let mut ours = tools.own.iter().filter(|entry| entry.name == TOOL);
-        ours.next()
-            .is_some_and(|entry| !entry.remote && entry.detail == command)
-            && ours.next().is_none()
+    let legacy_command = command.split_once(' ').and_then(|(path, args)| {
+        let path = Path::new(path);
+        (path.file_name()? == "999k").then(|| {
+            let alias = path.with_file_name("pigeonmq");
+            format!("{} {args}", alias.display())
+        })
+    });
+    let inherits = |tools: &Inventory, name: &str| {
+        tools
+            .inherited
+            .iter()
+            .any(|entry| entry["name"] == name || entry == name)
     };
-    if initial
-        .inherited
-        .iter()
-        .any(|entry| entry["name"] == TOOL || entry == TOOL)
-    {
+    let matches = |tools: &Inventory| {
+        let mut ours = tools
+            .own
+            .iter()
+            .filter(|entry| matches!(entry.name.as_str(), TOOL | LEGACY_TOOL));
+        ours.next().is_some_and(|entry| {
+            let expected = match entry.name.as_str() {
+                TOOL => entry.detail == command,
+                LEGACY_TOOL => {
+                    entry.detail == command
+                        || legacy_command.as_deref() == Some(entry.detail.as_str())
+                }
+                _ => false,
+            };
+            !entry.remote && entry.sign_in.is_none() && expected && !inherits(tools, &entry.name)
+        }) && ours.next().is_none()
+    };
+    if matches(&initial) {
+        return Ok(());
+    }
+    if inherits(&initial, TOOL) {
         return Err(format!(
-            "{} inherits a tool named pigeonmq. Resolve the name conflict in Orca.",
+            "{} inherits a tool named {TOOL}. Resolve the name conflict in Orca.",
             bot.name
         )
         .into());
     }
-    if matches(&initial) {
-        return Ok(());
-    }
-    if initial.own.iter().any(|entry| entry.name == TOOL) {
+    if initial
+        .own
+        .iter()
+        .any(|entry| matches!(entry.name.as_str(), TOOL | LEGACY_TOOL))
+    {
         return Err(format!(
-            "{} already has a different pigeonmq tool. Review it in Orca.",
+            "{} already has a different 999K relay tool. Review it in Orca.",
             bot.name
         )
         .into());
@@ -222,7 +249,8 @@ fn attach(bot: &Bot, command: &str, run: &impl Fn(&[&str]) -> Result<Value>) -> 
     run(&[
         "bot", "tools", "add", command, "--name", TOOL, "--bot", &bot.id,
     ])?;
-    if !matches(&inventory()?) {
+    let final_inventory = inventory()?;
+    if !matches(&final_inventory) || !final_inventory.own.iter().any(|entry| entry.name == TOOL) {
         return Err("Orca did not list the expected peer-scoped command after adding it.".into());
     }
     Ok(())
@@ -275,7 +303,7 @@ impl Setup<'_> {
                 continue;
             };
             if candidates.next().is_some() || !relay_matches(bot, peer) {
-                return Err(format!("Review the existing {name} bot in Orca. Its identity must designate the PigeonMQ relay for {peer}.").into());
+                return Err(format!("Review the existing {name} bot in Orca. Its identity must designate the 999K relay for {peer}.").into());
             }
             let command = format!(
                 "{} stdio-mcp --home {} --mailbox {} --bearer-file {} --peer {peer}",
@@ -346,7 +374,7 @@ impl Setup<'_> {
                 if let Some(bot_name) = relay {
                     if pending.handoff.is_none() {
                         let prompt = format!(
-                            "The owner started local PigeonMQ setup. Run this setup command once in this Home Chat to propose missing relay bots for owner approval: {} . Do not send any peer messages.",
+                            "The owner started local 999K setup. Run this setup command once in this Home Chat to propose missing relay bots for owner approval: {} . Do not send any peer messages.",
                             self.resume_command()
                         );
                         pending.handoff = Some(bot_name.to_owned());
@@ -359,7 +387,7 @@ impl Setup<'_> {
                             "--type",
                             "handoff",
                             "--subject",
-                            "Set up PigeonMQ relay bots",
+                            "Set up 999K relay bots",
                             "--body",
                             &prompt,
                         ])
@@ -464,7 +492,7 @@ mod tests {
 
     fn setup() -> Setup<'static> {
         Setup {
-            executable: "/bin/pigeonmq",
+            executable: "/bin/999k",
             home: "/fixture",
             sender: "codex-cloud",
             bearer: "/fixture/header",
@@ -526,16 +554,66 @@ mod tests {
             specialty: Some(purpose("dot")),
             server: None,
         };
-        let run = |args: &[&str]| -> Result<Value> {
-            assert_eq!(args, ["bot", "tools", "--bot", "local-id"]);
-            Ok(
-                json!({"own":[{"name":"pigeonmq","remote":false,"detail":"bin --peer dot"}],"inherited":[]}),
-            )
-        };
-        attach(&bot, "bin --peer dot", &run).unwrap();
-        assert!(attach(&bot, "bin --peer cue", &run).is_err());
+        for (tool, path) in [(TOOL, "/bin/999k"), (LEGACY_TOOL, "/bin/pigeonmq")] {
+            let run = |args: &[&str]| -> Result<Value> {
+                assert_eq!(args, ["bot", "tools", "--bot", "local-id"]);
+                Ok(json!({"own":[{"name": tool, "remote": false,
+                                  "detail": format!("{path} --peer dot")}],"inherited":[]}))
+            };
+            attach(&bot, "/bin/999k --peer dot", &run).unwrap();
+            assert!(attach(&bot, "/bin/999k --peer cue", &run).is_err());
+            assert!(attach(&bot, "/another/bin/999k --peer dot", &run).is_err());
+        }
         assert!(relay_matches(&bot, "dot"));
         assert!(!relay_matches(&bot, "cue"));
+        let old = Bot {
+            specialty: Some("PigeonMQ relay for dot.".into()),
+            ..bot
+        };
+        assert!(relay_matches(&old, "dot"));
+        assert!(!relay_matches(&old, "cue"));
+    }
+
+    #[test]
+    fn fresh_bots_attach_the_new_name_beside_an_inherited_legacy_tool() {
+        let bot = Bot {
+            id: "local-id".into(),
+            name: "Dot".into(),
+            specialty: Some(purpose("dot")),
+            server: None,
+        };
+        let command = "/bin/999k stdio-mcp --peer dot";
+        let added = std::cell::Cell::new(false);
+        let run = |args: &[&str]| -> Result<Value> {
+            match args {
+                ["bot", "tools", "--bot", "local-id"] => {
+                    let own = if added.get() {
+                        vec![json!({"name": TOOL, "remote": false, "detail": command})]
+                    } else {
+                        vec![]
+                    };
+                    Ok(json!({"own": own, "inherited": [{"name": LEGACY_TOOL}]}))
+                }
+                [
+                    "bot",
+                    "tools",
+                    "add",
+                    detail,
+                    "--name",
+                    TOOL,
+                    "--bot",
+                    "local-id",
+                ] => {
+                    assert_eq!(*detail, command);
+                    assert!(!added.replace(true));
+                    Ok(Value::Null)
+                }
+                _ => panic!("unexpected operation"),
+            }
+        };
+        attach(&bot, command, &run).unwrap();
+        attach(&bot, command, &run).unwrap();
+        assert!(added.get());
     }
 
     #[test]

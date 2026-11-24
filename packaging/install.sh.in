@@ -3,12 +3,12 @@
 set -eu
 
 version='@VERSION@'
-release='https://github.com/lazy9sascha/pigeonmq/releases/download'
+release='https://github.com/lazy9sascha/999k/releases/download'
 tmp=
 lock=
 
 fail() {
-    printf 'pigeonmq: %s\n' "$*" >&2
+    printf '999k: %s\n' "$*" >&2
     exit 1
 }
 
@@ -26,20 +26,20 @@ matches() {
 }
 
 verified_pair() {
-    [ -x "$1/pigeonmq" ] && [ -x "$1/pigeonmq-dot-resolve" ] &&
-        matches "$1/pigeonmq" "$main_sha" &&
-        matches "$1/pigeonmq-dot-resolve" "$resolver_sha"
+    [ -x "$1/999k" ] && [ -x "$1/999k-dot-resolve" ] &&
+        matches "$1/999k" "$main_sha" &&
+        matches "$1/999k-dot-resolve" "$resolver_sha"
 }
 
 check_destinations() {
-    for name in pigeonmq pigeonmq-dot-resolve; do
+    for name in 999k 999k-dot-resolve; do
         path=$bin_dir/$name
         if [ -L "$path" ] || { [ -e "$path" ] && [ ! -f "$path" ]; }; then
             fail "Cannot replace non-regular file: $path"
         fi
         if [ -z "$run" ] && [ -f "$path" ]; then
             case $name in
-                pigeonmq) expected=$main_sha ;;
+                999k) expected=$main_sha ;;
                 *) expected=$resolver_sha ;;
             esac
             matches "$path" "$expected" || fail "Existing file differs: $path. Choose a new --bin-dir."
@@ -51,13 +51,13 @@ check_destinations() {
 install_pair() {
     mkdir -p "$bin_dir"
     check_destinations
-    tmp=$(mktemp -d "$bin_dir/.pigeonmq.XXXXXXXX")
-    archive=pigeonmq-$version-$target.tar.gz
+    tmp=$(mktemp -d "$bin_dir/.999k.XXXXXXXX")
+    archive=999k-$version-$target.tar.gz
     curl -q -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 \
         --retry 2 -o "$tmp/archive" "$release/$version/$archive" ||
         fail "Could not download $archive."
     matches "$tmp/archive" "$archive_sha" || fail "SHA-256 mismatch for $archive."
-    tar -xzf "$tmp/archive" -C "$tmp" pigeonmq pigeonmq-dot-resolve ||
+    tar -xzf "$tmp/archive" -C "$tmp" 999k 999k-dot-resolve ||
         fail "Could not extract $archive."
     verified_pair "$tmp" || fail "The release executables do not match their SHA-256 pins."
 
@@ -68,7 +68,7 @@ install_pair() {
         lock=$guard
         check_destinations
     fi
-    for name in pigeonmq pigeonmq-dot-resolve; do
+    for name in 999k 999k-dot-resolve; do
         chmod 755 "$tmp/$name"
         if [ -n "$run" ]; then
             mv -f "$tmp/$name" "$bin_dir/$name"
@@ -85,10 +85,10 @@ select_target() {
     machine=$(uname -m)
     case $os:$machine in
 # @PIN_CASES@
-        *) fail "No PigeonMQ $version archive for $os $machine." ;;
+        *) fail "No 999K $version archive for $os $machine." ;;
     esac
     if [ "$os" = Linux ]; then
-        getconf GNU_LIBC_VERSION >/dev/null 2>&1 || fail "PigeonMQ requires glibc on Linux."
+        getconf GNU_LIBC_VERSION >/dev/null 2>&1 || fail "999K requires glibc on Linux."
     fi
     if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
         fail "Install sha256sum or shasum before running this installer."
@@ -105,8 +105,10 @@ main() {
             ;;
         --run)
             case "${2:-}" in
-                pigeonmq|pigeonmq-dot-resolve) run=$2 ;;
-                *) fail "Unknown PigeonMQ executable." ;;
+                999k|999k-dot-resolve) run=$2 ;;
+                pigeonmq) run=999k ;;
+                pigeonmq-dot-resolve) run=999k-dot-resolve ;;
+                *) fail "Unknown 999K executable." ;;
             esac
             shift 2
             ;;
@@ -124,7 +126,7 @@ main() {
     [ "$(id -u)" != 0 ] || fail "Run this installer as your own user, without sudo."
     select_target
     if [ -n "$run" ]; then
-        bin_dir=${HOME:?HOME is required}/.local/share/pigeonmq/npm/$version-$target/bin
+        bin_dir=${HOME:?HOME is required}/.local/share/999k/npm/$version-$target/bin
     fi
     case $bin_dir in
         /*) ;;
@@ -146,10 +148,10 @@ main() {
         exec "$bin_dir/$run" "$@"
     fi
 
-    printf 'Installed PigeonMQ %s in %s\n' "$version" "$bin_dir"
+    printf 'Installed 999K %s in %s\n' "$version" "$bin_dir"
     case ":$PATH:" in
         *:"$bin_dir":*) ;;
-        *) printf 'Add %s to PATH, or use %s/pigeonmq.\n' "$bin_dir" "$bin_dir" ;;
+        *) printf 'Add %s to PATH, or use %s/999k.\n' "$bin_dir" "$bin_dir" ;;
     esac
 }
 

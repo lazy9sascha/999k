@@ -1,0 +1,7 @@
+{
+  "name": "radio999k-preview",
+  "version": "0.2.0",
+  "description": "Test the 999K local Cue mailbox on macOS.",
+  "requires_local_executor": true,
+  "mcpServers": "./.mcp.json"
+}

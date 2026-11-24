@@ -33,7 +33,7 @@ jobs:
       - name: Build the release binary
         run: |
           cargo build --locked --release
-          ./target/release/pigeonmq --version
+          ./target/release/999k --version
 
       - name: Test
         run: cargo test --locked -- --test-threads=1

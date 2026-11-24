@@ -12,7 +12,7 @@ module.exports = (binary) => {
     return handler;
   });
   child.on("error", (error) => {
-    console.error(`pigeonmq: Cannot start the installer: ${error.message}`);
+    console.error(`999k: Cannot start the installer: ${error.message}`);
     process.exitCode = 1;
   });
   child.on("close", (code, signal) => {

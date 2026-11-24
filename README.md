@@ -1,28 +1,33 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-wordmark-dark.svg">
-  <img alt="PigeonMQ" src="docs/assets/logo-wordmark-light.svg" width="360">
-</picture>
+<img alt="Ink drawing of the 999K field radio with a bent antenna and coiled handset cord" src="docs/assets/999k-field-radio-ink.png" width="280">
 
-# PigeonMQ
+# 999K
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust edition: 2024](https://img.shields.io/badge/Rust%20edition-2024-orange.svg)](Cargo.toml)
 
-**PigeonMQ connects agents through a queue that runs on your machine.**
+**A field radio for your agents.**
 
-The foreground hub runs on macOS and Linux. Managed setup, Keychain, and native Codex roles require macOS.
+999K (pronounced “nine nine nine K”) is a message queue on your machine. Your agents can ask each other for help and retrieve replies, even if they come back later.
 
-## Local setup
+Orca is one way to use the queue. The same hub also serves local clients and hosted agents.
 
-On macOS, a new managed Cue or Instinct home can opt in to a private stdio socket on its first managed apply. A local MCP client on that machine then runs `stdio-mcp` with the absolute `pigeonmq` path and the private bearer file path. That client needs no email and no reverse tunnel.
+## Ask from your project chat
 
-Keep an existing managed home on its current path. To enable stdio with the candidate, apply the socket setting to an already-active profile. The running hub restarts once.
+Stay in your current Orca project chat. Ask that agent to consult a peer you already run.
 
-Follow the [Quickstart](docs/quickstart.md) for this local macOS setup. Reverse tunnels remain available for remote agents.
+> Ask Muse for a shorter title for the release notes.
 
-## Architecture
+Your project agent sends the request to the Muse bot. You can continue in the same chat while you wait. When the bot retrieves Muse’s reply, it can return the answer to your original question. If the first check is empty, the bot may need to check again.
 
-Each agent gets a mailbox on your machine. Local clients use stdio on that machine. Hosted agents can connect through an optional reverse tunnel. Cue and Instinct can also receive new-mail notifications by email.
+Open the Muse bot Home Chat to see its tool calls and its own updates. It shows the relay’s part of the exchange.
+
+**Queued** means the hub accepted the request. The answer arrives in a separate message linked to the original question.
+
+[Connect your agents to Orca](docs/quickstart.md#connect-orca-to-your-existing-peers)
+
+## The hub
+
+Each agent has a mailbox on your machine. Local clients use stdio on that machine. Hosted agents can use a reverse tunnel. Cue and Instinct can also receive an email when a message arrives.
 
 ```mermaid
 flowchart LR
@@ -37,7 +42,7 @@ flowchart LR
     subgraph MAC["Your machine"]
         S["Local stdio"]
         T["Optional reverse tunnel<br/>Email relay"]
-        Q["PigeonMQ<br/>Message queue"]
+        Q["999K<br/>Message queue"]
 
         subgraph LOCAL["Local agents"]
             H["Hermes"]
@@ -65,18 +70,51 @@ flowchart LR
 | Cue | MCP with optional email notifications |
 | Instinct | MCP with optional email notifications |
 
-For local Codex sessions, see [PigeonMQ Local](https://github.com/lazy9sascha/pigeonmq-local).
+For local Codex sessions, see the [companion project](https://github.com/lazy9sascha/pigeonmq-local).
 
 ## Quickstart
 
-Use an installer from [GitHub Releases](https://github.com/lazy9sascha/pigeonmq/releases) when assets are available, or build from source.
-Follow the [Quickstart](docs/quickstart.md) to set up local stdio on macOS, then connect a client. Use a reverse tunnel only when a remote agent needs one.
+The public command is `999k`. Use an installer from [GitHub Releases](https://github.com/lazy9sascha/999k/releases) when the 0.2.0 assets are available. The installer places `999k` and `999k-dot-resolve` in `$HOME/.local/bin`. It does not start a service or open a tunnel.
+
+```sh
+version=0.2.0
+curl -q --proto '=https' -fLsS -o 999k-install.sh \
+  "https://github.com/lazy9sascha/999k/releases/download/$version/install.sh" &&
+sh ./999k-install.sh
+```
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+999k --version
+```
+
+Then follow the [Quickstart](docs/quickstart.md).
+
+1. Prepare local stdio on the Mac that runs the hub.
+2. Approve the Orca plugin. In an empty Orca profile, create the first bot.
+3. Send one request from the project chat.
+4. Treat **Queued** as acceptance. Wait for the matching peer reply.
+
+A reverse tunnel is optional. Use it only for a remote agent.
+
+## Platform limits
+
+- The foreground hub runs on macOS and Linux.
+- Managed setup, Keychain, and native Codex roles need macOS.
+- The Orca plugin needs Orca 1.4.268 or newer. Review the plugin permissions and each bot creation request in Orca.
+- Keep an existing hub on its current path. Read the Quickstart before you add stdio to a home that already runs.
+- Release archives exist only for targets published on [GitHub Releases](https://github.com/lazy9sascha/999k/releases). Use the Quickstart to build 999K when that list has no archive for your machine.
 
 ## Documentation
 
 - [Architecture](docs/architecture.md): how messages move through the hub.
 - [One LaunchAgent](docs/launchd.md): run an existing private hub with its tunnels and email relay.
 - [Agents and capabilities](docs/agents.md): connection and setup options by agent.
-- [Research log](docs/research.md): what we tested and what’s still unverified.
+- [Research log](docs/research.md): what we tested and what is still unverified.
+- [Contributing](CONTRIBUTING.md): how to test a change.
 
-Trying an agent we haven’t listed? [Tell us what worked.](https://github.com/lazy9sascha/pigeonmq/issues)
+Trying an agent we have not listed? [Tell us what worked.](https://github.com/lazy9sascha/999k/issues)
+
+## License
+
+The [MIT License](LICENSE) covers 999K.

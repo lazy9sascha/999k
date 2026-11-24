@@ -1,6 +1,6 @@
 //! The optional private launchd companions.
 use super::{Args, QUEUE};
-use pigeonmq::{mailbox_catalog as catalog, private_file::MAX_PRIVATE_CONFIG_BYTES};
+use radio999k::{mailbox_catalog as catalog, private_file::MAX_PRIVATE_CONFIG_BYTES};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -111,7 +111,7 @@ impl Manifest {
                 || !absolute(&relay.state)
                 || !absolute(&relay.command)
                 || !(1..=3600).contains(&relay.interval_secs)
-                || pigeonmq::arrival_notify::validate_static_mailboxes(&relay.mailboxes).is_err())
+                || radio999k::arrival_notify::validate_static_mailboxes(&relay.mailboxes).is_err())
         {
             return Err(invalid());
         }

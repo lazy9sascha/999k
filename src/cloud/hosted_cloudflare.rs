@@ -112,7 +112,7 @@ impl DnsRecord {
 }
 
 pub(crate) fn valid_public_mcp_path(path: &str) -> bool {
-    pigeonmq::mailbox_catalog::valid_mcp_route(path)
+    radio999k::mailbox_catalog::valid_mcp_route(path)
         && !matches!(path, "/receiver/mcp" | "/admin/mcp" | "/rpc/mcp")
 }
 

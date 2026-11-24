@@ -587,7 +587,7 @@ async fn operator_reopens_sqlite_and_reconciles_a_lost_tunnel_create_response() 
     .await;
     let api = provider.api;
     // Use the same synthetic management token that the provider fixture expects.
-    pigeonmq::private_file::replace_private(&home.path().join("cloudflare.key"), API.as_bytes())
+    radio999k::private_file::replace_private(&home.path().join("cloudflare.key"), API.as_bytes())
         .unwrap();
     let mut operator = crate::Operator::from_home(home.path()).unwrap();
     operator.cloudflare.api = api.clone();

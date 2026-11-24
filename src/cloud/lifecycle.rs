@@ -7,7 +7,7 @@ use crate::{
     },
     mailbox_startup::{Binding, Manifest, QUEUE, REGISTRATION, bindings, valid_route},
 };
-use pigeonmq::{
+use radio999k::{
     arrival_notify::{RelayConfig, RelayTarget, lock_state},
     mailbox_catalog as catalog, mailbox_generation as generation, private_file,
 };
@@ -158,7 +158,7 @@ fn private_dir(path: &Path) -> io::Result<PathBuf> {
         if cause.kind() == io::ErrorKind::NotFound {
             io::Error::new(
                 cause.kind(),
-                "lifecycle home is missing; run bare pigeonmq init or create an owner-private directory",
+                "lifecycle home is missing; run bare 999k init or create an owner-private directory",
             )
         } else {
             cause
@@ -304,7 +304,7 @@ fn validate_command(command: &Path) -> io::Result<()> {
 }
 
 fn registration_data(path: &Path) -> io::Result<Value> {
-    pigeonmq::registration::load_registrations(path)
+    radio999k::registration::load_registrations(path)
         .map_err(|_| error("invalid mailbox registration"))?;
     read_json(path)
 }
@@ -362,7 +362,7 @@ fn init_home(home: &Path, name: &str, manifest: Option<&Path>) -> io::Result<Pat
                 .sync_all()?;
         }
         open_private(&queue)?;
-        pigeonmq::Queue::open(&queue).map_err(io::Error::other)?;
+        radio999k::Queue::open(&queue).map_err(io::Error::other)?;
     }
     Ok(home)
 }
@@ -1175,7 +1175,7 @@ pub(crate) fn serve_hosted_connector(home: &Path) -> io::Result<()> {
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn serve_hosted_connector(_: &Path) -> io::Result<()> {
-    Err(error("PigeonMQ hosted LaunchAgents require macOS"))
+    Err(error("999K hosted LaunchAgents require macOS"))
 }
 
 /// Return the existing managed hub queue path without opening it.

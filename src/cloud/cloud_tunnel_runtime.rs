@@ -166,7 +166,7 @@ pub(crate) fn run(
         Ok(mut file) => file.write_all(b"config_version: 1\n")?,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let mut existing = String::new();
-            pigeonmq::private_file::open_private_file(&config)
+            radio999k::private_file::open_private_file(&config)
                 .map_err(|_| io::Error::other("Unsafe Cloud Dot foreground config"))?
                 .take(64)
                 .read_to_string(&mut existing)?;
@@ -180,7 +180,7 @@ pub(crate) fn run(
     let origin = format!(
         "http://{}{}",
         listener.local_addr()?,
-        pigeonmq::mailbox_catalog::by_adapter(pigeonmq::mailbox_catalog::Adapter::Dot).route
+        radio999k::mailbox_catalog::by_adapter(radio999k::mailbox_catalog::Adapter::Dot).route
     );
     let (hub_tx, hub_rx) = std::sync::mpsc::channel();
     let (queue, policy) = (queue.to_path_buf(), policy.to_path_buf());

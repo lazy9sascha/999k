@@ -1,0 +1,18 @@
+class Radio999k < Formula
+  desc "Self-hosted MCP hub for agent-to-agent messaging"
+  homepage "https://github.com/lazy9sascha/999k"
+  version "@VERSION@"
+  license "MIT"
+
+# @BREW_SOURCES@
+
+  def install
+    bin.install "999k", "999k-dot-resolve"
+    prefix.install "LICENSE"
+  end
+
+  test do
+    assert_equal "999k #{version}", shell_output("#{bin}/999k --version").strip
+    shell_output("#{bin}/999k-dot-resolve", 2)
+  end
+end

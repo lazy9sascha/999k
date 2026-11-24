@@ -118,11 +118,15 @@ impl ServerHandler for Profile {
     }
     async fn call_tool(
         &self,
-        params: CallToolRequestParams,
+        mut params: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        if !self.tools.iter().any(|tool| tool.name == params.name) {
+        let canonical = crate::mailbox_tools::canonical_tool_name(&params.name);
+        if !self.tools.iter().any(|tool| tool.name == canonical) {
             return Err(ErrorData::invalid_params("unknown_tool", None));
+        }
+        if let Cow::Owned(canonical) = canonical {
+            params.name = canonical.into();
         }
         let (reply, result) = oneshot::channel();
         self.calls
@@ -165,7 +169,7 @@ pub(crate) fn execute_tool(
     call: &mut impl FnMut(&str, Value) -> Result<Value, Fault>,
 ) -> Result<Value, Fault> {
     // FIXME(yagni): comma-separated fan-out is existing tool behavior.
-    let subset = (name == "pigeonmq_send")
+    let subset = (name == "radio999k_send")
         .then(|| arguments["recipient"].as_str())
         .flatten()
         .filter(|recipient| recipient.contains(','));
@@ -190,7 +194,7 @@ pub(crate) fn execute_tool(
         return Err((503, "recipient_preflight_unavailable"));
     }
     // Preflight before the first enqueue. The host rechecks authority on each send.
-    let available = call("pigeonmq_recipients", json!({}))?;
+    let available = call("radio999k_recipients", json!({}))?;
     let available = available["recipients"]
         .as_array()
         .and_then(|items| items.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
@@ -290,7 +294,7 @@ pub fn dispatch_streamable(
     let recipient_discovery = tools.as_array().is_some_and(|tools| {
         tools
             .iter()
-            .any(|tool| tool["name"] == "pigeonmq_recipients")
+            .any(|tool| tool["name"] == "radio999k_recipients")
     });
     dispatch_streamable_with_tools(
         server_name,
@@ -331,7 +335,7 @@ pub fn dispatch_generic_streamable(
     mut call: impl FnMut(&str, Value) -> Result<Value, Fault>,
 ) -> Result<http::Response<Vec<u8>>, Fault> {
     dispatch_streamable_with_tools(
-        "pigeonmq",
+        "999k",
         tools,
         request,
         authority,
@@ -456,6 +460,45 @@ pub(crate) fn dispatch_streamable_with_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_and_canonical_calls_hit_the_same_tool() {
+        use std::time::{Duration, Instant};
+
+        let send = "radio999k_send";
+        let tools = json!([{"name":send,"inputSchema":{"type":"object"}}]);
+        for name in ["pigeonmq_send", send] {
+            let body = json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":name,"arguments":{}}});
+            let request = http::Request::post("/fixture/mcp")
+                .header("Host", "127.0.0.1:1234")
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .header("Mcp-Method", "tools/call")
+                .header("Mcp-Name", name)
+                .body(http_body_util::Full::new(bytes::Bytes::from(
+                    body.to_string(),
+                )))
+                .unwrap();
+            let response = dispatch_streamable(
+                "fixture",
+                tools.clone(),
+                request,
+                "127.0.0.1:1234",
+                (1024, Instant::now() + Duration::from_secs(2)),
+                |id, name, args| {
+                    assert_eq!(name, send);
+                    assert!(matches!(id, RequestId::Number(7)));
+                    assert_eq!(args, json!({}));
+                    Ok(json!({"accepted":true}))
+                },
+                |_, _| panic!("unexpected event"),
+            )
+            .unwrap();
+            assert_eq!(response.status(), 200);
+            let reply: Value = serde_json::from_slice(response.body()).unwrap();
+            assert_eq!(reply["result"]["isError"], false);
+        }
+    }
+
     #[test]
     fn sdk_event_handler_runs_on_the_connection_worker() {
         let raw =

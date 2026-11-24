@@ -18,8 +18,8 @@ It generates three install paths for the same release:
   `.pigeonmq-install.lock` directory.
 - `npm/`: the unpublished npm package. It contains the exact generated script.
   The launcher verifies both files before each run. It keeps them in
-  `$HOME/.local/share/pigeonmq/npm/<version>-<target>/bin`, not in the npm cache.
-- `pigeonmq.rb`: the unpublished Homebrew formula. Homebrew checks the pinned
+  `$HOME/.local/share/999k/npm/<version>-<target>/bin`, not in the npm cache.
+- `radio999k.rb`: the unpublished Homebrew formula. Homebrew checks the pinned
   archive SHA-256 before installation.
 
 The direct and npm installers require `sh`, `curl`, `tar`, and either `sha256sum`
@@ -29,6 +29,23 @@ copies credentials. The installer renderer requires Python.
 Rendering does not publish anything. Publish the archives before enabling the
 npm package or formula so their pinned URLs can resolve.
 
+## Upgrade an existing installation
+
+The new installer writes `999k` and `999k-dot-resolve`. It leaves older
+`pigeonmq` executables, your hub home, queue, bearer files, and service settings
+in place.
+
+A managed hub's LaunchAgent and an Orca tool may point at an absolute executable
+path. To upgrade those callers without rebinding them, back up the installed
+binary and place the verified new binary at the same path as a regular executable.
+Keep the existing owner and permissions. A symlink to a different executable
+may fail managed service ownership checks. Use your existing service's restart
+procedure and verify the original home with `999k health --home <existing-home>`.
+
+Use `RADIO999K_BIN` to refer to the new executable when following the quickstart.
+The Homebrew formula is named `radio999k` and installs commands named `999k`
+and `999k-dot-resolve`. The npm package is named `@lazy9sascha/999k`.
+
 ## Orca plugin archive
 
 The release workflow builds a separate Orca plugin archive once, with its own
@@ -37,25 +54,24 @@ checksum. Build it locally with Python 3:
 ```sh
 python3 packaging/package_orca.py 0.2.0 target/orca-plugin
 python3 tests/orca_release_package.py
-(cd target/orca-plugin && shasum -a 256 orca-pigeonmq-0.2.0.tar.gz > SHA256SUMS)
+(cd target/orca-plugin && shasum -a 256 999k-orca-0.2.0.tar.gz > SHA256SUMS)
 ```
 
 The version must match the plugin manifest. The archive contains a single
-installable folder, `orca-pigeonmq-0.2.0`. Keep the Orca checksum with the Orca
+installable folder, `999k-orca-0.2.0`. Keep the Orca checksum with the Orca
 archive in its own directory. The native installer checksum file lists platform
 archives only.
 
-Install PigeonMQ 0.2.0 with the native installer. The plugin's setup button uses
-the default executable at `$HOME/.local/bin/pigeonmq`. Use Orca 1.4.268 or newer
+Install 999K 0.2.0 with the native installer. The plugin's setup button uses
+the default executable at `$HOME/.local/bin/999k`. Use Orca 1.4.268 or newer
 and run these commands from the directory containing the Orca archive and checksum.
 
 ```sh
 shasum -a 256 --check SHA256SUMS
-tar -xzf orca-pigeonmq-0.2.0.tar.gz
-orca plugin validate ./orca-pigeonmq-0.2.0
-orca plugin install ./orca-pigeonmq-0.2.0
+tar -xzf 999k-orca-0.2.0.tar.gz
+orca plugin validate ./999k-orca-0.2.0
+orca plugin install ./999k-orca-0.2.0
 ```
 
-Review Orca's requested workspace and terminal permissions and approve the
-specific archive contents if they match your intent. For a custom PigeonMQ
+Orca installs this folder as `local.radio999k`. If you used `local.pigeonmq`, Orca treats 999K as a separate plugin and asks for approval again. Review the trusted worker and its `workspace:read` and `terminal:send` permissions. After approval, open **999K** in your local workspace. For a custom 999K
 executable path, run that executable's `init --orca` in a local Orca terminal.

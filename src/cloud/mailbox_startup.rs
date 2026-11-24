@@ -1,7 +1,7 @@
 //! Resolve configured shared mailbox profiles without granting authority.
 use crate::codex_mcp::Profile;
-use pigeonmq::mailbox_catalog as catalog;
-use pigeonmq::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
+use radio999k::mailbox_catalog as catalog;
+use radio999k::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
 use std::{
     fs,
     io::{self, Read},
@@ -178,7 +178,7 @@ impl Manifest {
                         return Err(invalid());
                     }
                     let dir = Path::new(dir);
-                    pigeonmq::grok_wake::validate_files_dir(home, dir)?;
+                    radio999k::grok_wake::validate_files_dir(home, dir)?;
                     Ok(dir.to_path_buf())
                 })
                 .transpose()?;
@@ -265,7 +265,7 @@ fn parse_manifest(bytes: &[u8]) -> io::Result<serde_json::Value> {
     if bytes.len() as u64 > MAX_PRIVATE_CONFIG_BYTES {
         return Err(invalid_manifest());
     }
-    pigeonmq::mcp_request::strict_json(bytes).map_err(|_| invalid_manifest())
+    radio999k::mcp_request::strict_json(bytes).map_err(|_| invalid_manifest())
 }
 
 pub(crate) fn prepare_dot_binding(queue: &Path, policy: &Path, path: &Path) -> io::Result<bool> {
@@ -302,7 +302,7 @@ pub(crate) fn prepare_dot_binding(queue: &Path, policy: &Path, path: &Path) -> i
                 "existing Dot binding uses a different policy or route",
             ));
         }
-        pigeonmq::dot_profile::check(queue, &resolved, true)?;
+        radio999k::dot_profile::check(queue, &resolved, true)?;
         return Ok(false);
     }
     if metadata.mode() & 0o200 == 0 {
@@ -331,7 +331,7 @@ pub(crate) fn prepare_dot_binding(queue: &Path, policy: &Path, path: &Path) -> i
             }
         }
     }
-    pigeonmq::dot_profile::check(queue, &resolved, true)?;
+    radio999k::dot_profile::check(queue, &resolved, true)?;
 
     let latest = open_manifest(path)?;
     let latest_metadata = latest.metadata()?;
@@ -347,7 +347,7 @@ pub(crate) fn prepare_dot_binding(queue: &Path, policy: &Path, path: &Path) -> i
             "Hub profile manifest changed during Dot preparation",
         ));
     }
-    pigeonmq::private_file::replace_private(path, &after)?;
+    radio999k::private_file::replace_private(path, &after)?;
     Ok(true)
 }
 
@@ -401,7 +401,7 @@ fn valid_policy_filename(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pigeonmq::{grok_wake, private_file::replace_private};
+    use radio999k::{grok_wake, private_file::replace_private};
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
 

@@ -6,7 +6,7 @@ use crate::{
     hosted_registration::{self, OriginDescriptor},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use pigeonmq::{arrival_notify::lock_state, private_file};
+use radio999k::{arrival_notify::lock_state, private_file};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, DirBuilder},
@@ -354,8 +354,10 @@ pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor)
 }
 
 pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
-    let configured =
-        std::env::var("PIGEONMQ_REGISTRATION_URL").map_err(|_| "registration_url_required")?;
+    let configured = std::env::var_os("RADIO999K_REGISTRATION_URL")
+        .or_else(|| std::env::var_os("PIGEONMQ_REGISTRATION_URL"))
+        .and_then(|url| url.into_string().ok())
+        .ok_or("registration_url_required")?;
     let origin = https_origin(&configured)?;
     if !cfg!(target_os = "macos") {
         return Err("hosted enrollment requires macOS".into());

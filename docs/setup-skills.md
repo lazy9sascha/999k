@@ -4,7 +4,7 @@ Triage ends when you choose a connection mode (A–D). The modes are defined in 
 
 **Flow:** triage prompt → capability row → adapter type → paste that type's setup skill into the agent → the agent reports back in ONE fenced code block.
 
-Keep agent instruction files, skills, and MCP tool descriptions small. Load details on demand. The templates tell the agent to call pigeonmq tools on demand. Do not paste tool docs into a skill. The notes below are for you. The fenced blocks are what you copy to the agent.
+Keep agent instruction files, skills, and MCP tool descriptions small. Load details on demand. The templates tell the agent to call the mailbox tools on demand. Do not paste tool docs into a skill. The notes below are for you. The fenced blocks are what you copy to the agent.
 
 Only agents with a webhook can be woken. The hub never wakes a polling agent. Type B must poll itself.
 
@@ -20,35 +20,35 @@ Only agents with a webhook can be woken. The hub never wakes a polling agent. Ty
 | Vooy | [B](#type-b-pull-only) (provisional) |
 | Instinct | none ([relay, planned](#no-matching-type)) |
 
-The table above is the inbox-handling template to paste after triage. Known agents also have a connect skill under `skills/`: [Grok](../skills/pigeonmq-grok/SKILL.md), [Muse](../skills/pigeonmq-muse/SKILL.md), [Dot](../skills/pigeonmq-dot/SKILL.md), [Codex](../skills/pigeonmq-codex/SKILL.md), [Pickle](../skills/pigeonmq-pickle/SKILL.md), [Vooy](../skills/pigeonmq-vooy/SKILL.md). For an unfamiliar agent, start with [agent triage](../skills/pigeonmq-cloud-triage/SKILL.md).
+The table above is the inbox-handling template to paste after triage. Known agents also have a connect skill under `skills/`: [Grok](../skills/999k-grok/SKILL.md), [Muse](../skills/999k-muse/SKILL.md), [Dot](../skills/999k-dot/SKILL.md), [Codex](../skills/999k-codex/SKILL.md), [Pickle](../skills/999k-pickle/SKILL.md), [Vooy](../skills/999k-vooy/SKILL.md). For an unfamiliar agent, start with [agent triage](../skills/999k-cloud-triage/SKILL.md).
 
 ## Browse and search mail
 
-Use `pigeonmq_inbox` with `{}` for the latest received mail. Use `{"query":"build log"}` to search received mail or `{"scope":"all","query":"build log"}` to also search sent mail. Follow `next_continuation` with the same filters until it is null. See the [mailbox tool contract](architecture.md#mcp-tools) for body reads and page options.
+Use `radio999k_inbox` with `{}` for the latest received mail. Use `{"query":"build log"}` to search received mail or `{"scope":"all","query":"build log"}` to also search sent mail. Follow `next_continuation` with the same filters until it is null. See the [mailbox tool contract](architecture.md#mcp-tools) for body reads and page options.
 
-Browsing is read-only. Use `pigeonmq_wait` to look for pending work. `pigeonmq_reply` stores the reply and acknowledges the original together. `pigeonmq_confirm_terminal` acknowledges a terminal answer.
+Browsing is read-only. Use `radio999k_wait` to look for pending work. `radio999k_reply` stores the reply and acknowledges the original together. `radio999k_confirm_terminal` acknowledges a terminal answer.
 
 These skills are repository Markdown for a separate agent-side handoff. The hub advertises MCP tools and has no MCP Resources catalog. Update the copied or installed skill through the agent's own mechanism. The [app upgrade checklist](quickstart.md#upgrade-an-existing-app-to-012) covers refreshing the MCP tool catalog.
 
 ## Type B (pull only)
 
 Use this when the agent can call the hub but has no webhook. The hub cannot start a run. The agent keeps its own scheduler in storage that survives a machine replace. Use a home or workspace path. Never use wiped system paths such as `/etc` or `/usr/bin`.
-On each tick, drain the inbox with `pigeonmq_wait`. Reply once to each message. If a connection drops, retry it once. If the inbox is empty, stay quiet.
+On each tick, drain the inbox with `radio999k_wait`. Reply once to each message. If a connection drops, retry it once. If the inbox is empty, stay quiet.
 
 Copy the block below. For a scheduler that checks for work without starting a model run, use the [scripted variant](#type-b-scripted-variant) instead.
 
 ```text
 ---
-name: pigeonmq-inbox
-description: Poll the PigeonMQ inbox, handle pending mail, and reply once per message.
+name: 999k-inbox
+description: Poll the 999K inbox, handle pending mail, and reply once per message.
 ---
 
-# PigeonMQ inbox (pull only)
+# 999K inbox (pull only)
 
 The hub cannot wake you. You must poll.
 
 1. Keep a scheduler in persistent storage, not in paths wiped on replace; restore it after a replace if needed.
-2. Each run, call `pigeonmq_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `pigeonmq_reply` once on that message_id. Call pigeonmq tools on demand; do not copy tool docs into this skill.
+2. Each run, call `radio999k_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `radio999k_reply` once on that message_id. Call the mailbox tools on demand; do not copy tool docs into this skill.
 3. If the connection drops, retry that call once; if it still fails, stop and report. If nothing is pending, end quietly. Put no secrets in a message body or in this skill. Outbound send/reply still need the user's normal approval.
 
 ## Report after setup (ONE message, ONE code block)
@@ -63,16 +63,16 @@ Some agents (Pickle) can run a condition script on a schedule without waking the
 
 ```text
 ---
-name: pigeonmq-inbox
-description: When a scheduled check finds PigeonMQ work, drain the inbox and reply once per message.
+name: 999k-inbox
+description: When a scheduled check finds 999K work, drain the inbox and reply once per message.
 ---
 
-# PigeonMQ inbox (scripted pull)
+# 999K inbox (scripted pull)
 
 The hub cannot wake you. A scheduler runs a condition check that must not start a model run by itself.
 
 1. Keep the scheduler and condition script in persistent storage. Exit success from the script only when work is pending.
-2. When a full run starts, call `pigeonmq_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `pigeonmq_reply` once on that message_id. Call pigeonmq tools on demand; do not copy tool docs into this skill.
+2. When a full run starts, call `radio999k_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `radio999k_reply` once on that message_id. Call the mailbox tools on demand; do not copy tool docs into this skill.
 3. If the connection drops, retry that call once; if it still fails, stop and report. If nothing is pending, end quietly. Put no secrets in a message body, script, or this skill.
 
 ## Report after setup (ONE message, ONE code block)
@@ -87,15 +87,15 @@ Use this when an inbound webhook or trigger can start a run. The wake may carry 
 
 ```text
 ---
-name: pigeonmq-inbox
-description: On a PigeonMQ wake, drain the inbox, handle pending mail, and reply once per message.
+name: 999k-inbox
+description: On a 999K wake, drain the inbox, handle pending mail, and reply once per message.
 ---
 
-# PigeonMQ inbox (wake + pull)
+# 999K inbox (wake + pull)
 
 A webhook or trigger is only a nudge. It may carry a message id, never secrets. Then drain the inbox.
 
-1. Call `pigeonmq_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `pigeonmq_reply` once on that message_id. Call pigeonmq tools on demand; do not copy tool docs into this skill.
+1. Call `radio999k_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `radio999k_reply` once on that message_id. Call the mailbox tools on demand; do not copy tool docs into this skill.
 2. If the connection drops, retry that call once; if it still fails, stop and report. If nothing is pending, end quietly.
 3. If the platform allows it, keep a fallback poll in persistent storage. Put no secrets in a message body or in this skill. Outbound send/reply still need the user's normal approval.
 
@@ -111,15 +111,15 @@ This repo implements MCP Events delivery for Codex Cloud. When the platform supp
 
 ```text
 ---
-name: pigeonmq-inbox
-description: On a PigeonMQ event, drain the inbox, handle pending mail, and reply once per message.
+name: 999k-inbox
+description: On a 999K event, drain the inbox, handle pending mail, and reply once per message.
 ---
 
-# PigeonMQ inbox (Events)
+# 999K inbox (Events)
 
 A platform event is only a nudge, not the message body. Then drain the inbox.
 
-1. Call `pigeonmq_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `pigeonmq_reply` once on that message_id. Call pigeonmq tools on demand; do not copy tool docs into this skill.
+1. Call `radio999k_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `radio999k_reply` once on that message_id. Call the mailbox tools on demand; do not copy tool docs into this skill.
 2. If the connection drops, retry that call once; if it still fails, stop and report. If nothing is pending, end quietly.
 3. Put no secrets in a message body or in this skill. Outbound send/reply still need the user's normal approval.
 

@@ -1,5 +1,5 @@
 //! Local MCP client adapter. The hub alone authorizes and accesses the queue.
-use pigeonmq::{
+use radio999k::{
     arrival_notify::lock_state, mailbox_catalog, mcp_request::strict_json, private_file,
 };
 use serde::{Deserialize, Serialize};
@@ -209,6 +209,22 @@ fn route_for(mailbox: &str) -> io::Result<String> {
 }
 
 fn exchange(home: &Path, route: &str, token: &str, request: &Value) -> io::Result<Value> {
+    use radio999k::mailbox_tools::{canonical_tool_name, legacy_tool_name, translate_tool_list};
+
+    // Every hub that supports the private socket can handle the legacy call
+    // names, including older hubs without the 999K wire aliases.
+    let legacy_request = request["params"]["name"]
+        .as_str()
+        .filter(|_| request["method"] == "tools/call")
+        .and_then(|name| match legacy_tool_name(name) {
+            std::borrow::Cow::Owned(name) => {
+                let mut request = request.clone();
+                request["params"]["name"] = Value::String(name);
+                Some(request)
+            }
+            std::borrow::Cow::Borrowed(_) => None,
+        });
+    let request = legacy_request.as_ref().unwrap_or(request);
     let mut stream = connect(home, route)?;
     let body = serde_json::to_vec(request)?;
     stream.set_write_timeout(Some(TIMEOUT))?;
@@ -266,12 +282,16 @@ fn exchange(home: &Path, route: &str, token: &str, request: &Value) -> io::Resul
             http.code.unwrap_or(0)
         )));
     }
-    let reply = strict_json(&response[offset..]).map_err(|_| fail("invalid local MCP response"))?;
+    let mut reply =
+        strict_json(&response[offset..]).map_err(|_| fail("invalid local MCP response"))?;
     if reply.get("id") != request.get("id")
         || reply["jsonrpc"] != "2.0"
         || (reply.get("result").is_some() == reply.get("error").is_some())
     {
         return Err(fail("invalid local MCP response"));
+    }
+    if request["method"] == "tools/list" {
+        translate_tool_list(&mut reply, canonical_tool_name);
     }
     Ok(reply)
 }
@@ -421,7 +441,7 @@ pub(crate) fn orca_recipients(
         &token,
         &json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
             "protocolVersion":PROTOCOL, "capabilities":{},
-            "clientInfo":{"name":"pigeonmq-orca-setup", "version":env!("CARGO_PKG_VERSION")}
+            "clientInfo":{"name":"999k-orca-setup", "version":env!("CARGO_PKG_VERSION")}
         }}),
     )?;
     if init["result"]["protocolVersion"] != PROTOCOL {
@@ -432,7 +452,7 @@ pub(crate) fn orca_recipients(
         &route,
         &token,
         &json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
-            "name":"pigeonmq_recipients", "arguments":{}
+            "name":"radio999k_recipients", "arguments":{}
         }}),
     )?;
     let recipients = peer_scope::tool_value(&reply)?;
@@ -474,6 +494,81 @@ pub(crate) fn run(
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn canonical_scoped_client_uses_only_legacy_wire_names_with_an_old_hub() {
+        let home = tempfile::Builder::new()
+            .prefix("pmqs")
+            .tempdir_in("/tmp")
+            .unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = bind(home.path(), &["/codex/mcp".into()]).unwrap();
+        let server = std::thread::spawn(move || {
+            for method in ["tools/list", "tools/call"] {
+                let (mut stream, _) = socket.listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut input = io::BufReader::new(&mut stream);
+                let mut bytes = String::new();
+                let mut length = 0;
+                loop {
+                    bytes.clear();
+                    assert_ne!(input.read_line(&mut bytes).unwrap(), 0);
+                    if bytes == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = bytes.strip_prefix("Content-Length: ") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                input.read_exact(&mut body).unwrap();
+                let request = strict_json(&body).unwrap();
+                assert_eq!(request["method"], method);
+                let result = if method == "tools/list" {
+                    json!({"tools":[
+                        {"name":"pigeonmq_send","inputSchema":{"properties":{"recipient":{}}}},
+                        {"name":"pigeonmq_read"},
+                    ]})
+                } else {
+                    assert_eq!(request["params"]["name"], "pigeonmq_send");
+                    assert_eq!(request["params"]["arguments"]["recipient"], "dot");
+                    json!({"isError":false,"content":[{"type":"text","text":"{\"state\":\"accepted\"}"}]})
+                };
+                let reply = json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+            }
+        });
+        let scope = peer_scope::Scope::new("codex-cloud", "dot").unwrap();
+        let exchange = |request: &Value| exchange(home.path(), "/codex/mcp", "fixture", request);
+        let listing = scope
+            .exchange(
+                "tools/list",
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+                exchange,
+            )
+            .unwrap();
+        let tools = listing["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "radio999k_send");
+        let sent = scope
+            .exchange(
+                "tools/call",
+                &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                    "name":"radio999k_send","arguments":{"recipient":"dot"}
+                }}),
+                exchange,
+            )
+            .unwrap();
+        assert_eq!(peer_scope::tool_value(&sent).unwrap()["state"], "accepted");
+        server.join().unwrap();
+    }
 
     #[test]
     fn orca_discovery_uses_authenticated_local_mcp_and_rejects_http_denial() {

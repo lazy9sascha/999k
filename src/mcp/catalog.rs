@@ -215,7 +215,7 @@ mod tests {
             assert_eq!(http_by_route(route), Some(descriptor));
         }
         assert_eq!(codex().mailbox, "codex-cloud");
-        assert_eq!(codex().server_name, "pigeonmq-codex");
+        assert_eq!(codex().server_name, "999k-codex");
         assert_eq!(codex().events, EventsCapability::Codex);
         assert!(by_mailbox("codex-local").is_none());
         assert!(http_by_route("/codex/mcp/").is_none());

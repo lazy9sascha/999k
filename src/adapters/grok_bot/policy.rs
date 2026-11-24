@@ -3,7 +3,7 @@ use super::Fault;
 use crate::auth::{
     RETIRED_SENDERS_CODE, presented_token_digest, public_policy_fault, retired_senders_present,
 };
-use pigeonmq::{grok_mailbox::GrokScope, registration::load_registrations};
+use radio999k::{grok_mailbox::GrokScope, registration::load_registrations};
 use serde::Deserialize;
 use std::{collections::HashSet, path::Path};
 use subtle::ConstantTimeEq;
@@ -181,7 +181,7 @@ mod tests {
         let registry = directory.path().join("registration.json");
         let policy = directory.path().join("policy.json");
         let write = |path: &Path, value: serde_json::Value| {
-            pigeonmq::private_file::replace_private(path, value.to_string().as_bytes()).unwrap();
+            radio999k::private_file::replace_private(path, value.to_string().as_bytes()).unwrap();
         };
         write(
             &registry,

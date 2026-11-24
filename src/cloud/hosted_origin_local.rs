@@ -1,7 +1,7 @@
 //! Local custody for a new hosted Unix origin. It never forwards to TCP.
 #![allow(dead_code)] // The connector activation path is not exposed yet.
 use crate::hosted_origin::UnixOrigin;
-use pigeonmq::{arrival_notify, private_file};
+use radio999k::{arrival_notify, private_file};
 use std::{
     fs::{self, DirBuilder, File},
     io::{self, Read},

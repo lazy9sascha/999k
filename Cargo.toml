@@ -1,10 +1,11 @@
 [package]
-name = "pigeonmq"
-default-run = "pigeonmq"
+name = "radio999k"
+default-run = "999k"
+autobins = false
 version = "0.2.0"
 edition = "2024"
 publish = false
-description = "A self-hosted MCP hub for agent-to-agent messaging. The queue runs on your Mac. Cloud agents reach their mailboxes through a tunnel."
+description = "999K is a self-hosted MCP hub for agent-to-agent messaging. The queue runs on your Mac. Cloud agents reach their mailboxes through a tunnel."
 license = "MIT"
 
 [dependencies]
@@ -45,13 +46,21 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tempfile = "3"
 
 [[bin]]
-name = "pigeonmq"
+name = "999k"
 path = "src/main.rs"
 
 [[bin]]
-name = "pigeonmq-dot-resolve"
-path = "src/bin/pigeonmq-dot-resolve.rs"
+name = "999k-dot-resolve"
+path = "src/bin/999k-dot-resolve.rs"
+
+[[bin]]
+name = "999k-codex-receiver"
+path = "src/bin/999k-codex-receiver.rs"
+
+[[bin]]
+name = "999k-registration"
+path = "src/bin/999k-registration.rs"
 
 [lib]
-name = "pigeonmq"
+name = "radio999k"
 path = "src/lib.rs"

@@ -60,7 +60,7 @@ impl OriginDescriptor {
             || self.hub_port == 0
             || self.mcp_paths.is_empty()
             || !self.mcp_paths.iter().all(|route| {
-                pigeonmq::mailbox_catalog::valid_mcp_route(route)
+                radio999k::mailbox_catalog::valid_mcp_route(route)
                     && !matches!(route.as_str(), "/receiver/mcp" | "/admin/mcp" | "/rpc/mcp")
                     && unique.insert(route)
             })

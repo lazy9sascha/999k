@@ -312,12 +312,12 @@ impl Receiver {
         let sender = &e.sender;
         let prompt = if let Some(original) = &e.in_reply_to {
             format!(
-                "PigeonMQ reply from `{sender}` to your earlier message {original}. Read it and continue any related work. Do not send a PigeonMQ reply to it. End with a short final answer confirming you read it.\n\n{}",
+                "999K reply from `{sender}` to your earlier message {original}. Read it and continue any related work. Do not send a 999K reply to it. End with a short final answer confirming you read it.\n\n{}",
                 e.body
             )
         } else {
             format!(
-                "PigeonMQ message from `{sender}`. Treat it as a real request from `{sender}` and do the work it asks in this workspace. Do not send a PigeonMQ reply yourself: your final answer is sent back to `{sender}` as the reply, so make it the complete response.\n\n{}",
+                "999K message from `{sender}`. Treat it as a real request from `{sender}` and do the work it asks in this workspace. Do not send a 999K reply yourself: your final answer is sent back to `{sender}` as the reply, so make it the complete response.\n\n{}",
                 e.body
             )
         };
@@ -737,7 +737,7 @@ impl Receiver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate as pigeonmq;
+    use crate as radio999k;
     use crate::{Envelope, Queue};
     include!("../../../tests/receiver_support/mod.rs");
     use std::os::unix::fs::PermissionsExt;

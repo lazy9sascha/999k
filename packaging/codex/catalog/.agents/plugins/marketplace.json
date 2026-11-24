@@ -1,14 +1,14 @@
 {
-  "name": "pigeonmq-local-test",
+  "name": "radio999k-local-test",
   "interface": {
-    "displayName": "PigeonMQ Local Test"
+    "displayName": "999K Local Test"
   },
   "plugins": [
     {
-      "name": "pigeonmq-preview",
+      "name": "radio999k-preview",
       "source": {
         "source": "local",
-        "path": "./plugins/pigeonmq-preview"
+        "path": "./plugins/radio999k-preview"
       },
       "policy": {
         "installation": "AVAILABLE",

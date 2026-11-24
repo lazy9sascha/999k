@@ -1,4 +1,4 @@
-use pigeonmq::{Envelope, Queue};
+use radio999k::{Envelope, Queue};
 use rusqlite::Connection;
 use std::{
     fs,
@@ -85,7 +85,7 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
         0o700,
     );
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        Command::new(env!("CARGO_BIN_EXE_999k"))
             .env_clear()
             .current_dir(&dir)
             .arg("notify-arrivals")
@@ -173,9 +173,9 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
     assert_eq!(fs::read_to_string(&records).unwrap(), expected);
 
     let cursor = fs::read(&state).unwrap();
-    pigeonmq::mailbox_generation::retire(&database, "cue").unwrap();
+    radio999k::mailbox_generation::retire(&database, "cue").unwrap();
     assert!(!run().status.success());
-    pigeonmq::mailbox_generation::reactivate(&database, "cue").unwrap();
+    radio999k::mailbox_generation::reactivate(&database, "cue").unwrap();
     let mut queue = Queue::open_existing(&database).unwrap();
     send(&mut queue, "dot", "cue");
     linked(&mut queue, "cue");
@@ -192,7 +192,7 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
 
 #[test]
 fn configured_relay_keeps_other_cursors_and_never_sends_for_a_retired_generation() {
-    use pigeonmq::arrival_notify::{RelayConfig, RelayTarget, run_config};
+    use radio999k::arrival_notify::{RelayConfig, RelayTarget, run_config};
 
     let fixture = tempfile::tempdir().unwrap();
     let dir = fs::canonicalize(fixture.path()).unwrap();
@@ -271,15 +271,15 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
 
     let retired_cue = send(&mut queue, "dot", "cue");
     drop(queue);
-    pigeonmq::mailbox_generation::retire(&database, "cue").unwrap();
-    pigeonmq::mailbox_generation::reactivate(&database, "cue").unwrap();
+    radio999k::mailbox_generation::retire(&database, "cue").unwrap();
+    radio999k::mailbox_generation::reactivate(&database, "cue").unwrap();
     let new_floor = floor();
     let mut queue = Queue::open_existing(&database).unwrap();
     let cue_next_generation = send(&mut queue, "dot", "cue");
     assert_eq!(run(), 0, "stale configuration must fail closed");
 
     let cue = targets.get_mut("cue").unwrap();
-    cue.generation = pigeonmq::mailbox_generation::active_storage(&database, "cue")
+    cue.generation = radio999k::mailbox_generation::active_storage(&database, "cue")
         .unwrap()
         .unwrap();
     cue.after = new_floor;
@@ -305,7 +305,7 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
 
 #[test]
 fn legacy_relay_still_reads_a_catalogless_queue() {
-    use pigeonmq::arrival_notify::run;
+    use radio999k::arrival_notify::run;
 
     let fixture = tempfile::tempdir().unwrap();
     let dir = fixture.path().canonicalize().unwrap();
@@ -340,12 +340,12 @@ fn legacy_relay_still_reads_a_catalogless_queue() {
         fs::read_to_string(dir.join("record-arrival.log")).unwrap(),
         format!("cue {id}\n")
     );
-    assert!(!pigeonmq::mailbox_generation::lock_path(&database).exists());
+    assert!(!radio999k::mailbox_generation::lock_path(&database).exists());
 }
 
 #[test]
 fn managed_provider_uses_controlled_path_and_reports_no_private_command_output() {
-    use pigeonmq::arrival_notify::{RelayConfig, RelayTarget};
+    use radio999k::arrival_notify::{RelayConfig, RelayTarget};
 
     let fixture = tempfile::tempdir().unwrap();
     let dir = fixture.path().canonicalize().unwrap();
@@ -380,7 +380,7 @@ printf '%s %s\n' "$1" "$2" >> "$0.log"
         0o700,
     );
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        Command::new(env!("CARGO_BIN_EXE_999k"))
             .env_clear()
             .env("PATH", dir.join("untrusted-path"))
             .current_dir(&dir)
@@ -431,7 +431,7 @@ exit 4
 
 #[test]
 fn invalid_static_mailboxes_are_rejected_before_starting_any_relay() {
-    use pigeonmq::arrival_notify::validate_static_mailboxes;
+    use radio999k::arrival_notify::validate_static_mailboxes;
     use serde_json::json;
     use std::process::Stdio;
     use std::thread;
@@ -488,7 +488,7 @@ fn invalid_static_mailboxes_are_rejected_before_starting_any_relay() {
             .as_bytes(),
             0o600,
         );
-        let mut runner = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
+        let mut runner = Command::new(env!("CARGO_BIN_EXE_999k"));
         runner
             .args(["run", "--home"])
             .arg(&home)
@@ -496,7 +496,7 @@ fn invalid_static_mailboxes_are_rejected_before_starting_any_relay() {
             .arg(&manifest);
         assert_exit(runner, "invalid_companions_file");
 
-        let mut relay = Command::new(env!("CARGO_BIN_EXE_pigeonmq"));
+        let mut relay = Command::new(env!("CARGO_BIN_EXE_999k"));
         relay
             .arg("notify-arrivals")
             .arg("--queue")

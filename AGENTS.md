@@ -2,14 +2,14 @@
 
 If this checkout sits inside a parent workspace with [workspace instructions](../AGENTS.md), follow them too.
 
-PigeonMQ runs a standalone queue and MCP hub on your Mac. Cloud agents connect through a tunnel. It owns its own queue and does not depend on a PigeonMQ Local installation at build time or runtime. Read [docs/architecture.md](docs/architecture.md) before changing behavior.
+999K runs a standalone queue and MCP hub on your Mac. Cloud agents connect through a tunnel. It owns its own queue and does not depend on a PigeonMQ Local installation at build time or runtime. Read [docs/architecture.md](docs/architecture.md) before changing behavior.
 
 ## Layout
 
 ```text
 src/
   main.rs                 CLI (clap) entry point
-  bin/                    pigeonmq-codex-receiver, pigeonmq-dot-resolve
+  bin/                    999k-codex-receiver, 999k-dot-resolve
   lib.rs                  SQLite queue, leases, atomic reply + ACK
   mailbox/                Shared reply + ACK completion engine
   local_http.rs           Loopback HTTP hub and per-route dispatch
@@ -27,7 +27,7 @@ src/
   receiver/               Common authenticated lease and completion API
 tests/                    Integration tests
 docs/                     Release documentation
-skills/                   One setup skill per agent: skills/pigeonmq-<agent>/SKILL.md
+skills/                   One setup skill per agent: skills/999k-<agent>/SKILL.md
 schemas/                  Triage record schema and examples
 ```
 

@@ -1,17 +1,17 @@
 {
-  "name": "@lazy9sascha/pigeonmq",
+  "name": "@lazy9sascha/999k",
   "version": "0.0.0",
   "private": true,
-  "description": "Run the PigeonMQ release binaries",
+  "description": "Run the 999K release binaries",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lazy9sascha/pigeonmq.git",
+    "url": "https://github.com/lazy9sascha/999k.git",
     "directory": "packaging/npm"
   },
   "bin": {
-    "pigeonmq": "cli.cjs",
-    "pigeonmq-dot-resolve": "resolver.cjs"
+    "999k": "cli.cjs",
+    "999k-dot-resolve": "resolver.cjs"
   },
   "files": ["cli.cjs", "resolver.cjs", "run.cjs", "install.sh"],
   "engines": { "node": ">=20" },

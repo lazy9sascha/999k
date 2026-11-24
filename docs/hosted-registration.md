@@ -4,8 +4,8 @@ The registration service manages the address and Cloudflare Tunnel for each appr
 
 ## Responsibilities and installer handoff
 
-- The PigeonMQ registration service asks Cloudflare to provision one hostname, route, and tunnel per installation. It keeps the Cloudflare management credential on the operator Mac. Cloudflare serves public HTTPS and forwards only the configured routes. The operator uses the registration service to revoke one installation while the operator Mac is running.
-- The PigeonMQ hub owns mailbox identities, mailbox credentials, message delivery, linked replies, and acknowledgments. The user Mac stores the queue and mailbox credentials. Supabase sign-in approves registration only. It does not authorize mailbox access.
+- The 999K registration service asks Cloudflare to provision one hostname, route, and tunnel per installation. It keeps the Cloudflare management credential on the operator Mac. Cloudflare serves public HTTPS and forwards only the configured routes. The operator uses the registration service to revoke one installation while the operator Mac is running.
+- The 999K hub owns mailbox identities, mailbox credentials, message delivery, linked replies, and acknowledgments. The user Mac stores the queue and mailbox credentials. Supabase sign-in approves registration only. It does not authorize mailbox access.
 
 The installer sends a request ID and user code with a private installation proof.
 Begin returns an installation ID, assigned public URL, private browser link, and expiry.
@@ -16,7 +16,7 @@ Keep the same request ID, proof, and code on a begin retry. Use the same
 installation ID and proof to retry status or finish. Do not request a new address
 after a temporary error.
 
-The operator preview uses `pigeonmq init --reserve-address` for browser approval
+The operator preview uses `999k init --reserve-address` for browser approval
 and retry. Verify the tunnel and an authenticated MCP exchange after finish.
 
 ## Prepare a private pilot
@@ -24,7 +24,7 @@ and retry. Verify the tunnel and an authenticated MCP exchange after finish.
 1. Create an owner-only directory with mode 0700 on the operator Mac.
 2. Save the settings below in `settings.json` with mode 0600. Replace example values with the approved pilot settings.
 3. Save the Cloudflare management token in `cloudflare.key` with mode 0600. Grant tunnel management for the operator account and DNS access for the selected zone.
-4. In a dedicated test Auth project, enable email sign-in and account creation. Configure the email template to include the numeric code. Do not enable signups on a shared or live project as part of this preview. Direct requests to the public Auth API can create accounts when signups are enabled. PigeonMQ's installation and attempt checks apply only to its own registration endpoints.
+4. In a dedicated test Auth project, enable email sign-in and account creation. Configure the email template to include the numeric code. Do not enable signups on a shared or live project as part of this preview. Direct requests to the public Auth API can create accounts when signups are enabled. 999K's installation and attempt checks apply only to its own registration endpoints.
 5. Route the registration origin to the loopback service over HTTPS. Preserve the public registration Host header. Disable caching. Keep credentials and form bodies out of logs.
 
 ```json
@@ -47,37 +47,37 @@ retain an existing path. Dot and Codex also get their exact path-scoped OAuth
 resource metadata paths. Enable the matching profiles and auth on the hub.
 
 ```sh
-cargo build --locked --bin pigeonmq-registration
-./target/debug/pigeonmq-registration --home /path/to/private-registration-home --port 54900
+cargo build --locked --bin 999k-registration
+./target/debug/999k-registration --home /path/to/private-registration-home --port 54900
 ```
 
 The service creates `enrollments.sqlite3` in the private directory. It reserves an address before sign-in. After browser approval, it publishes only the configured MCP and discovery paths and returns the
 installation's connector token. A successful finish on an existing installation
 also reconciles its ingress with the current settings.
 
-Open the private installation link from PigeonMQ. Enter your email address and the numeric email code. You do not need an existing Supabase Auth account. Do not enter a code from the Mac.
+Open the private installation link from 999K. Enter your email address and the numeric email code. You do not need an existing Supabase Auth account. Do not enter a code from the Mac.
 Remove the obsolete `invited_accounts` field from older settings. If the field remains, the service warns on startup and does not use it to restrict registration.
 The link expires with the reservation. Open it only in the intended browser. Do not share or log the full link.
 Opening the link does not send an email. The browser removes the private fragment and submits it only when you request the email code.
 Supabase issues the numeric OTP for an email address, not an installation.
-PigeonMQ checks that the verified account holds the exact email address for this attempt. It applies approval only to the installation bound to that attempt. The email code and the tunnel connector token do not grant MCP access. Existing MCP authentication does not change.
+999K checks that the verified account holds the exact email address for this attempt. It applies approval only to the installation bound to that attempt. The email code and the tunnel connector token do not grant MCP access. Existing MCP authentication does not change.
 The request page does not show whether it sent an email. Response times can differ.
-If an attempt fails, wait up to five minutes, then reopen registration from PigeonMQ. Use the same pending installation until its reservation expires.
+If an attempt fails, wait up to five minutes, then reopen registration from 999K. Use the same pending installation until its reservation expires.
 
 ## Reserve an address on your Mac
 
 Use the HTTPS registration origin from your pilot operator. Keep the same private hub home on each run.
 
 ```sh
-export PIGEONMQ_REGISTRATION_URL=https://init.example.com
-pigeonmq init --reserve-address --home "$HOME/path/to/private-hub"
+export RADIO999K_REGISTRATION_URL=https://init.example.com
+999k init --reserve-address --home "$HOME/path/to/private-hub"
 ```
 
 Approve the installation in your browser. If setup stops waiting or you close the terminal,
 run the same command to resume. Do not copy the browser link or the installation files to a
 different machine.
 
-PigeonMQ reports `hosted_connector=staged` and `hosted_public_route=unverified`.
+999K reports `hosted_connector=staged` and `hosted_public_route=unverified`.
 It saves the address and private connector credential in the owner-private hub home.
 It does not create a mailbox, change a local hub, or start a connector. The registration
 service can assign a loopback port and MCP paths, but those settings do not prove local
@@ -104,7 +104,7 @@ OAuth and allow only the intended account and the exact OpenAI redirect URI for
 that connection. Cloudflare handles the sign-in and sends a signed assertion to
 the hub. Use separate Access application audience tags for Dot and Codex Cloud.
 
-Add `cloudflare-access.json` to the private PigeonMQ hub home. Set the file mode
+Add `cloudflare-access.json` to the private 999K hub home. Set the file mode
 to `0600`. Set only the bindings that you use.
 
 ```json
@@ -138,8 +138,8 @@ with an older copy. Quiesce the service and reconcile the affected installations
 Run these commands on the operator Mac with the same private home:
 
 ```sh
-pigeonmq-registration --home /path/to/private-registration-home --revoke <installation-id>
-pigeonmq-registration --home /path/to/private-registration-home --reissue <installation-id>
+999k-registration --home /path/to/private-registration-home --revoke <installation-id>
+999k-registration --home /path/to/private-registration-home --reissue <installation-id>
 ```
 
 Revoke removes the installation's Cloudflare route and tunnel. The command reports completion only after a Cloudflare read shows removal. If the operation stays pending, retry with the same installation ID. Reissue prepares the same address for a new tunnel. The original installer uses its existing installation proof to finish setup.
@@ -149,6 +149,6 @@ The serving process checks for expired tunnels every 15 minutes. It starts remov
 Before enabling automated provisioning, use a manually provisioned pilot
 installation with a real off-host Dot client. Use its own public HTTPS URL and
 mailbox authentication. Verify that the sender receives a reply linked to the
-original message and that PigeonMQ acknowledges the original. With the operator
+original message and that 999K acknowledges the original. With the operator
 Mac running, revoke that installation. Verify that its managed URL no longer
 reaches its mailbox and that a separate installation still works.

@@ -1,5 +1,5 @@
 //! Shared-engine characterization through the existing adapter APIs.
-use pigeonmq::{Envelope, Queue, grok_mailbox as grok, muse_mailbox as muse};
+use radio999k::{Envelope, Queue, grok_mailbox as grok, muse_mailbox as muse};
 use serde_json::Value;
 use std::path::Path;
 

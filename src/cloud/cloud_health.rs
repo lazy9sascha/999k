@@ -2,7 +2,7 @@
 use super::{QUEUE, RUN_LOCK, STATE_FILE};
 use crate::{cloud_transport, mailbox_startup};
 use futures_util::future::join_all;
-use pigeonmq::{
+use radio999k::{
     Queue,
     events::callback_transport::validate_public_addresses,
     grok_wake, mailbox_catalog as catalog,
@@ -55,7 +55,7 @@ fn client() -> ClientBuilder {
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
-        .user_agent("PigeonMQ-Health")
+        .user_agent("999K-Health")
 }
 
 async fn request(client: &Client, url: Url) -> Result<Response, reqwest::Error> {

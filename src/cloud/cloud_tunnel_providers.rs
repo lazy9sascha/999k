@@ -29,7 +29,7 @@ impl Provider {
 
     pub(crate) fn check_local_files(self, home: &Path) -> Result<(), &'static str> {
         for file in [self.identity_file, self.known_hosts_file] {
-            pigeonmq::private_file::open_private_file(&home.join(file))
+            radio999k::private_file::open_private_file(&home.join(file))
                 .map_err(|_| "unsafe_private_path")?;
         }
         Ok(())

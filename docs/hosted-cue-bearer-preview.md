@@ -11,7 +11,7 @@ Choose a lifetime in seconds. Use a new file in an absolute owner-private
 directory outside the hub home:
 
 ```sh
-pigeonmq hosted-cue-bearer --home /private/hub rotate \
+999k hosted-cue-bearer --home /private/hub rotate \
   --lifetime-secs <seconds> --export-file /private/transfer/cue-bearer
 ```
 
@@ -30,7 +30,7 @@ request to finish before you retry the rotation.
 To revoke without issuing a replacement:
 
 ```sh
-pigeonmq hosted-cue-bearer --home /private/hub revoke
+999k hosted-cue-bearer --home /private/hub revoke
 ```
 
 A revoked, expired, or missing finite grant denies hosted Cue access.
@@ -49,7 +49,7 @@ active Bearer if the state changed before the command reported an error.
 Check state with the current binary:
 
 ```sh
-pigeonmq hosted-cue-bearer --home /private/hub status
+999k hosted-cue-bearer --home /private/hub status
 ```
 
 Status reports the current grant state. It does not identify the exported file.

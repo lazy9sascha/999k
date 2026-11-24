@@ -1,5 +1,5 @@
 //! Real binary/loopback checks. Uses only temporary state and no provider calls.
-use pigeonmq::{Queue, events::runtime::InstanceLock};
+use radio999k::{Queue, events::runtime::InstanceLock};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -47,7 +47,8 @@ fn dot_events_run_only_on_authenticated_dot_route_with_explicit_preparation() {
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let db = dir.path().join("queue.db");
     let policy = dir.path().join(
-        pigeonmq::mailbox_catalog::by_adapter(pigeonmq::mailbox_catalog::Adapter::Dot).policy_file,
+        radio999k::mailbox_catalog::by_adapter(radio999k::mailbox_catalog::Adapter::Dot)
+            .policy_file,
     );
     let registration = dir.path().join("registration.json");
     drop(Queue::open(&db).unwrap());
@@ -55,7 +56,7 @@ fn dot_events_run_only_on_authenticated_dot_route_with_explicit_preparation() {
     for (path, value) in [
         (
             &policy,
-            json!({"principal":"pigeonmq-cloud-dot","mailbox":"dot","enabled":true,"token_sha256":Sha256::digest(b"fixture").iter().map(|b|format!("{b:02x}")).collect::<String>(),"registration":registration,"events":{"callback_hosts":["callback.example.com"],"resolver":env!("CARGO_BIN_EXE_pigeonmq-dot-resolve")}}),
+            json!({"principal":"pigeonmq-cloud-dot","mailbox":"dot","enabled":true,"token_sha256":Sha256::digest(b"fixture").iter().map(|b|format!("{b:02x}")).collect::<String>(),"registration":registration,"events":{"callback_hosts":["callback.example.com"],"resolver":env!("CARGO_BIN_EXE_999k-dot-resolve")}}),
         ),
         (
             &registration,
@@ -65,7 +66,7 @@ fn dot_events_run_only_on_authenticated_dot_route_with_explicit_preparation() {
         std::fs::write(path, value.to_string()).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let prep = Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+    let prep = Command::new(env!("CARGO_BIN_EXE_999k"))
         .args(["dot-prepare", "--queue"])
         .arg(&db)
         .arg("--auth-policy")
@@ -83,7 +84,7 @@ fn dot_events_run_only_on_authenticated_dot_route_with_explicit_preparation() {
         .unwrap()
         .port();
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        Command::new(env!("CARGO_BIN_EXE_999k"))
             .args(["serve-hub", "--queue"])
             .arg(&db)
             .arg("--bundled-profiles")
@@ -220,9 +221,9 @@ fn dot_prepare_adds_only_its_binding_to_an_existing_shared_manifest() {
     put(&other_dot, dot_policy.to_string());
     put(&muse, muse_policy.to_string());
     put(&registration, registrations.to_string());
-    pigeonmq::muse_mailbox::prepare(&db).unwrap();
+    radio999k::muse_mailbox::prepare(&db).unwrap();
 
-    let binary = env!("CARGO_BIN_EXE_pigeonmq");
+    let binary = env!("CARGO_BIN_EXE_999k");
     let prepare = || {
         Command::new(binary)
             .args(["dot-prepare", "--queue"])
@@ -267,7 +268,7 @@ fn dot_prepare_adds_only_its_binding_to_an_existing_shared_manifest() {
     assert_eq!(fs::read_to_string(&dot).unwrap(), disabled.to_string());
     assert_eq!(fs::read_to_string(&manifest).unwrap(), original);
     put(&dot, dot_policy.to_string());
-    assert!(pigeonmq::dot_profile::check(&db, &dot, false).is_err());
+    assert!(radio999k::dot_profile::check(&db, &dot, false).is_err());
 
     let result = prepare();
     assert!(result.status.success(), "{:?}", result);

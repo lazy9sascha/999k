@@ -19,7 +19,9 @@ where
         .with_target(false)
         .with_writer(writer)
         .with_filter(
-            tracing_subscriber::filter::Targets::new().with_target("pigeonmq", LevelFilter::INFO),
+            tracing_subscriber::filter::Targets::new()
+                .with_target("radio999k", LevelFilter::INFO)
+                .with_target("999k", LevelFilter::INFO),
         );
     tracing_subscriber::registry().with(layer)
 }
@@ -52,10 +54,9 @@ mod tests {
     fn json_sink_omits_foreign_events_and_span_payloads() {
         let capture = Capture(Arc::new(Mutex::new(Vec::new())));
         tracing::subscriber::with_default(subscriber(capture.clone()), || {
-            let span =
-                tracing::info_span!(target: "pigeonmq", "fixture", secret = "PUBLIC_SPAN_SENTINEL");
+            let span = tracing::info_span!(target: "radio999k", "fixture", secret = "PUBLIC_SPAN_SENTINEL");
             let _entered = span.enter();
-            tracing::info!(target: "pigeonmq", component="fixture", event="fact", outcome="verified");
+            tracing::info!(target: "radio999k", component="fixture", event="fact", outcome="verified");
             tracing::info!(target: "reqwest", authorization="PUBLIC_FOREIGN_SENTINEL");
         });
         let bytes = capture.0.lock().unwrap();

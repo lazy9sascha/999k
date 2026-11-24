@@ -1,5 +1,5 @@
 //! Real binary/loopback checks. Uses only temporary state and no provider calls.
-use pigeonmq::{Envelope, Queue, events::runtime::InstanceLock};
+use radio999k::{Envelope, Queue, events::runtime::InstanceLock};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -84,14 +84,14 @@ fn prepared_codex_events_are_exposed_only_on_the_existing_authenticated_hub_rout
     let db = dir.path().join("queue.db");
     let policy = dir
         .path()
-        .join(pigeonmq::mailbox_catalog::codex_http().policy_file);
+        .join(radio999k::mailbox_catalog::codex_http().policy_file);
     let registration = dir.path().join("pigeonmq-cloud-registration.json");
     drop(Queue::open(&db).unwrap());
     std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o600)).unwrap();
     for (path, value) in [
         (
             &policy,
-            json!({"principals":[{"id":"codex-cloud","token_sha256":Sha256::digest(b"fixture").iter().map(|b|format!("{b:02x}")).collect::<String>(),"operations":["read","wait","reply","send"],"mailboxes":["codex-cloud"],"send_to":[],"revoked":false}],"events":{"callback_hosts":["callback.example.com"],"resolver":env!("CARGO_BIN_EXE_pigeonmq-dot-resolve")}}),
+            json!({"principals":[{"id":"codex-cloud","token_sha256":Sha256::digest(b"fixture").iter().map(|b|format!("{b:02x}")).collect::<String>(),"operations":["read","wait","reply","send"],"mailboxes":["codex-cloud"],"send_to":[],"revoked":false}],"events":{"callback_hosts":["callback.example.com"],"resolver":env!("CARGO_BIN_EXE_999k-dot-resolve")}}),
         ),
         (
             &registration,
@@ -101,7 +101,7 @@ fn prepared_codex_events_are_exposed_only_on_the_existing_authenticated_hub_rout
         std::fs::write(path, value.to_string()).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let prepare = Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+    let prepare = Command::new(env!("CARGO_BIN_EXE_999k"))
         .args(["codex-prepare", "--queue"])
         .arg(&db)
         .arg("--auth-policy")
@@ -121,7 +121,7 @@ fn prepared_codex_events_are_exposed_only_on_the_existing_authenticated_hub_rout
         .unwrap()
         .port();
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        Command::new(env!("CARGO_BIN_EXE_999k"))
             .args(["serve-hub", "--queue"])
             .arg(&db)
             .arg("--bundled-profiles")
@@ -211,7 +211,7 @@ fn prepared_codex_events_are_exposed_only_on_the_existing_authenticated_hub_rout
         "/codex/mcp",
         "fixture",
         "tools/call",
-        json!({"name":"pigeonmq_reply","arguments":{"message_id":incoming,"body":"\u{1}".repeat(16384)}}),
+        json!({"name":"radio999k_reply","arguments":{"message_id":incoming,"body":"\u{1}".repeat(16384)}}),
     );
     let result: Value =
         serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -258,7 +258,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
     let db = dir.path().join("queue.db");
     let policy = dir
         .path()
-        .join(pigeonmq::mailbox_catalog::codex_http().policy_file);
+        .join(radio999k::mailbox_catalog::codex_http().policy_file);
     let registration = dir.path().join("pigeonmq-cloud-registration.json");
     let mut queue = Queue::open(&db).unwrap();
     std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -296,7 +296,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
         .port();
     // No Events settings, resolver, or codex-prepare command is supplied.
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        Command::new(env!("CARGO_BIN_EXE_999k"))
             .env_clear()
             .args(["serve-hub", "--queue"])
             .arg(&db)
@@ -333,7 +333,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
             "/codex/mcp",
             token,
             "tools/call",
-            json!({"name":"pigeonmq_read","arguments":{"message_id":"missing-fixture"}}),
+            json!({"name":"radio999k_read","arguments":{"message_id":"missing-fixture"}}),
         );
         assert_eq!(status, 200);
         assert_eq!(reply["id"], 1);
@@ -367,10 +367,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
         json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"mailbox-only-fixture","version":"1"}}),
     );
     assert_eq!(status, 200, "{initialized}");
-    assert_eq!(
-        initialized["result"]["serverInfo"]["name"],
-        "pigeonmq-codex"
-    );
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "999k-codex");
     assert!(
         initialized["result"]["capabilities"]
             .get("events")
@@ -388,14 +385,14 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
     assert_eq!(
         names,
         [
-            "pigeonmq_confirm_terminal",
-            "pigeonmq_inbox",
-            "pigeonmq_read",
-            "pigeonmq_read_thread",
-            "pigeonmq_recipients",
-            "pigeonmq_reply",
-            "pigeonmq_send",
-            "pigeonmq_wait"
+            "radio999k_confirm_terminal",
+            "radio999k_inbox",
+            "radio999k_read",
+            "radio999k_read_thread",
+            "radio999k_recipients",
+            "radio999k_reply",
+            "radio999k_send",
+            "radio999k_wait"
         ]
     );
     for method in ["events/list", "events/subscribe", "events/unsubscribe"] {
@@ -412,7 +409,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
         "/codex/mcp",
         token,
         "tools/call",
-        json!({"name":"pigeonmq_read","arguments":{"message_id":incoming}}),
+        json!({"name":"radio999k_read","arguments":{"message_id":incoming}}),
     );
     assert_eq!(status, 200, "{read}");
     let read = unpack(read);
@@ -433,7 +430,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
         "/codex/mcp",
         token,
         "tools/call",
-        json!({"name":"pigeonmq_reply","arguments":{"message_id":incoming,"body":"manual answer"}}),
+        json!({"name":"radio999k_reply","arguments":{"message_id":incoming,"body":"manual answer"}}),
     );
     assert_eq!(status, 200, "{replied}");
     let replied = unpack(replied);
@@ -462,7 +459,7 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
     let db = dir.path().join("queue.db");
     let policy = dir
         .path()
-        .join(pigeonmq::mailbox_catalog::codex_http().policy_file);
+        .join(radio999k::mailbox_catalog::codex_http().policy_file);
     let registration = dir.path().join("pigeonmq-cloud-registration.json");
     drop(Queue::open(&db).unwrap());
     std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -470,7 +467,8 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
     let mut policy_value = json!({"principals":[{"id":"codex-cloud","token_sha256":Sha256::digest(token).iter().map(|byte|format!("{byte:02x}")).collect::<String>(),
         "operations":["send","request","receive","read"],"mailboxes":["codex-cloud"],"send_to":[],"revoked":false}]});
     let write = |path: &std::path::Path, value: &Value| {
-        pigeonmq::private_file::replace_private(path, &serde_json::to_vec(value).unwrap()).unwrap();
+        radio999k::private_file::replace_private(path, &serde_json::to_vec(value).unwrap())
+            .unwrap();
     };
     write(&policy, &policy_value);
     write(
@@ -486,7 +484,7 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
         .unwrap()
         .port();
     let mut child = ChildGuard(
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        Command::new(env!("CARGO_BIN_EXE_999k"))
             .env_clear()
             .args(["serve-hub", "--queue"])
             .arg(&db)
@@ -524,12 +522,12 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
         }).to_string());
             (status, serde_json::from_str::<Value>(&response).unwrap())
         };
-    let (is_error, recipients) = codex("pigeonmq_recipients", json!({}));
+    let (is_error, recipients) = codex("radio999k_recipients", json!({}));
     assert_eq!(is_error, false);
     assert_eq!(recipients["recipients"], json!(["peer"]));
     assert_eq!(
         codex(
-            "pigeonmq_send",
+            "radio999k_send",
             json!({
                 "recipient":"peer","body":"Codex fixture","idempotency_key":"codex-to-peer"
             })
@@ -545,10 +543,10 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
     // An explicit generic grant does not affect registration-backed Codex discovery.
     policy_value["principals"][0]["send_to"] = json!(["codex-cloud", "generic-only"]);
     write(&policy, &policy_value);
-    assert_eq!(codex("pigeonmq_recipients", json!({})).1, recipients);
+    assert_eq!(codex("radio999k_recipients", json!({})).1, recipients);
     assert_eq!(
         codex(
-            "pigeonmq_send",
+            "radio999k_send",
             json!({
                 "recipient":"generic-only","body":"fixture","idempotency_key":"not-registered"
             })
@@ -563,7 +561,7 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
 
     // Authorized self traffic takes the normal enqueue and delivery paths.
     let (is_error, own_mail) = codex(
-        "pigeonmq_send",
+        "radio999k_send",
         json!({
             "recipient":"codex-cloud","body":"Codex note","idempotency_key":"self-note"
         }),
@@ -571,7 +569,7 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
     assert_eq!(is_error, false);
     let own_id = own_mail["message"]["id"].as_str().unwrap();
     assert_eq!(
-        codex("pigeonmq_read", json!({"message_id":own_id})).1["envelope"]["body"],
+        codex("radio999k_read", json!({"message_id":own_id})).1["envelope"]["body"],
         "Codex note"
     );
     let (status, rpc) = generic("/rpc/request", "codex-cloud", "self-rpc");
@@ -589,6 +587,6 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
     assert_eq!(delivery["attempt"], 1);
     assert_eq!(
         Queue::inspect_dead_letter(&db.canonicalize().unwrap(), own_id).unwrap(),
-        pigeonmq::DeadLetterInspection::NotDeadLetteredOrMissing
+        radio999k::DeadLetterInspection::NotDeadLetteredOrMissing
     );
 }

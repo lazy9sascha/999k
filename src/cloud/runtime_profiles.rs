@@ -1,6 +1,6 @@
 //! Private, explicitly mounted local mailbox registration. The normal runner never loads it.
 use crate::codex_mcp::{Identity, Profile};
-use pigeonmq::{
+use radio999k::{
     Queue, mailbox_catalog as catalog, mailbox_generation as generation,
     private_file::open_private_file, registration,
 };
@@ -29,8 +29,8 @@ const TOKEN: &str = "bearer-token";
 const LOCK: &str = ".init.lock";
 const RETIRED: &str = ".retired";
 const OBSERVE_TOOLS: [(&str, &str, Capability); 2] = [
-    ("pigeonmq_read", "read", Capability::Read),
-    ("pigeonmq_wait", "wait", Capability::Wait),
+    ("radio999k_read", "read", Capability::Read),
+    ("radio999k_wait", "wait", Capability::Wait),
 ];
 
 #[derive(Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -94,7 +94,7 @@ impl LocalIdentity {
             tool == name
                 || (matches!(
                     name,
-                    pigeonmq::mailbox_tools::READ_THREAD | "pigeonmq_inbox"
+                    radio999k::mailbox_tools::READ_THREAD | "radio999k_inbox"
                 ) && operation == "read")
         })
     }

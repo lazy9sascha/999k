@@ -1,4 +1,4 @@
-use pigeonmq::{mailbox_catalog as catalog, mcp_sdk};
+use radio999k::{mailbox_catalog as catalog, mcp_sdk};
 mod auth;
 #[path = "cloud/cloud_credentials.rs"]
 mod cloud_credentials;
@@ -51,7 +51,7 @@ mod runtime_profiles;
 mod stdio_mcp;
 
 use clap::{Parser, Subcommand};
-use pigeonmq::Queue;
+use radio999k::Queue;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -70,7 +70,7 @@ struct CodexFinal {
 }
 
 #[derive(Parser)]
-#[command(version, about)]
+#[command(name = "999k", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -113,9 +113,9 @@ enum Command {
     /// Supervise the hub until stopped.
     ///
     /// A tunnel mode is required. There is no default.
-    /// Set PIGEONMQ_TUNNEL=external and PIGEONMQ_PUBLIC_URL to record an
+    /// Set RADIO999K_TUNNEL=external and RADIO999K_PUBLIC_URL to record an
     /// externally managed HTTPS origin. This is the recommended option.
-    /// Set PIGEONMQ_TUNNEL=tunnl to start the built-in SSH reverse tunnel for testing.
+    /// Set RADIO999K_TUNNEL=tunnl to start the built-in SSH reverse tunnel for testing.
     /// Pass --env-file to read these settings from a private file instead.
     /// Use --local-only for loopback testing only. It ignores both sources.
     Run(cloud_service::RunOptions),
@@ -562,14 +562,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             interval_secs,
         } => {
             if config.is_none() {
-                pigeonmq::arrival_notify::validate_static_mailboxes(mailboxes)?;
+                radio999k::arrival_notify::validate_static_mailboxes(mailboxes)?;
             }
             let sweep = || match config {
                 Some(path) => {
-                    pigeonmq::arrival_notify::run_config(queue, registration, state, command, path)
+                    radio999k::arrival_notify::run_config(queue, registration, state, command, path)
                 }
                 None => {
-                    pigeonmq::arrival_notify::run(queue, registration, state, command, mailboxes)
+                    radio999k::arrival_notify::run(queue, registration, state, command, mailboxes)
                 }
             };
             let Some(interval) = interval_secs else {
@@ -586,7 +586,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Ok(_) => {}
                     Err(error) if config.is_some() => {
-                        eprintln!("{}", pigeonmq::arrival_notify::safe_failure(error.as_ref()));
+                        eprintln!(
+                            "{}",
+                            radio999k::arrival_notify::safe_failure(error.as_ref())
+                        );
                     }
                     Err(_) => eprintln!("arrival notification sweep incomplete"),
                 }
@@ -595,7 +598,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::DlqInspect { queue, id } => {
             let result = Queue::inspect_dead_letter(queue, id).map_err(|error| match error {
-                pigeonmq::Error::Database(_) => pigeonmq::Error::Invalid("queue_read_unavailable"),
+                radio999k::Error::Database(_) => {
+                    radio999k::Error::Invalid("queue_read_unavailable")
+                }
                 other => other,
             })?;
             println!("{}", serde_json::to_string(&result)?);
@@ -655,7 +660,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             cloud_credentials::provision(auth_policy, cloud_credentials::App::Dot)?;
-            pigeonmq::dot_profile::check(queue, auth_policy, true).map_err(Into::into)
+            radio999k::dot_profile::check(queue, auth_policy, true).map_err(Into::into)
         }
         Command::GrokPrepare { queue, auth_policy } => {
             cloud_credentials::provision(auth_policy, cloud_credentials::App::GrokBot)?;
@@ -758,7 +763,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             CODEX_MAILBOX,
                             id,
                             &input.receipt,
-                            pigeonmq::Envelope {
+                            radio999k::Envelope {
                                 sender: CODEX_MAILBOX.into(),
                                 recipient: sender.clone(),
                                 body: input.body,
@@ -783,7 +788,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Restore `_ => {}` in the match above only with these commands.
     if let Command::Send { from, to, body } = &cli.command {
         let mut queue = Queue::open(cli.db.clone())?;
-        let envelope = pigeonmq::Envelope {
+        let envelope = radio999k::Envelope {
             sender: from.clone(),
             recipient: to.clone(),
             body: body.clone(),
@@ -812,7 +817,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             recipient,
             id,
             receipt,
-            pigeonmq::Envelope {
+            radio999k::Envelope {
                 sender: from.clone(),
                 recipient: to.clone(),
                 body: body.clone(),
@@ -833,7 +838,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     // #FEEDBACK resolved: Restore the entry point diagnostics to stderr.
-    pigeonmq::logging::init();
+    radio999k::logging::init();
     if let Err(error) = run() {
         eprintln!("{}", error);
         std::process::exit(1);

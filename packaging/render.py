@@ -10,8 +10,8 @@ import shutil
 import tarfile
 
 TEMPLATES = Path(__file__).resolve().parent
-RELEASE = "https://github.com/lazy9sascha/pigeonmq/releases/download"
-BINARIES = ("pigeonmq", "pigeonmq-dot-resolve")
+RELEASE = "https://github.com/lazy9sascha/999k/releases/download"
+BINARIES = ("999k", "999k-dot-resolve")
 TARGETS = {
     "aarch64-apple-darwin": ("Darwin:arm64", "on_macos", "on_arm"),
     "x86_64-apple-darwin": ("Darwin:x86_64", "on_macos", "on_intel"),
@@ -31,7 +31,7 @@ def sha256(stream):
 def read_archives(version, directory):
     pins = {}
     for line in (directory / "SHA256SUMS").read_text(encoding="ascii").splitlines():
-        entry = re.fullmatch(r"([0-9a-f]{64})  (pigeonmq-" + re.escape(version) + r"-(.+)\.tar\.gz)", line)
+        entry = re.fullmatch(r"([0-9a-f]{64})  (999k-" + re.escape(version) + r"-(.+)\.tar\.gz)", line)
         if not entry:
             raise ValueError("SHA256SUMS contains an invalid entry.")
         digest, name, target = entry.groups()
@@ -111,8 +111,8 @@ def render(version, source, output):
         .replace("# @PIN_CASES@", shell_pins(pins))
     )
     installer.chmod(0o755)
-    (output / "pigeonmq.rb").write_text(
-        (TEMPLATES / "pigeonmq.rb.in").read_text()
+    (output / "radio999k.rb").write_text(
+        (TEMPLATES / "radio999k.rb.in").read_text()
         .replace("@VERSION@", version)
         .replace("# @BREW_SOURCES@", brew_sources(version, pins))
     )
@@ -136,4 +136,4 @@ if __name__ == "__main__":
     try:
         render(args.version, args.archive_directory, args.output_directory)
     except (OSError, ValueError, tarfile.TarError) as error:
-        cli.exit(1, f"pigeonmq: {error}\n")
+        cli.exit(1, f"999k: {error}\n")

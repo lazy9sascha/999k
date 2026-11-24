@@ -1,6 +1,6 @@
 //! Offline fixtures only. Callback transport is injected and never reaches a provider.
 use base64::Engine;
-use pigeonmq::{
+use radio999k::{
     Envelope, Queue,
     dot_profile::{self, DotBackend, DotHost, events::Runtime},
     events::{
@@ -166,7 +166,7 @@ fn dot_inbox_pages_exact_read_metadata_without_claiming_or_acknowledging() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|tool| tool["name"] == "pigeonmq_inbox")
+            .any(|tool| tool["name"] == "radio999k_inbox")
     );
 
     let list = |token, args| {
@@ -174,7 +174,7 @@ fn dot_inbox_pages_exact_read_metadata_without_claiming_or_acknowledging() {
             &host,
             token,
             "tools/call",
-            json!({"name":"pigeonmq_inbox","arguments":args}),
+            json!({"name":"radio999k_inbox","arguments":args}),
         )
     };
     let data = |response: Value| {
@@ -283,7 +283,7 @@ fn dot_event_auth_discovery_and_exact_recipient_are_fail_closed() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(expires > pigeonmq::events::runtime::wall_time());
+    assert!(expires > radio999k::events::runtime::wall_time());
 
     put(
         &f.registry,
@@ -406,7 +406,7 @@ fn ordinary_and_terminal_wakes_keep_signed_metadata_and_the_existing_subscriptio
         &host,
         TOKEN,
         "tools/call",
-        json!({"name":"pigeonmq_reply","arguments":{"message_id":reply,"body":"must not auto reply"}}),
+        json!({"name":"radio999k_reply","arguments":{"message_id":reply,"body":"must not auto reply"}}),
     );
     assert_eq!(status, 200);
     assert_eq!(result["error"]["data"]["reason"], "reply_is_terminal");
@@ -566,11 +566,11 @@ fn replacement_generation_uses_a_new_grant_and_never_wakes_old_messages() {
         })
         .unwrap();
 
-    let dispatch_lock = pigeonmq::mailbox_generation::lock_dispatch(&fixture.db).unwrap();
-    assert!(pigeonmq::mailbox_generation::retire(&fixture.db, "dot").is_err());
+    let dispatch_lock = radio999k::mailbox_generation::lock_dispatch(&fixture.db).unwrap();
+    assert!(radio999k::mailbox_generation::retire(&fixture.db, "dot").is_err());
     drop(dispatch_lock);
-    pigeonmq::mailbox_generation::retire(&fixture.db, "dot").unwrap();
-    pigeonmq::mailbox_generation::reactivate(&fixture.db, "dot").unwrap();
+    radio999k::mailbox_generation::retire(&fixture.db, "dot").unwrap();
+    radio999k::mailbox_generation::reactivate(&fixture.db, "dot").unwrap();
 
     let mut policy: Value =
         serde_json::from_slice(&std::fs::read(&fixture.policy).unwrap()).unwrap();
@@ -610,7 +610,7 @@ fn replacement_generation_uses_a_new_grant_and_never_wakes_old_messages() {
         "mailbox_generation_retired"
     );
 
-    let storage = pigeonmq::mailbox_generation::active_storage(&fixture.db, "dot")
+    let storage = radio999k::mailbox_generation::active_storage(&fixture.db, "dot")
         .unwrap()
         .unwrap();
     let runtime = Runtime::new_with_generation(&fixture.db, &fixture.policy, Some(&storage))

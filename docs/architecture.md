@@ -1,6 +1,6 @@
 # Architecture
 
-PigeonMQ is one hub process and one SQLite file on your Mac. The hard part is not the queue. The hard part is that **every agent reaches the outside world differently**. Some can call an MCP server but can't be called. Some can be woken by a webhook but can't hold a connection open. Some run on a VM that sleeps. Some only exist as a thread inside a desktop app.
+999K is one hub process and one SQLite file on your Mac. The hard part is not the queue. The hard part is that **every agent reaches the outside world differently**. Some can call an MCP server but can't be called. Some can be woken by a webhook but can't hold a connection open. Some run on a VM that sleeps. Some only exist as a thread inside a desktop app.
 
 So this page is organized by **connection mode**, not by agent. New agents go through [agent triage](#agent-triage), which picks the mode that fits what the agent can do. Which agent uses which mode, and what was actually tested, is in [Agents and capabilities](agents.md).
 
@@ -25,7 +25,7 @@ flowchart LR
     TG["Public HTTPS tunnel"]
     Email["Email provider"]
     subgraph Mac["Your Mac"]
-        SSH["optional reverse tunnel<br/>(pigeonmq run)"]
+        SSH["optional reverse tunnel<br/>(999k run)"]
         Hub["Hub on 127.0.0.1:54843<br/>/muse/mcp · /grok/mcp · /dot/mcp · /codex/mcp"]
         Q[("SQLite queue<br/>pigeonmq-cloud-queue.sqlite3")]
         Wake["Grok wake notifier<br/>(inside the hub)"]
@@ -61,7 +61,7 @@ Four ways an agent can be connected. They differ in **who starts the conversatio
 | Mode | Who initiates | Needs a public URL? | Agent learns of new mail by | Used by |
 | --- | --- | --- | --- | --- |
 | **A. Wake + pull** | Hub sends a webhook; agent then calls the hub | Yes, for the agent's MCP calls. The agent's webhook URL is outbound from the Mac. | Webhook POST with the message ID | Grok Bot |
-| **B. Pull only (connector or polling)** | Agent calls the hub's MCP route | Yes | Only when it polls (`pigeonmq_wait`/`pigeonmq_inbox`) or a user asks it to check | Muse |
+| **B. Pull only (connector or polling)** | Agent calls the hub's MCP route | Yes | Only when it polls (`radio999k_wait`/`radio999k_inbox`) or a user asks it to check | Muse |
 | **C. Event push (MCP Events)** — intended design | Hub pushes an event into the agent platform. Agent then calls the hub. | Yes, for the agent's MCP calls | Platform event subscription (signed callback) | Codex Work Cloud (live acceptance on this hub). Dot (terminal-reply Events verified here). |
 | **D. Local bound receiver** (Mac desktop thread) | A native worker uses the common receiver API and the bound app thread | No | The worker claims through the hub | Codex Local (`codex-local`) |
 
@@ -73,11 +73,11 @@ sequenceDiagram
     participant Q as Queue (Mac)
     participant W as Wake notifier
     participant G as Grok Bot routine
-    S->>Q: pigeonmq_send → pending
+    S->>Q: radio999k_send → pending
     W->>Q: read-only scan (every 5 s)
     W->>G: POST webhook {message_id, mailbox}
-    G->>Q: pigeonmq_read(message_id) via /grok/mcp
-    G->>Q: pigeonmq_reply → reply + ACK in one transaction
+    G->>Q: radio999k_read(message_id) via /grok/mcp
+    G->>Q: radio999k_reply → reply + ACK in one transaction
 ```
 
 - The webhook body has only `message_id` and `mailbox`. It carries no message text and no hub identity. **Use one webhook per hub**, or the agent can't tell which hub to read from.
@@ -91,9 +91,9 @@ The agent's app registers the hub as an MCP connector (Muse), or the agent calls
 
 #### Cue and Instinct: email is a notification, not a mailbox
 
-1. **Send.** The sender calls `pigeonmq_send` on its own authenticated MCP route. The hub stores the message in the recipient's SQLite mailbox on the Mac. Cue and Instinct each have a route and a Bearer; they do not need separate hubs or queues.
-2. **Notify (optional).** One relay on the Mac serves all opted-in mailboxes. Each has its own destination and activation point. The relay checks new eligible ordinary messages and linked replies, then passes only the destination and PigeonMQ message ID to the configured provider command. It does not send the message text, claim it, or ACK it. An email failure leaves the message available over MCP.
-3. **Read and reply.** A remote client reaches its route (`/cue/mcp` or `/instinct/mcp` by default) through the reverse tunnel. It uses its own Bearer to call `pigeonmq_read` with the ID, or finds the message with `pigeonmq_inbox`. Calling `pigeonmq_reply` stores the linked reply and ACKs the original in one transaction. The sender reads that reply from its own mailbox. PigeonMQ does not ingest replies to the notification email.
+1. **Send.** The sender calls `radio999k_send` on its own authenticated MCP route. The hub stores the message in the recipient's SQLite mailbox on the Mac. Cue and Instinct each have a route and a Bearer; they do not need separate hubs or queues.
+2. **Notify (optional).** One relay on the Mac serves all opted-in mailboxes. Each has its own destination and activation point. The relay checks new eligible ordinary messages and linked replies, then passes only the destination and 999K message ID to the configured provider command. It does not send the message text, claim it, or ACK it. An email failure leaves the message available over MCP.
+3. **Read and reply.** A remote client reaches its route (`/cue/mcp` or `/instinct/mcp` by default) through the reverse tunnel. It uses its own Bearer to call `radio999k_read` with the ID, or finds the message with `radio999k_inbox`. Calling `radio999k_reply` stores the linked reply and ACKs the original in one transaction. The sender reads that reply from its own mailbox. 999K does not ingest replies to the notification email.
 
 Enabling email for a second mailbox updates the shared relay's configuration rather than starting another service. Removing the last opted-in mailbox stops the managed relay. See [email setup](configuration.md#opt-in-to-email-arrivals).
 
@@ -110,10 +110,10 @@ sequenceDiagram
     participant P as Agent platform
     participant A as Agent
     A->>Q: subscribe (MCP Events) via /<agent>/mcp
-    S->>Q: pigeonmq_send → pending
+    S->>Q: radio999k_send → pending
     Q->>P: signed event callback (durable outbox, retried)
     P->>A: start or resume a turn
-    A->>Q: pigeonmq_read → pigeonmq_reply (reply + ACK in one transaction)
+    A->>Q: radio999k_read → radio999k_reply (reply + ACK in one transaction)
 ```
 
 Where it stands:
@@ -146,7 +146,7 @@ These results do not establish another Cloud surface or unattended recovery. See
 ### D. Local bound receiver
 
 A local native worker uses the common authenticated `/receiver` API for queue operations.
-The worker for `codex-local` lives in `src/adapters/codex/receiver.rs` and `src/bin/pigeonmq-codex-receiver.rs`.
+The worker for `codex-local` lives in `src/adapters/codex/receiver.rs` and `src/bin/999k-codex-receiver.rs`.
 It binds the existing local Codex thread, native socket, working directory, and registration through a private file.
 The worker does not open the database. The hub owns claims, lease renewal, admission, reply, and ACK.
 
@@ -170,7 +170,7 @@ Code boundaries follow those responsibilities:
 - `src/events/` holds shared policy, subscriptions, callback transport, delivery, and runtime helpers.
 - `src/mcp/mcp_request.rs` holds shared strict JSON parsing, faults, and request context.
 
-The queue and local receiver source baseline is PigeonMQ revision `4a5fa0ad3556aa816a3353c511a7bfeaa5419c5f`.
+The queue and local receiver source baseline is 999K revision `4a5fa0ad3556aa816a3353c511a7bfeaa5419c5f`.
 The Events restoration uses historical revision `e399161`, including the former `dot_*` Events modules.
 The Cloud extraction keeps these helpers under shared namespaces and omits unrelated local service startup paths.
 Synthetic tests establish local behavior only. They do not establish a live Cloud subscription, callback, conversation turn, reply, or ACK.
@@ -182,11 +182,11 @@ Synthetic tests establish local behavior only. They do not establish a live Clou
 | **Hub** (`serve-hub`) | Loopback HTTP server. One route per agent profile, each with its own policy. Rejects non-POST, chunked bodies, and oversized requests. Shares up to 8 connection workers across all routes. | `src/local_http.rs` |
 | **Queue** | SQLite. Stores messages, leases, replies, ACKs. Created explicitly by `init`/`setup-muse`, never by the listener. | `src/lib.rs` |
 | **Agent adapters** | Per-agent MCP, native receiver, and Events bindings over the same queue. | `src/adapters/{codex,muse,grok_bot,dot}` |
-| **Runner** (`run`) | Supervises `serve-hub` and writes local recovery state. A tunnel mode is required. Set `PIGEONMQ_TUNNEL=external` with a public URL, or `PIGEONMQ_TUNNEL=tunnl` for testing. For an existing private hub, see [one LaunchAgent](launchd.md). `--local-only` is for loopback testing only. | `src/cloud/cloud_service.rs` |
+| **Runner** (`run`) | Supervises `serve-hub` and writes local recovery state. A tunnel mode is required. Set `RADIO999K_TUNNEL=external` with a public URL, or `RADIO999K_TUNNEL=tunnl` for testing. For an existing private hub, see [one LaunchAgent](launchd.md). `--local-only` is for loopback testing only. | `src/cloud/cloud_service.rs` |
 | **Grok wake notifier** | Runs inside the hub with an active Grok policy and a selected wake credential source. Read-only on the queue. | `src/adapters/grok_bot/grok_wake.rs` |
 | **Email relay** (`notify-arrivals`) | Optional service on the Mac. Reads eligible arrivals and calls the configured provider command with a destination and message ID. | `src/arrival_notify.rs` |
 | **Common receiver API** | Authenticated claims, leases, admission, and atomic completion. | `src/receiver/receiver_api.rs`, `src/receiver/receiver_client.rs` |
-| **Codex local worker** | Native execution in one protected existing local thread for `codex-local`. | `src/adapters/codex/receiver.rs`, `src/bin/pigeonmq-codex-receiver.rs` |
+| **Codex local worker** | Native execution in one protected existing local thread for `codex-local`. | `src/adapters/codex/receiver.rs`, `src/bin/999k-codex-receiver.rs` |
 | **Shared Events** | Subscription lifecycle, signed callbacks, durable outbox, and delivery. | `src/events/` |
 | **Shared MCP requests** | Strict JSON parsing, faults, and request context. | `src/mcp/mcp_request.rs` |
 | **Credentials** | Bearer tokens for built-in apps live in the macOS Keychain. Isolated local mailboxes use a mode 0600 token file. Policy files hold only their SHA-256. | `src/cloud/cloud_credentials.rs` |
@@ -221,11 +221,11 @@ For sandbox use, named local profiles are registered from a dedicated private ho
 
 ### MCP tools
 
-The mailbox tools are `pigeonmq_send`, `pigeonmq_read`, `pigeonmq_read_thread`, `pigeonmq_wait`, `pigeonmq_inbox`, `pigeonmq_reply`, `pigeonmq_recipients`, and `pigeonmq_confirm_terminal` (`src/mcp/mailbox_tools.rs`). `pigeonmq_send` also accepts `continue_from_message_id`. The policy decides which calls succeed.
+The mailbox tools are `radio999k_send`, `radio999k_read`, `radio999k_read_thread`, `radio999k_wait`, `radio999k_inbox`, `radio999k_reply`, `radio999k_recipients`, and `radio999k_confirm_terminal` (`src/mcp/mailbox_tools.rs`). `radio999k_send` also accepts `continue_from_message_id`. The policy decides which calls succeed.
 
-`pigeonmq_inbox` defaults to received mail (`scope: inbox`) in newest-first queue order. Use `scope: all` for sent and received mail together, or `order: oldest` to reverse the order. Optional `query` matches a literal substring of 1–256 characters in the message body, ignoring ASCII letter case. Results contain metadata. Use `pigeonmq_read` with a received message ID or `pigeonmq_read_thread` with its `conversation_id` to read bodies.
+`radio999k_inbox` defaults to received mail (`scope: inbox`) in newest-first queue order. Use `scope: all` for sent and received mail together, or `order: oldest` to reverse the order. Optional `query` matches a literal substring of 1–256 characters in the message body, ignoring ASCII letter case. Results contain metadata. Use `radio999k_read` with a received message ID or `radio999k_read_thread` with its `conversation_id` to read bodies.
 
-| View | `pigeonmq_inbox` arguments |
+| View | `radio999k_inbox` arguments |
 | --- | --- |
 | Received mail | `{}` |
 | Sent and received | `{"scope":"all"}` |
@@ -275,14 +275,14 @@ stateDiagram-v2
     note right of replied
       The reply is itself a message to the sender.
       The sender reads it and may call
-      pigeonmq_confirm_terminal to ACK it.
+      radio999k_confirm_terminal to ACK it.
     end note
 ```
 
 1. **Send.** The sender's policy must allow `send` to that recipient. The queue returns a receipt. A receipt means "stored", not "seen".
 2. **Observe.** `read`, `wait`, and `inbox` only look. They never ACK, so reading twice is safe.
 3. **Reply.** The reply and the ACK of the original commit in **one transaction**. Either both exist or neither does. After a restart the original stays `replied` with the same reply ID and is not delivered again.
-4. **Terminal.** The reply is an ordinary message back to the sender. The sender confirms it with `pigeonmq_confirm_terminal`, which ACKs the reply without creating another one.
+4. **Terminal.** The reply is an ordinary message back to the sender. The sender confirms it with `radio999k_confirm_terminal`, which ACKs the reply without creating another one.
 
 A claim moves an ordinary request to `dead_lettered` after five expired delivery attempts. Observation does not count as an attempt. RPC requests, terminal replies, and completed messages are excluded. The queue keeps the message, receipt, admission records, and callback history. Active delivery skips dead-lettered requests. An operator can [inspect dead-letter metadata](configuration.md#dead-letter-inspection) through the local CLI or the opt-in generic HTTP API. There is no revival operation.
 
@@ -309,8 +309,8 @@ Muse and Grok Bot reject the retired top-level `senders` field. The central regi
 
 Things to know:
 
-- **tunnl.gg terminates TLS** when you opt in with `PIGEONMQ_TUNNEL=tunnl`. The provider can see the Bearer token and message bodies. Use synthetic data until you accept that, or use a different tunnel.
-- A Cloudflare Access header (or any tunnel-level credential) is not PigeonMQ auth. The Bearer check still applies.
+- **tunnl.gg terminates TLS** when you opt in with `RADIO999K_TUNNEL=tunnl`. The provider can see the Bearer token and message bodies. Use synthetic data until you accept that, or use a different tunnel.
+- A Cloudflare Access header (or any tunnel-level credential) is not 999K auth. The Bearer check still applies.
 - Source IP is never used for auth. Cloud agents call from shared egress IPs.
 
 ## Failure, retry, and duplicate rules
@@ -339,7 +339,7 @@ Things to know:
 | Any stop | State file is rewritten to `disconnected` with a reason. |
 
 With `--local-only`, the runner reports `local_ready`, `tunnel: "externally_managed"`, and no public origin.
-`PIGEONMQ_TUNNEL=external` with `PIGEONMQ_PUBLIC_URL` also skips SSH. It adds the HTTPS origin and connector endpoints as unverified metadata. See [Tunnel URLs](tunnels.md#use-your-own-https-origin).
+`RADIO999K_TUNNEL=external` with `RADIO999K_PUBLIC_URL` also skips SSH. It adds the HTTPS origin and connector endpoints as unverified metadata. See [Tunnel URLs](tunnels.md#use-your-own-https-origin).
 Neither way establishes tunnel readiness or a Cloud Events subscription.
 The foreground runner does not install startup services. Use an existing OS supervisor for unattended operation.
 
@@ -362,7 +362,7 @@ See [Grok wake setup](quickstart.md#5-optional-grok-bot-wake).
 
 ### What the agent must do
 
-- Re-read the message with `pigeonmq_read`. Never trust the webhook body.
+- Re-read the message with `radio999k_read`. Never trust the webhook body.
 - Handle each `message_id` once. Ignore repeat wakes for the same ID.
 - On `reply_conflict`, stop: it's already answered.
 - Send a normal `User-Agent` header. Some tunnel paths return 403 without one.

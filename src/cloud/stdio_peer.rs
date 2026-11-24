@@ -2,9 +2,9 @@ use super::{error, fail, named_route, strict_json};
 use serde_json::{Value, json};
 use std::io;
 
-const RECIPIENTS: &str = "pigeonmq_recipients";
-const SEND: &str = "pigeonmq_send";
-const WAIT: &str = "pigeonmq_wait";
+const RECIPIENTS: &str = "radio999k_recipients";
+const SEND: &str = "radio999k_send";
+const WAIT: &str = "radio999k_wait";
 const CONTINUE: &str = "continue_from_message_id";
 
 #[derive(Clone, Copy)]
@@ -63,7 +63,10 @@ impl<'a> Scope<'a> {
         }
 
         let id = &request["id"];
-        let name = request["params"]["name"].as_str();
+        let canonical = request["params"]["name"]
+            .as_str()
+            .map(radio999k::mailbox_tools::canonical_tool_name);
+        let name = canonical.as_deref();
         let args = &request["params"]["arguments"];
         match name {
             Some(RECIPIENTS) => {}
@@ -169,7 +172,7 @@ mod tests {
             {"name":RECIPIENTS},
             {"name":SEND,"inputSchema":{"properties":{"recipient":{},(CONTINUE):{}}}},
             {"name":WAIT,"inputSchema":{"properties":{},"required":["timeout_ms"]}},
-            {"name":"pigeonmq_read_thread"},
+            {"name":"radio999k_read_thread"},
         ]);
         let list = scope
             .exchange("tools/list", &json!({"id":7}), |_| {
@@ -218,7 +221,7 @@ mod tests {
             ),
             (WAIT, json!({"timeout_ms":0}), -32602),
             (WAIT, json!({"in_reply_to":" "}), -32602),
-            ("pigeonmq_read_thread", json!({}), -32601),
+            ("radio999k_read_thread", json!({}), -32601),
         ] {
             let denied = scope
                 .exchange("tools/call", &request(tool, args), |_| {

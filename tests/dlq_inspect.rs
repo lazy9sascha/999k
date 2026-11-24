@@ -1,4 +1,4 @@
-use pigeonmq::{Envelope, Queue};
+use radio999k::{Envelope, Queue};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::{
@@ -10,7 +10,7 @@ use std::{
 };
 
 fn inspect(queue: &Path, id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+    Command::new(env!("CARGO_BIN_EXE_999k"))
         .env_clear()
         .args(["dlq-inspect", "--queue"])
         .arg(queue)
@@ -130,12 +130,12 @@ fn inspect_rejects_unsafe_paths_and_incompatible_queues_without_writes() {
     assert_eq!(fs::read(&path).unwrap(), before);
 
     let sql = Connection::open(&path).unwrap();
-    sql.pragma_update(None, "user_version", pigeonmq::SCHEMA_VERSION)
+    sql.pragma_update(None, "user_version", radio999k::SCHEMA_VERSION)
         .unwrap();
     sql.pragma_update(None, "application_id", 0).unwrap();
     drop(sql);
     let before = fs::read(&path).unwrap();
-    rejected(inspect(&path, "id"), "not a PigeonMQ database");
+    rejected(inspect(&path, "id"), "not a 999K database");
     assert_eq!(fs::read(&path).unwrap(), before);
 
     let wal = home.join("wal.db");

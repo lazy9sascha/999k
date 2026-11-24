@@ -1,5 +1,5 @@
 //! Stage a dedicated reply bearer without changing the active mailbox registration.
-use pigeonmq::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
+use radio999k::private_file::{MAX_PRIVATE_CONFIG_BYTES, open_private_file};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{

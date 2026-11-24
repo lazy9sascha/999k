@@ -23,15 +23,15 @@ mkdir -p -- "$out"
 out=$(cd -- "$out" && pwd)
 cd -- "$root"
 cargo build --locked --release --target "$target" --target-dir target \
-  --bin pigeonmq --bin pigeonmq-dot-resolve >&2
+  --bin 999k --bin 999k-dot-resolve >&2
 
 bin="target/$target/release"
-banner=$("$bin/pigeonmq" --version)
-if [[ ! "$banner" =~ ^pigeonmq\ [0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Expected a numbered release version from pigeonmq." >&2
+banner=$("$bin/999k" --version)
+if [[ ! "$banner" =~ ^999k\ [0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Expected a numbered release version from 999k." >&2
   exit 1
 fi
-archive="pigeonmq-${banner#pigeonmq }-$target.tar.gz"
+archive="999k-${banner#999k }-$target.tar.gz"
 if [[ -e "$out/$archive" || -L "$out/$archive" ]]; then
   echo "Release archive already exists: $out/$archive" >&2
   exit 1
@@ -39,9 +39,9 @@ fi
 
 stage=$(mktemp -d "$out/.package.XXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
-install -m 0755 "$bin/pigeonmq" "$bin/pigeonmq-dot-resolve" "$stage"
+install -m 0755 "$bin/999k" "$bin/999k-dot-resolve" "$stage"
 install -m 0644 LICENSE "$stage/LICENSE"
 COPYFILE_DISABLE=1 tar --format=ustar -C "$stage" -czf "$stage/$archive" \
-  LICENSE pigeonmq pigeonmq-dot-resolve
+  LICENSE 999k 999k-dot-resolve
 ln -- "$stage/$archive" "$out/$archive"
 printf '%s\n' "$out/$archive"

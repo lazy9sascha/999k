@@ -1,5 +1,5 @@
 //! Minimal bearer/operation/mailbox policy. No credential creation or Keychain.
-use pigeonmq::private_file::MAX_PRIVATE_CONFIG_BYTES as MAX_POLICY;
+use radio999k::private_file::MAX_PRIVATE_CONFIG_BYTES as MAX_POLICY;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, io::Read, path::Path};
@@ -180,7 +180,7 @@ fn load_policy_file(path: &Path) -> Result<LoadedPolicy, Fault> {
 pub fn codex_events(
     path: &Path,
     registration: &Path,
-) -> Result<Option<(Events, pigeonmq::events::policy::EventsPolicy)>, Fault> {
+) -> Result<Option<(Events, radio999k::events::policy::EventsPolicy)>, Fault> {
     let (entries, settings) = load_policy_file(path)?;
     let Some(settings) = settings else {
         return Ok(None);
@@ -198,9 +198,9 @@ pub fn codex_events(
     {
         return Err((403, "forbidden"));
     }
-    pigeonmq::registration::validate_registration(registration, "codex-cloud", "codex-cloud")?;
-    let peers = pigeonmq::registration::active_peers(registration, "codex-cloud")?;
-    let policy = pigeonmq::events::policy::EventsPolicy::for_codex(
+    radio999k::registration::validate_registration(registration, "codex-cloud", "codex-cloud")?;
+    let peers = radio999k::registration::active_peers(registration, "codex-cloud")?;
+    let policy = radio999k::events::policy::EventsPolicy::for_codex(
         entry.token_sha256.to_ascii_lowercase(),
         peers,
         settings.callback_hosts.clone(),
@@ -331,7 +331,7 @@ fn muse_now_ms() -> Result<u64, Fault> {
 
 impl MusePrincipal {
     fn registered_peers(&self) -> Result<Vec<String>, Fault> {
-        pigeonmq::registration::active_peers(
+        radio999k::registration::active_peers(
             Path::new(
                 self.registration
                     .as_deref()
@@ -353,9 +353,9 @@ impl MusePrincipal {
     pub fn scope(
         &self,
         operation: MuseOperation,
-    ) -> Result<pigeonmq::muse_mailbox::MuseScope, Fault> {
+    ) -> Result<radio999k::muse_mailbox::MuseScope, Fault> {
         self.require_operation(operation)?;
-        Ok(pigeonmq::muse_mailbox::MuseScope {
+        Ok(radio999k::muse_mailbox::MuseScope {
             allowed_senders: self.registered_peers()?,
         })
     }
@@ -363,7 +363,7 @@ impl MusePrincipal {
 
 /// Open through a verified directory descriptor to avoid parent replacement races.
 /// Only the immediate parent is constrained; ancestors remain trusted installation paths.
-use pigeonmq::private_file::open_private_file;
+use radio999k::private_file::open_private_file;
 
 /// Metadata check only; does not read database or credential contents.
 pub fn require_private_file(path: &Path) -> Result<(), Fault> {
@@ -417,7 +417,7 @@ pub fn authenticate_muse(path: &Path, authorization: &[Vec<u8>]) -> Result<MuseP
 pub fn local_muse_scope(
     path: &Path,
     operation: MuseOperation,
-) -> Result<pigeonmq::muse_mailbox::MuseScope, Fault> {
+) -> Result<radio999k::muse_mailbox::MuseScope, Fault> {
     load_muse(path)?.0.scope(operation)
 }
 

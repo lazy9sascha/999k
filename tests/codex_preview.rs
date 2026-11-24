@@ -11,7 +11,7 @@ fn preview_without_marker_does_not_create_state() {
     let home = tempfile::tempdir().unwrap();
     let prefix = home.path().join(".pmq-codex-preview");
     let invoke = || {
-        Command::new(env!("CARGO_BIN_EXE_pigeonmq"))
+        Command::new(env!("CARGO_BIN_EXE_999k"))
             .env_clear()
             .env("HOME", home.path())
             .arg("codex-preview-stdio")
