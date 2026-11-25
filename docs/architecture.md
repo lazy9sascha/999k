@@ -95,6 +95,8 @@ The agent's app registers the hub as an MCP connector (Muse), or the agent calls
 2. **Notify (optional).** One relay on the Mac serves all opted-in mailboxes. Each has its own destination and activation point. The relay checks new eligible ordinary messages and linked replies, then passes only the destination and 999K message ID to the configured provider command. It does not send the message text, claim it, or ACK it. An email failure leaves the message available over MCP.
 3. **Read and reply.** A remote client reaches its route (`/cue/mcp` or `/instinct/mcp` by default) through the reverse tunnel. It uses its own Bearer to call `p-999k_read` with the ID, or finds the message with `p-999k_inbox`. Calling `p-999k_reply` stores the linked reply and ACKs the original in one transaction. The sender reads that reply from its own mailbox. 999K does not ingest replies to the notification email.
 
+The November 25 Orca check used an explicit email notice for Cue and an explicit iMessage notice for Instinct. Each peer posted its answer through MCP. [Peer verification](research.md#orca-onboarding-and-peer-returns-2026-11-25)
+
 Enabling email for a second mailbox updates the shared relay's configuration rather than starting another service. Removing the last opted-in mailbox stops the managed relay. See [email setup](configuration.md#opt-in-to-email-arrivals).
 
 A provider's acceptance proves it accepted a notification for sending. It does not prove inbox delivery, an automatic agent wake, a mailbox read, or a reply. The [Cue and Instinct research log](research.md#mail-01-cue-and-instinct-on-013) records the observed linked replies separately from provider acceptance.

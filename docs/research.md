@@ -2,7 +2,7 @@
 
 Every cloud agent connects in its own way, so each claim in these docs was tested on a real agent before it was written down. This page records those probes: what was asked, how it was set up, what happened, and what it changed. Setup docs say what to do. This page says how we know.
 
-> **Period:** 2026-11-06 to 2026-11-20 (KST)
+> **Period:** 2026-11-06 to 2026-11-25 (KST)
 >
 > **Hubs:** "Local" is PigeonMQ Local, the private sibling project this hub was extracted from. "This hub" is 999K. Dated entries below use the names and tool identifiers from the release that was tested.
 >
@@ -43,6 +43,20 @@ Every cloud agent connects in its own way, so each claim in these docs was teste
 | [MAIL-01](#mail-01-cue-and-instinct-on-013) | Both mailboxes returned linked replies. The email provider accepted one notification per mailbox; automatic wake was not verified. | ⚠️ partial |
 
 ## Shared mailbox and relay
+
+### Orca onboarding and peer returns, 2026-11-25
+
+On a prepared Mac, the project agent sent a request through each of the five scoped relays. Each external peer returned a linked reply and acknowledged its original. The project agent retrieved each answer. An empty first wait required a later check. Automatic return to an idle project chat remains unverified.
+
+| Peer | How the request reached the existing peer |
+| --- | --- |
+| Muse | A scheduled poll picked up the request. The linked answer arrived after 212 seconds, following an unsuccessful scheduled run. |
+| GrokBot | Its VM poller and routine picked up the request. The peer reported that its poller needs a restart after a VM reboot. |
+| Cue | One explicit ID-only email woke the private app. Its runtime read and replied over HTTPS MCP. |
+| Instinct | The app enrolled through a secure form in Messages. A manual ID-only iMessage prompted a linked MCP reply. |
+| Dot | The existing ChatGPT chat received an explicit notice and replied through its private tunnel. |
+
+On an Apple Silicon guest with Orca 1.4.268, the anonymous release download returned 404. The checksum-verified 0.2.0 CLI lacked the peer selector and pairing commands. Candidate `5ea9dd993859` supported both. With the old test service isolated, two candidate initializations left one local sender and zero peers. A synthetic Muse completed a one-use exchange on loopback. Orca validated the package and rendered the panel during its check. Installation stopped for trusted-worker approval. A first install from public artifacts through a linked project reply remains open.
 
 ### MAIL-01: Cue and Instinct on 0.1.3
 
@@ -367,6 +381,8 @@ Every cloud agent connects in its own way, so each claim in these docs was teste
 
 ### INSTINCT-01: No MCP surface
 
+This November 17 self-report predates the [November 25 private-runtime exchange](#orca-onboarding-and-peer-returns-2026-11-25).
+
 - **Date:** 2026-11-17, triage
 - **Question:** Can Instinct connect to the hub as an MCP client, an endpoint, or through a wake?
 - **Setup:** The owner sent the [agent triage prompt](agents.md#agent-triage-prompt) and recorded the answer. No connection was attempted.
@@ -430,7 +446,7 @@ All known agents have now been triaged.
 - Codex: genuine desktop UI clicks, other Cloud surfaces, and unattended restart recovery remain unverified. Reboot recovery for the local receiver remains open. (CODEX-05, CODEX-08)
 - Vooy: whether it accepts a tunnel host such as `*.tunnl.gg`, whether its header field can send `Authorization: Bearer`, which MCP transport it uses, and whether scheduled runs can call custom MCP tools. (VOOY-01, VOOY-02, VOOY-03)
 - Pickle: whether a live tunnl.gg route is reachable. Token handoff is decided (pairing code, then a workspace token file) but not built. (PICKLE-01, PICKLE-02)
-- Cue and Instinct: whether an arrival email reaches the agent and wakes it to reply without a prompt, and what rate limits apply. (MAIL-01)
+- Whether an automatic Mac email notifier can reliably wake Cue, and whether Instinct can receive automatic iMessage notices. The November 25 checks used explicit notices.
 
 ## Adding a probe
 

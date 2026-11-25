@@ -41,9 +41,9 @@ flowchart LR
     Tunnel --> Hub
 ```
 
-The hub binds to loopback. Muse polls `/muse/mcp` through the public tunnel and the hub’s reverse tunnel. The plugin does not open that tunnel. Muse posts a linked reply on that same route. The relay bot can check later and return the matching reply to the project chat. Dot, Grok Bot, Cue and Instinct are meant to use their own existing routes. Cue and Instinct can also receive an email when a message is waiting. They read and answer it through MCP.
+The hub binds to loopback. Muse polls its MCP route through the hub’s HTTPS tunnel. Cue can receive an ID-only email. Instinct used an ID-only iMessage in its existing conversation. Both read the request and answer through MCP.
 
-This drawing is the intended path. It is not a completed round trip for five bound stdio connectors. 999K 0.2.0 is the shipped CLI and hub. Earlier live replies used the Cloud Codex mailbox. Synthetic stdio used a temporary queue. A fresh Orca profile has not finished that round trip with the five real peers.
+On a configured Mac, Dot, GrokBot, Cue, Instinct and Muse each answered through their own relay. Cue and Instinct received manual notices. Muse’s first wait was empty. The project agent retrieved the matching replies. The first install from public artifacts through a linked reply is still open.
 
 Local clients can use the same hub directly through stdio. [Hub architecture](docs/architecture.md)
 
@@ -56,13 +56,15 @@ Local clients can use the same hub directly through stdio. [Hub architecture](do
 | Dot (ChatGPT) | MCP Events over a Secure MCP Tunnel |
 | Codex Cloud | MCP with optional Events over a Secure MCP Tunnel |
 | Cue | MCP with optional email notifications |
-| Instinct | MCP with optional email notifications |
+| Instinct | MCP from its private runtime, with a manual iMessage arrival notice |
 
 For local Codex sessions, see the [companion project](https://github.com/lazy9sascha/pigeonmq-local).
 
 ## Quickstart
 
-The public command is `999k`. Use an installer from [GitHub Releases](https://github.com/lazy9sascha/p-999k/releases) for your platform. The installer places `999k` and `999k-dot-resolve` in `$HOME/.local/bin`. It does not start a service or open a tunnel.
+**For Orca**, use the [candidate setup instructions](docs/quickstart.md#connect-orca-to-your-existing-peers). The panel needs a CLI that supports peer selection and pairing. The published 0.2.0 CLI lacks those commands.
+
+For standalone 999K 0.2.0, use an installer from [GitHub Releases](https://github.com/lazy9sascha/p-999k/releases) when you have access to the assets. It installs the two executables in `$HOME/.local/bin`.
 
 ```sh
 version=0.2.0
@@ -76,12 +78,7 @@ export PATH="$HOME/.local/bin:$PATH"
 999k --version
 ```
 
-Then follow the [Quickstart](docs/quickstart.md).
-
-1. Prepare local stdio on the Mac that runs the hub.
-2. Approve the Orca plugin. In an empty Orca profile, create the first bot.
-3. Send one request from the project chat.
-4. Treat **Queued** as acceptance. Wait for the matching peer reply.
+For a local mailbox, continue with the [standalone quickstart](docs/quickstart.md#local-mcp-on-macos).
 
 A reverse tunnel is optional. Use it only for a remote agent.
 

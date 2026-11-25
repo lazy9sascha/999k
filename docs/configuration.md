@@ -110,7 +110,7 @@ Reconfigure the app with the new Bearer. Earlier messages remain outside the rep
 
 ### Opt in to email arrivals
 
-Provide a valid address for Cue or Instinct with `--email-recipient` when staging.
+For Cue, supply its approved address with `--email-recipient` when staging automatic notifications. The observed Cue exchange used a manual ID-only email. Instinct’s verified arrival used a manual iMessage in its existing conversation. The CLI also supports an explicitly configured Instinct email address.
 On first email setup pass `--relay-command` with an absolute path to an owner-private executable.
 The command receives two arguments, the email destination and the 999K message ID.
 Use an absolute interpreter path in scripts and absolute paths to their dependencies.
@@ -178,7 +178,7 @@ Keep the policy and both credentials outside Git. Use owner-only directories and
   --port "$DOT_PORT" --continuous
 ```
 
-3. Start the official tunnel client with the approved tunnel and protected file references.
+3. In the intended personal workspace, create or select the Dot tunnel and obtain a restricted runtime key with tunnel use permission. Save the key privately on the Mac. Start the official tunnel client using the tunnel ID and key file.
 
 ```sh
 tunnel-client run \

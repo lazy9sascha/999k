@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 Draft only. Catalog publication and the fresh-profile linked reply are pending. Do not publish this section as a shipped release.
 
 - Add the P-999K Orca plugin at version 0.2.1. The catalog ID is `lazy9sascha.p-999k`. The repository is `lazy9sascha/p-999k`.
-- The plugin requires Orca 1.4.268 or newer and the 999K 0.2.0 `999k` command. It opens setup for one relay bot per existing peer.
+- The plugin requires Orca 1.4.268 or newer and a native `999k` build with `--orca-peer` and `pair`. It opens setup for one relay bot per existing peer.
 - A project agent can ask a bound peer. **Queued** means the hub accepted the request. The relay returns only the reply linked to that request, and that reply can arrive later.
 - The plugin does not open the peer’s existing mailbox route. Muse still polls `/muse/mcp` over HTTPS through the hub’s tunnel.
 

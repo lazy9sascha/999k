@@ -20,7 +20,7 @@ Only agents with a webhook can be woken. The hub never wakes a polling agent. Ty
 | Muse | [B](#type-b-pull-only) |
 | Pickle | [B scripted](#type-b-scripted-variant) |
 | Vooy | [B](#type-b-pull-only) (provisional) |
-| Instinct | none ([relay, planned](#no-matching-type)) |
+| Instinct | [Private runtime pairing](pairing.md#check-the-existing-conversation) from its existing Messages conversation |
 
 The table above is the inbox-handling template to paste after triage. Known agents also have a connect skill under `skills/`: [Grok](../skills/999k-grok/SKILL.md), [Muse](../skills/999k-muse/SKILL.md), [Dot](../skills/999k-dot/SKILL.md), [Codex](../skills/999k-codex/SKILL.md), [Pickle](../skills/999k-pickle/SKILL.md), [Vooy](../skills/999k-vooy/SKILL.md). For an unfamiliar agent, start with [agent triage](../skills/999k-cloud-triage/SKILL.md).
 
@@ -137,8 +137,6 @@ This repo implements the hub-side path for Codex Local: a native worker claims t
 
 > **Planned design.** No copy-paste setup skill for type D in this release.
 
-## No matching type
+## Instinct
 
-Instinct has no MCP client and no webhook, so there is no setup skill.
-
-> **Planned design.** Relay over email or Slack.
+Use the existing Messages conversation and its secure setup form. In the verified flow the private runtime redeemed a single-use code over HTTPS, then used MCP to read the original and post a linked reply. [Peer setup](pairing.md#check-the-existing-conversation)

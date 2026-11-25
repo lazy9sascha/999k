@@ -64,8 +64,7 @@ installable folder, `p-999k-0.2.1`. Keep the Orca checksum with the Orca
 archive in its own directory. The native installer checksum file lists platform
 archives only.
 
-Install the 999K 0.2.0 CLI with the native installer. The plugin's setup button uses
-the default executable at `$HOME/.local/bin/999k`. Use Orca 1.4.268 or newer
+Install the [candidate CLI](../docs/quickstart.md#connect-orca-to-your-existing-peers) first. The plugin runs `$HOME/.local/bin/999k`. The 0.2.0 release archive lacks the required `--orca-peer` and `pair` commands. Use Orca 1.4.268 or newer
 and run these commands from the directory containing the Orca archive and checksum.
 
 ```sh
@@ -75,7 +74,7 @@ orca plugin validate ./p-999k-0.2.1
 orca plugin install ./p-999k-0.2.1
 ```
 
-The catalog ID is `lazy9sascha.p-999k`. Existing local installations of 0.2.0 use `local.radio999k`. Review the trusted worker and its `workspace:read` and `terminal:send` permissions. After approval, open **P-999K** in your local workspace. For a custom 999K
+The catalog ID is `lazy9sascha.p-999k`. Existing local installations of 0.2.0 use `local.radio999k`. The trusted worker uses `workspace:read` to find the active local workspace and `terminal:send` to run the setup command in a terminal there. To remove the installed plugin and its approval, run `orca plugin uninstall lazy9sascha.p-999k`. The first install can stop to request approval. Review the access and use the approval command Orca prints for that exact archive. After installation, open **P-999K** in your local workspace. For a custom 999K
 executable path, run that executable's `init --orca` in a local Orca terminal.
 
 For a catalog release, copy the extracted files and the plugin README to the root of the public plugin repository. Add the `orca-plugin` topic and tag the commit with the plugin version, such as `v0.2.1`.
