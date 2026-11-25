@@ -433,6 +433,8 @@ fn reserve(
     )?;
     if selected_mcp_path.is_none() {
         println!("reserved_address={public_url}");
+    } else {
+        println!("Hosted address reserved.");
     }
     let scheduled = if unix {
         match crate::lifecycle::schedule_hosted_unix(&home) {

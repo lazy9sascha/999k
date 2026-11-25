@@ -44,6 +44,7 @@ export default function Panel() {
   const managementOpen = read(showManagement)
   const mode = read(setupMode)
   const isInitial = selection === initialTarget
+  const isCue = selection === 'cue'
   const pairing = setupFor(selection, 'pair')
   const hosted = setupFor(selection, 'hosted')
   return (
@@ -56,9 +57,9 @@ export default function Panel() {
       <Text>Choose Initial setup for your hub or select one peer to set up its relay.</Text>
       {!isInitial && (
         <Stack gap="sm">
-          <Text>Set up the peer yourself, or copy a request to an assistant with Computer Use.</Text>
+          {!isCue && <Text>Set up the peer yourself, or copy a request to an assistant with Computer Use.</Text>}
           <Button disabled={read(opening)} onPress={() => set(setupMode, 'guide')}>I’ll do it myself</Button>
-          <Button disabled={read(opening)} onPress={() => set(setupMode, 'delegate')}>Ask my assistant to do it</Button>
+          {!isCue && <Button disabled={read(opening)} onPress={() => set(setupMode, 'delegate')}>Ask my assistant to do it</Button>}
         </Stack>
       )}
       {(isInitial || mode === 'guide') && (
@@ -67,32 +68,32 @@ export default function Panel() {
           <Button icon="terminal" disabled={read(opening)} onPress={() => openSetup()}>Open setup terminal</Button>
           {hosted && (
             <Stack gap="sm">
-              <Text>For an operator-managed address, install cloudflared on this Mac, then approve registration in your browser.</Text>
+              <Text>Install cloudflared on this Mac. Enter your email and verification code in the browser. Check the terminal for reservation status.</Text>
               <Button disabled={read(opening)} onPress={() => openSetup('hosted')}>Set up hosted address</Button>
             </Stack>
           )}
-          {selection === 'cue' && (
+          {isCue && (
             <Stack gap="sm">
               <Text>After the terminal reports authenticated MCP access, copy this message and send it yourself in your existing Cue chat.</Text>
               <CodeView label="Message for your Cue chat" code={cueSetupPrompt} wrap />
-              <Text>For this Mac’s connection, wait for Cue’s private form before getting a code. If the form is unavailable, pause here.</Text>
+              <Text>Wait for Cue’s private form before getting a code. If the form is unavailable, pause here.</Text>
             </Stack>
           )}
           {pairing && (
             <Stack gap="sm">
-              <Text>{selection === 'cue' ? 'Enter the hub address and code from the terminal in Cue’s private form.' : 'When this peer’s HTTPS route is ready, get a single-use code.'}</Text>
+              <Text>{isCue ? 'Enter the hub address and code from the terminal in Cue’s private form.' : 'When this peer’s HTTPS route is ready, get a single-use code.'}</Text>
               <Button disabled={read(opening)} onPress={() => openSetup('pair')}>Get a setup code</Button>
             </Stack>
           )}
-          {selection === 'cue' && <Text>Send your first question in the Orca project chat after Cue confirms it can list the mailbox tools at this Mac’s address.</Text>}
+          {isCue && <Text>After Cue confirms access to this Mac’s mailbox tools, send a question in your Orca project chat. Setup is complete when Cue’s matching reply appears in that chat.</Text>}
         </Stack>
       )}
-      {!isInitial && mode === 'delegate' && setup && (
+      {!isInitial && !isCue && mode === 'delegate' && setup && (
         <Stack gap="sm">
           <Text>Copy this request to your own assistant if it has Computer Use. You can still choose guided setup at any time.</Text>
           <CodeView label="Computer Use request" code={[
             `Help me connect the selected P-999K peer. Start with ${setup.command} on my Mac.`,
-            selection === 'cue' ? 'After authenticated MCP access, let me send the guided setup message in my existing Cue chat. Wait for me to confirm that private input is available before offering a code. Keep the address and code out of chat.' : 'Follow the printed handoff in the existing peer app. Pause for my approval or private credential entry whenever required. Keep credentials out of logs and ordinary chat.',
+            'Follow the printed handoff in the existing peer app. Pause for my approval or private credential entry whenever required. Keep credentials out of logs and ordinary chat.',
             pairing ? `When the peer's HTTPS route is ready, use ${pairing.command} in an owner-controlled terminal. Let me enter the one-time code privately.` : 'Use the existing Dot workspace and its private Secure MCP Tunnel.',
             'Verify tool discovery in the existing peer app, then use one fresh project request to check the linked reply and original acknowledgement. Report any missing action.'
           ].join(' ')} wrap />

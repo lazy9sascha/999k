@@ -20,9 +20,11 @@ For chat-based setup, choose **Set up a management bot**. Create **P-999K** once
 "$HOME/.local/bin/999k" init --orca --orca-peer muse
 ```
 
-Choose **I’ll do it myself** for instructions you can follow in the terminal and the peer app. **Ask my assistant to do it** copies a request for an assistant with Computer Use. Approve the relay in Orca when prompted, then run any resume command on the hub Mac. Give the selected peer only its own setup instructions. Use your regular project chat for questions.
+Choose **I’ll do it myself** for the steps in the terminal and the peer app. Where offered, **Ask my assistant to do it** copies a request for an assistant with Computer Use. Approve the relay in Orca when prompted. Run any resume command on the hub Mac.
 
-With an operator-configured CLI and `cloudflared` installed, choose **Set up hosted address** for Cue. Approve with the email code in your browser. For a custom ingress for Muse, GrokBot, Cue or Instinct, publish the selected peer’s pairing and MCP routes before you choose **Get a setup code**. Enter the ten-minute code in the peer’s private setup flow. Instinct can present a secure form. Dot uses a private ChatGPT tunnel. [Pair a remote client](../../docs/pairing.md)
+For Cue, choose **I’ll do it myself** and follow the hosted setup guide. Send the panel’s message in your existing Cue chat after the terminal reports authenticated MCP access. Type the hub address and one-time code into Cue’s private form. Setup is complete when Cue’s matching reply appears in the Orca project chat that asked. [Set up hosted Cue](../../docs/quickstart.md#prepare-the-selected-peers-transport)
+
+For a custom ingress for Muse, GrokBot, Cue or Instinct, publish the selected peer’s pairing and MCP routes before you choose **Get a setup code**. Enter the ten-minute code in the peer’s private setup flow. Dot uses a private ChatGPT tunnel. [Pair a remote client](../../docs/pairing.md)
 
 ## One question
 
