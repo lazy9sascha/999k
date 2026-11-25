@@ -4,6 +4,7 @@ use crate::{
     hosted_origin::UnixOrigin,
     hosted_origin_local,
     hosted_registration::{self, OriginDescriptor},
+    registration_origin::https_origin,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use radio999k::{arrival_notify::lock_state, private_file};
@@ -43,28 +44,6 @@ struct Binding {
     installation_id: String,
     public_url: String,
     expires_at: String,
-}
-
-fn https_origin(input: &str) -> Result<Url, String> {
-    if !input.starts_with("https://")
-        || input
-            .chars()
-            .any(|ch| ch.is_control() || ch.is_whitespace())
-    {
-        return Err("registration origin must be an HTTPS origin".into());
-    }
-    Url::parse(input)
-        .ok()
-        .filter(|url| {
-            url.scheme() == "https"
-                && url.host_str().is_some()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.path() == "/"
-                && url.query().is_none()
-                && url.fragment().is_none()
-        })
-        .ok_or_else(|| "registration origin must be an HTTPS origin".into())
 }
 
 fn valid_secret(value: &str) -> bool {
@@ -358,7 +337,7 @@ fn enroll(
     }
 }
 
-pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor)>, String> {
+pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor, String)>, String> {
     let Some(saved) = load(&home.join(FILE))? else {
         return Ok(None);
     };
@@ -372,38 +351,61 @@ pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor)
         return Err("invalid hosted installation binding".into());
     }
     let staged = crate::hosted_connector::load_connection(home)?;
-    if staged.as_ref() != Some(&(binding.public_url, binding.installation_id)) {
+    if staged.as_ref().is_none_or(|(url, installation)| {
+        *url != binding.public_url || *installation != binding.installation_id
+    }) {
         return Err("hosted credentials do not belong to this enrollment".into());
     }
     private_file::open_private_file(&home.join(crate::hosted_connector::TOKEN_FILE))
         .map_err(|_| "hosted connector credential is unavailable")?;
-    Ok(Some((id, descriptor)))
+    Ok(Some((id, descriptor, binding.public_url)))
 }
 
 fn exact_peer_scope(paths: &[String], selected: &str) -> bool {
     paths == [selected]
 }
 
+const RELEASE_ORIGIN: &str = env!("RADIO999K_COMPILED_REGISTRATION_ORIGIN");
+
 pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
-    reserve(home, unix, None).map(|_| ())
+    reserve(home, &registration_origin()?, unix, None).map(|_| ())
 }
 
-pub(crate) fn reserve_selected_peer(home: &Path, route: &str) -> Result<String, String> {
-    if !matches!(
-        route,
-        "/muse/mcp" | "/grok/mcp" | "/cue/mcp" | "/instinct/mcp"
-    ) {
+pub(crate) fn selected_provider(peer: &str) -> Result<Url, String> {
+    if crate::pairing::route(peer).is_none() {
         return Err("The selected peer does not support hosted HTTPS enrollment.".into());
     }
-    reserve(home, true, Some(route))
+    let origin = registration_origin()?;
+    if origin.as_str() == RELEASE_ORIGIN && peer != "cue" {
+        return Err("The bundled registration provider supports Cue only. Select Cue for hosted setup or configure your own HTTPS ingress for this peer.".into());
+    }
+    Ok(origin)
 }
 
-fn reserve(home: &Path, unix: bool, selected_mcp_path: Option<&str>) -> Result<String, String> {
+pub(crate) fn reserve_selected_peer(
+    home: &Path,
+    origin: &Url,
+    route: &str,
+) -> Result<String, String> {
+    reserve(home, origin, true, Some(route))
+}
+
+fn registration_origin() -> Result<Url, String> {
     let configured = std::env::var_os("RADIO999K_REGISTRATION_URL")
         .or_else(|| std::env::var_os("PIGEONMQ_REGISTRATION_URL"))
-        .and_then(|url| url.into_string().ok())
-        .ok_or("registration_url_required")?;
-    let origin = https_origin(&configured)?;
+        .or_else(|| (!RELEASE_ORIGIN.is_empty()).then(|| RELEASE_ORIGIN.into()))
+        .ok_or("This build has no hosted registration provider. Use an operator-configured build or set RADIO999K_REGISTRATION_URL to your operator’s HTTPS origin.")?
+        .into_string()
+        .map_err(|_| "registration origin must be an HTTPS origin")?;
+    https_origin(&configured)
+}
+
+fn reserve(
+    home: &Path,
+    origin: &Url,
+    unix: bool,
+    selected_mcp_path: Option<&str>,
+) -> Result<String, String> {
     if !cfg!(target_os = "macos") {
         return Err("hosted enrollment requires macOS".into());
     }
@@ -416,7 +418,7 @@ fn reserve(home: &Path, unix: bool, selected_mcp_path: Option<&str>) -> Result<S
         cloud_setup::require_home(home).map_err(|_| "hosted hub home must be owner-private")?;
     let public_url = enroll(
         &home,
-        &origin,
+        origin,
         origin.as_str(),
         Duration::from_secs(90),
         Duration::from_secs(2),

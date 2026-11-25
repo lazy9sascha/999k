@@ -19,7 +19,7 @@ Only publish paths for peers you intend to connect. Dot uses a [private Secure M
 
 ## Offer and redeem
 
-On the hub Mac, run this in an owner-controlled terminal. The command uses the selected managed mailbox's saved credential and verifies its exact HTTPS MCP endpoint and pairing path from your private `orca-ingress.json` file. For a manually verified origin, pass `--origin https://radio.example.com` without a path. This form skips automatic route verification. For a separately configured credential, pass its private file path with `--bearer-file`.
+On the hub Mac, run this in an owner-controlled terminal. The command uses the selected managed mailbox's saved credential and verifies its exact HTTPS MCP endpoint and pairing path from your private `orca-ingress.json` file or your approved hosted enrollment. For a manually verified origin, pass `--origin https://radio.example.com` without a path. This form skips automatic route verification. For a separately configured credential, pass its private file path with `--bearer-file`.
 
 ```sh
 999k pair offer muse

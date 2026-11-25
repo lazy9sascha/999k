@@ -667,7 +667,7 @@ fn hosted_scope(
     home: &Path,
     owner: &HostedOwner,
 ) -> io::Result<(uuid::Uuid, crate::hosted_registration::OriginDescriptor)> {
-    let (id, scope) = crate::hosted_enrollment::staged_unix(home)
+    let (id, scope, _) = crate::hosted_enrollment::staged_unix(home)
         .map_err(io::Error::other)?
         .ok_or_else(|| error("hosted Unix enrollment is not staged"))?;
     if id.to_string() != owner.installation {
@@ -1109,7 +1109,8 @@ pub(crate) fn schedule_hosted_unix(home: &Path) -> io::Result<bool> {
     if absent(&state)? {
         return Ok(false);
     }
-    let Some((_, scope)) = crate::hosted_enrollment::staged_unix(home).map_err(io::Error::other)?
+    let Some((_, scope, _)) =
+        crate::hosted_enrollment::staged_unix(home).map_err(io::Error::other)?
     else {
         return Ok(false);
     };
@@ -1117,7 +1118,9 @@ pub(crate) fn schedule_hosted_unix(home: &Path) -> io::Result<bool> {
         return Ok(false);
     }
     let (directory, executable, installation) = system_jobs()?;
-    let cloudflared = crate::hosted_connector::preflight(None).map_err(io::Error::other)?;
+    let cloudflared = crate::hosted_connector::preflight(None).map_err(|_| {
+        error("Install cloudflared on this Mac, check that cloudflared --version works in the setup terminal, and repeat hosted setup")
+    })?;
     let cloudflared = installation.require_executable(&cloudflared)?;
     let jobs = Jobs {
         service: &SystemLaunchctl,
@@ -1132,7 +1135,7 @@ fn schedule_hosted_with(jobs: &Jobs<'_>, home: &Path, cloudflared: &Path) -> io:
     let dir = private_dir(&home.join(DIRECTORY))?;
     let _guard = lock(&dir)?;
     let state: Registry = read_json(&dir.join(STATE))?;
-    let Some((id, scope)) =
+    let Some((id, scope, _)) =
         crate::hosted_enrollment::staged_unix(home).map_err(io::Error::other)?
     else {
         return Ok(false);

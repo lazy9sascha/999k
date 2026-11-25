@@ -17,7 +17,7 @@ function selectTarget(value: string): void {
   set(status, '')
 }
 
-async function openSetup(action?: 'pair'): Promise<void> {
+async function openSetup(action?: 'pair' | 'hosted'): Promise<void> {
   if (read(opening)) return
   const selection = read(target)
   const setup = setupFor(selection, action)
@@ -45,6 +45,7 @@ export default function Panel() {
   const mode = read(setupMode)
   const isInitial = selection === initialTarget
   const pairing = setupFor(selection, 'pair')
+  const hosted = setupFor(selection, 'hosted')
   return (
     <Stack gap="md">
       <Heading>Orca relay setup</Heading>
@@ -64,9 +65,15 @@ export default function Panel() {
         <Stack gap="sm">
           {!isInitial && <Text>Follow the terminal instructions. Complete any approval in the app and use its private settings or secure input for credentials.</Text>}
           <Button icon="terminal" disabled={read(opening)} onPress={() => openSetup()}>Open setup terminal</Button>
+          {hosted && (
+            <Stack gap="sm">
+              <Text>For an operator-managed address, install cloudflared on this Mac, then approve registration in your browser.</Text>
+              <Button disabled={read(opening)} onPress={() => openSetup('hosted')}>Set up hosted address</Button>
+            </Stack>
+          )}
           {pairing && (
             <Stack gap="sm">
-              <Text>Publish this mailbox’s HTTPS pairing and MCP routes first. Then open the terminal to generate a single-use code.</Text>
+              <Text>When this peer’s HTTPS route is ready, get a single-use code.</Text>
               <Button disabled={read(opening)} onPress={() => openSetup('pair')}>Get a setup code</Button>
             </Stack>
           )}

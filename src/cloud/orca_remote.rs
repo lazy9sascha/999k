@@ -1,5 +1,5 @@
 //! Selected peer transport setup. A route probe cannot prove a peer replied.
-use crate::{cloud_credentials, hosted_connector, hosted_enrollment, stdio_mcp};
+use crate::{cloud_credentials, hosted_enrollment, stdio_mcp};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Read, path::Path, time::Duration};
 use url::Url;
@@ -8,7 +8,7 @@ const INVENTORY: &str = "orca-ingress.json";
 const VERSION: &str = "2025-03-26";
 
 pub(crate) struct Options<'a> {
-    pub(crate) reserve_address: bool,
+    pub(crate) provider: Option<Url>,
     pub(crate) bearer_file: Option<&'a Path>,
 }
 
@@ -121,6 +121,38 @@ fn mcp_response(response: reqwest::blocking::Response) -> Option<Value> {
     (reply["jsonrpc"] == "2.0" && reply.get("error").is_none()).then_some(reply)
 }
 
+fn peer_endpoint(
+    home: &Path,
+    peer: &str,
+    route: &str,
+    provider: Option<&Url>,
+) -> Result<Url, String> {
+    let inventory = super::read_private_json::<BTreeMap<String, String>>(&home.join(INVENTORY))
+        .map_err(|_| "Check the owner-private orca-ingress.json file")?;
+    if let Some(raw) = inventory.as_ref().and_then(|entries| entries.get(peer)) {
+        let url = endpoint(raw, route)
+            .ok_or("The configured HTTPS endpoint does not match the selected peer route")?;
+        if provider.is_some() {
+            println!(
+                "Using the existing HTTPS endpoint for {peer} from orca-ingress.json. Skipping hosted registration."
+            );
+        }
+        return Ok(url);
+    }
+
+    let origin = if let Some(provider) = provider {
+        hosted_enrollment::reserve_selected_peer(home, provider, route)?
+    } else if let Some((_, scope, approved_origin)) = hosted_enrollment::staged_unix(home)?
+        && scope.mcp_paths.iter().any(|path| path == route)
+    {
+        approved_origin
+    } else {
+        return Err("For operator-hosted setup, repeat the selected-peer command with --orca-reserve-address. For your own HTTPS ingress, add the peer’s exact MCP endpoint to your private orca-ingress.json.".into());
+    };
+    endpoint(&format!("{}{route}", origin.trim_end_matches('/')), route)
+        .ok_or_else(|| "The approved hosted address is invalid".into())
+}
+
 pub(crate) fn verified_pairing_origin(
     home: &Path,
     peer: &str,
@@ -130,12 +162,7 @@ pub(crate) fn verified_pairing_origin(
     let (route, pair) = crate::pairing::route(peer).ok_or_else(|| {
         Error::other("Pairing is available for muse, grok-bot, cue, and instinct")
     })?;
-    let inventory = super::read_private_json::<BTreeMap<String, String>>(&home.join(INVENTORY))
-        .map_err(|_| Error::other("Check the owner-private orca-ingress.json file"))?
-        .ok_or_else(|| Error::other("Configure the selected peer's HTTPS ingress in the owner-private orca-ingress.json file"))?;
-    let url = inventory.get(peer)
-        .and_then(|raw| endpoint(raw, route))
-        .ok_or_else(|| Error::other("Add the selected peer's exact HTTPS MCP endpoint to the owner-private orca-ingress.json file"))?;
+    let url = peer_endpoint(home, peer, route, None).map_err(Error::other)?;
     let bearer = stdio_mcp::bearer(bearer_file)
         .map_err(|_| Error::other("A private bearer for the selected peer is required"))?;
     stdio_mcp::verify_pairing_bearer(home, route, &bearer)?;
@@ -193,43 +220,12 @@ pub(super) fn prepare(home: &Path, peer: &str, options: Options<'_>) {
         );
         return;
     }
-    let path = home.join(INVENTORY);
-    let configured = match super::read_private_json::<BTreeMap<String, String>>(&path) {
-        Ok(map) => map.and_then(|value| value.get(peer).cloned()),
-        Err(_) => {
-            waiting("Check the owner-private orca-ingress.json file before continuing.");
+    let url = match peer_endpoint(home, peer, route, options.provider.as_ref()) {
+        Ok(url) => url,
+        Err(reason) => {
+            waiting(&reason);
             return;
         }
-    };
-    let configured = if let Some(raw) = configured {
-        Some(raw)
-    } else if options.reserve_address {
-        match hosted_enrollment::reserve_selected_peer(home, route) {
-            Ok(origin) => Some(format!("{}{route}", origin.trim_end_matches('/'))),
-            Err(err) => {
-                waiting(&err);
-                return;
-            }
-        }
-    } else if let Ok(Some((_, scope))) = hosted_enrollment::staged_unix(home)
-        && scope.mcp_paths.iter().any(|path| path == route)
-    {
-        hosted_connector::load_connection(home)
-            .ok()
-            .flatten()
-            .map(|(origin, _)| format!("{}{route}", origin.trim_end_matches('/')))
-    } else {
-        None
-    };
-    let Some(raw) = configured else {
-        waiting(
-            "Configure an approved HTTPS ingress for the selected MCP route and add it to your private orca-ingress.json. For an operator-run registration provider configured for only this route, set RADIO999K_REGISTRATION_URL and repeat with --orca-reserve-address.",
-        );
-        return;
-    };
-    let Some(url) = endpoint(&raw, route) else {
-        waiting("The configured HTTPS endpoint does not match the selected peer route.");
-        return;
     };
     let Some(bearer) = credential(home, peer, options.bearer_file) else {
         waiting(
@@ -249,6 +245,27 @@ pub(super) fn prepare(home: &Path, peer: &str, options: Options<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairing_uses_only_a_staged_peer_route_without_new_enrollment() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let lookup = |peer, route| peer_endpoint(home.path(), peer, route, None);
+        assert!(lookup("cue", "/cue/mcp").is_err());
+        assert!(!home.path().join("hosted-enrollment.json").exists());
+        hosted_enrollment::stage_unix_fixture(
+            home.path(),
+            uuid::Uuid::new_v4(),
+            54843,
+            &["/cue/mcp"],
+        );
+        assert_eq!(
+            lookup("cue", "/cue/mcp").unwrap().as_str(),
+            "https://u-fixture.example.test/cue/mcp"
+        );
+        assert!(lookup("muse", "/muse/mcp").is_err());
+    }
 
     #[test]
     fn probe_requires_anonymous_denial_and_authenticated_selected_tools() {

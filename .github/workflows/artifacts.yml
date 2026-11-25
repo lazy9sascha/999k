@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/artifacts.yml
+      - build.rs
       - Cargo.toml
       - Cargo.lock
       - LICENSE
@@ -36,6 +37,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
       TARGET: ${{ matrix.target }}
+      RADIO999K_RELEASE_REGISTRATION_URL: ${{ vars.RADIO999K_RELEASE_REGISTRATION_URL }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -49,6 +49,8 @@ mod orca_onboard;
 mod pairing;
 #[path = "cloud/pairing_cli.rs"]
 mod pairing_cli;
+#[path = "cloud/registration_origin.rs"]
+mod registration_origin;
 #[path = "cloud/reply_mailbox_setup.rs"]
 mod reply_mailbox_setup;
 #[path = "cloud/runtime_profiles.rs"]
@@ -193,8 +195,8 @@ enum Command {
         /// Select the owner-private executable that receives a destination and message ID.
         #[arg(long, requires = "email_recipient", conflicts_with = "operational")]
         relay_command: Option<PathBuf>,
-        /// Reserve a hosted HTTPS address for this installation (experimental).
-        #[arg(long, hide = true, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
+        /// Reserve an address through the operator and approve in your browser.
+        #[arg(long, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
         reserve_address: bool,
         /// Enable the private stdio socket during a managed apply; an already-active home can enable it once.
         #[arg(long, requires = "apply", conflicts_with = "reserve_address")]
@@ -489,6 +491,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "--orca-peer must match --retry-orca-offer when used together".into(),
                     );
                 }
+                // Check the requested provider before creating the local sender, peer, or enrollment.
+                let provider = if *orca_reserve_address {
+                    Some(hosted_enrollment::selected_provider(
+                        explicit_peer.ok_or("select a hosted peer")?,
+                    )?)
+                } else {
+                    None
+                };
                 let sender = orca_sender.as_deref().unwrap_or("codex-cloud");
                 let default_managed_sender = cfg!(target_os = "macos")
                     && orca_sender.is_none()
@@ -509,7 +519,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         retry: retry.is_some(),
                         may_provision: managed_nonretry,
                         remote: orca_onboard::RemoteOptions {
-                            reserve_address: *orca_reserve_address,
+                            provider,
                             bearer_file: orca_remote_bearer_file.as_deref(),
                         },
                         proof_original: orca_proof_original.as_deref(),

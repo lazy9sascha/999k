@@ -1,5 +1,13 @@
 # Hosted registration operator preview
 
+The managed Cue pilot starts on the user's Mac:
+
+```sh
+"$HOME/.local/bin/999k" init --orca --orca-peer cue --orca-reserve-address
+```
+
+The packaged CLI opens the operator’s registration page. The user approves with the numeric code from email. [Install the CLI, Orca plugin, and cloudflared](quickstart.md#connect-orca-to-your-existing-peers).
+
 The registration service manages the address and Cloudflare Tunnel for each approved installation. It listens on loopback. User Macs serve their own MCP endpoints and store their own queues.
 
 ## Responsibilities and installer handoff
@@ -16,15 +24,14 @@ Keep the same request ID, proof, and code on a begin retry. Use the same
 installation ID and proof to retry status or finish. Do not request a new address
 after a temporary error.
 
-The operator preview uses `999k init --reserve-address` for browser approval
-and retry. Verify the tunnel and an authenticated MCP exchange after finish.
+Verify the assigned route and an authenticated MCP exchange after finish.
 
 ## Prepare a private pilot
 
 1. Create an owner-only directory with mode 0700 on the operator Mac.
 2. Save the settings below in `settings.json` with mode 0600. Replace example values with the approved pilot settings.
 3. Save the Cloudflare management token in `cloudflare.key` with mode 0600. Grant tunnel management for the operator account and DNS access for the selected zone.
-4. In a dedicated test Auth project, enable email sign-in and account creation. Configure the email template to include the numeric code. Do not enable signups on a shared or live project as part of this preview. Direct requests to the public Auth API can create accounts when signups are enabled. 999K's installation and attempt checks apply only to its own registration endpoints.
+4. In a dedicated test Auth project, enable email sign-in and account creation. Include the numeric code (`{{ .Token }}`) in both the **Confirm signup** and **Magic Link** email templates. Test one new email address and one returning address through the installer. A link-only email cannot complete this flow. Do not enable signups on a shared or live project as part of this preview. Direct requests to the public Auth API can create accounts when signups are enabled. 999K's installation and attempt checks apply only to its own registration endpoints.
 5. Route the registration origin to the loopback service over HTTPS. Preserve the public registration Host header. Disable caching. Keep credentials and form bodies out of logs.
 
 ```json
@@ -36,11 +43,13 @@ and retry. Verify the tunnel and an authenticated MCP exchange after finish.
   "cloudflare_zone_id": "<zone-id>",
   "cloudflare_zone_name": "example.com",
   "hub_port": 54843,
-  "mcp_path": "/muse/mcp"
+  "mcp_path": "/cue/mcp"
 }
 ```
 
-Use the loopback port and MCP paths that the pilot installs on user Macs. Set
+The public pilot supports Cue. Set `hub_port` to 54843, the managed user hub port, and publish only `/cue/mcp`. Unix connector setup also publishes its exact sibling `/cue/pair`. Use loopback port 54900 for the registration service on the operator Mac.
+
+For a separately configured operator, set
 `"mcp_paths": ["/dot/mcp", "/codex/mcp"]` to publish both paths on the same
 hostname. Use `mcp_path` for one path or include it alongside `mcp_paths` to
 retain an existing path. Dot and Codex also get their exact path-scoped OAuth
@@ -64,12 +73,11 @@ Supabase issues the numeric OTP for an email address, not an installation.
 The request page does not show whether it sent an email. Response times can differ.
 If an attempt fails, wait up to five minutes, then reopen registration from 999K. Use the same pending installation until its reservation expires.
 
-## Reserve an address on your Mac
+## Reserve an address without starting a connector
 
-Use the HTTPS registration origin from your pilot operator. Keep the same private hub home on each run.
+An operator-configured CLI includes the HTTPS registration origin. For a source build without an operator, set `RADIO999K_REGISTRATION_URL` to your operator’s HTTPS origin. This setting also overrides a bundled origin. Keep the same private hub home on each run.
 
 ```sh
-export RADIO999K_REGISTRATION_URL=https://init.example.com
 999k init --reserve-address --home "$HOME/path/to/private-hub"
 ```
 

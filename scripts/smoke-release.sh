@@ -171,6 +171,39 @@ def run_demo(bins, version, root):
 
     home = root / "hub"
     cli(executable, "init", "--home", home, check=True)
+    check(not (home / "hosted-enrollment.json").exists(),
+          "ordinary init unexpectedly began hosted enrollment")
+    # A file in place of a hub directory stops explicit enrollment before any network call.
+    if sys.platform == "darwin" and "RADIO999K_RELEASE_REGISTRATION_URL" in os.environ:
+        blocked = root / "invalid-hosted-home"
+        blocked.touch()
+        result = cli(executable, "init", "--reserve-address", "--home", blocked)
+        expected = ("hosted hub home must be owner-private" if os.environ["RADIO999K_RELEASE_REGISTRATION_URL"]
+                    else "no hosted registration provider")
+        check(result.returncode and expected in result.stderr, "unexpected packaged registration default")
+        env["RADIO999K_REGISTRATION_URL"] = "http://invalid.example.test"
+        result = cli(executable, "init", "--reserve-address", "--home", blocked)
+        check(result.returncode and "must be an HTTPS origin" in result.stderr,
+              "runtime registration override did not take precedence")
+        del env["RADIO999K_REGISTRATION_URL"]
+        if os.environ["RADIO999K_RELEASE_REGISTRATION_URL"]:
+            fresh = root / "selected-peer"
+            # An invalid explicit sender stops allowed selections before managed services or I/O.
+            def select(peer):
+                return cli(executable, "init", "--orca", "--orca-peer", peer, "--orca-reserve-address",
+                           "--home", fresh, "--orca-sender", "invalid sender", "--orca-bearer-file", blocked)
+            for peer in ("muse", "grok-bot", "instinct"):
+                result = select(peer)
+                check(result.returncode and "supports Cue only" in result.stderr and not fresh.exists(),
+                      "unsupported pilot peer reached local setup or pinned the fresh home")
+            result = select("cue")
+            check(result.returncode and "Invalid sender mailbox" in result.stderr,
+                  "Cue could not proceed after unsupported selections on the same home")
+            env["RADIO999K_REGISTRATION_URL"] = "https://self-hosted.example.test"
+            result = select("muse")
+            check(result.returncode and "Invalid sender mailbox" in result.stderr,
+                  "custom registration provider unexpectedly restricted Muse")
+            del env["RADIO999K_REGISTRATION_URL"]
     sender, muse, sender_policy, muse_policy = fixture(home)
     cli(executable, "muse-prepare", "--queue", home / "pigeonmq-cloud-queue.sqlite3",
         "--auth-policy", muse_policy, check=True)

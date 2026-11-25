@@ -16,6 +16,7 @@ export const managementBotPurpose = [
   'You are the P-999K management bot.',
   `When asked to list peers, run ${setupCommand}.`,
   `When asked to connect one peer, run ${setupCommand} --orca-peer <id>. Use one of these IDs: ${peerIds.join(', ')}.`,
+  'If the owner asks for operator-hosted setup for Cue, append --orca-reserve-address. The owner approves registration in their browser.',
   'Report setup status, any owner approval needed, and any remote handoff printed by the command in this Home Chat.'
 ].join(' ')
 
@@ -23,6 +24,12 @@ export function setupFor(target: unknown, action: unknown = 'setup') {
   const option = setupTargets.find(({ value }) => value === target)
   if (!option) return undefined
 
+  if (action === 'hosted' && option.value === 'cue') {
+    return {
+      command: `${setupCommand} --orca-peer ${option.value} --orca-reserve-address`,
+      title: `P-999K hosted setup · ${option.label}`
+    }
+  }
   if (action === 'pair' && ['muse', 'grok-bot', 'cue', 'instinct'].includes(option.value)) {
     return {
       command: `"$HOME/.local/bin/999k" pair offer ${option.value}`,
@@ -42,6 +49,6 @@ export function setupFor(target: unknown, action: unknown = 'setup') {
 
 declare module 'orca' {
   interface PluginRequests {
-    'setup.open': { input: { target: string; action?: 'pair' }; output: { opened: boolean } }
+    'setup.open': { input: { target: string; action?: 'pair' | 'hosted' }; output: { opened: boolean } }
   }
 }
