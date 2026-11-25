@@ -2857,13 +2857,23 @@ mod dot_wire {
                 }),
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !socket.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
         let authority = format!("127.0.0.1:{port}");
         let post = |route: &str, host: &str, bearer: &str| {
-            let mut client = UnixStream::connect(&socket).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let mut client = loop {
+                match UnixStream::connect(&socket) {
+                    Ok(client) => break client,
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                        ) && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("test hub did not accept a connection: {err}"),
+                }
+            };
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();

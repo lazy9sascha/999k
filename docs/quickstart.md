@@ -10,12 +10,12 @@ For agent-specific connections, see [agents and capabilities](agents.md).
 
 ## 1. Install
 
-For P-999K on Orca, go to [Connect Orca to your existing peers](#connect-orca-to-your-existing-peers). The following installer is for standalone 999K 0.2.0 on Apple Silicon Macs and Linux on x86-64 and ARM64.
+For P-999K on Orca, go to [Connect Orca to your existing peers](#connect-orca-to-your-existing-peers). The 0.2.1 installer is for 999K on Apple Silicon Macs and Linux on x86-64 and ARM64.
 Use the installer from [GitHub Releases](https://github.com/lazy9sascha/p-999k/releases) when the release assets are available.
 It installs `999k` and `999k-dot-resolve` in `$HOME/.local/bin` by default. No Rust toolchain is needed.
 
 ```sh
-version=0.2.0
+version=0.2.1
 curl -q --proto '=https' -fLsS -o 999k-install.sh \
   "https://github.com/lazy9sascha/p-999k/releases/download/$version/install.sh" &&
 sh ./999k-install.sh
@@ -24,7 +24,7 @@ sh ./999k-install.sh
 If an archive is not available for your machine, build this checkout with stable Rust and 2024 edition support. Use a new directory so the source build does not replace an existing installation.
 
 ```sh
-source_bin="$HOME/.local/libexec/999k/0.2.0/bin"
+source_bin="$HOME/.local/libexec/999k/0.2.1/bin"
 cargo build --locked --release --bin 999k --bin 999k-dot-resolve &&
 mkdir -p "$(dirname "$source_bin")" &&
 mkdir -m 700 "$source_bin" &&
@@ -117,17 +117,27 @@ See [Local MCP over stdio](configuration.md#local-mcp-over-stdio) for foreground
 
 #### Connect Orca to your existing peers
 
-On an Apple Silicon Mac, start from this release checkout with stable Rust installed. The panel runs `$HOME/.local/bin/999k`. Both the published and candidate binaries report 0.2.0. Only the candidate has the peer selector and pairing commands. For a fresh install, run this from the repository root:
+Install on the Apple Silicon Mac that runs Orca 1.4.268 or later. For a new installation, run the commands below in an empty download directory. They install the matching native CLI and check the plugin archive. An existing managed installation needs the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
 
 ```sh
-cargo install --locked --path . --root "$HOME/.local" --bin 999k --bin 999k-dot-resolve
-"$HOME/.local/bin/999k" init --help | grep -- --orca-peer
-"$HOME/.local/bin/999k" pair --help
+release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.1
+(
+  set -e
+  for file in install.sh p-999k-0.2.1.tar.gz SHA256SUMS-orca; do
+    curl -q --proto '=https' -fLsS -o "$file" "$release/$file"
+  done
+  sh ./install.sh
+  "$HOME/.local/bin/999k" --version
+  shasum -a 256 --check SHA256SUMS-orca
+  tar -xzf p-999k-0.2.1.tar.gz
+  orca plugin validate ./p-999k-0.2.1
+  orca plugin install ./p-999k-0.2.1
+)
 ```
 
-If you already run a managed hub, follow the [existing installation upgrade](../packaging/README.md#upgrade-an-existing-installation) first. Once both checks pass, [build or obtain the plugin archive and review its permissions](../packaging/README.md#orca-plugin-archive). Its catalog ID is `lazy9sascha.p-999k`. Catalog publication is pending.
+Expect `999k 0.2.1`. Orca will show the permissions for the exact package. The trusted worker finds the active local workspace and opens a terminal there to run the setup command. Review the permissions and use the approval command Orca prints. To revoke the plugin’s approval later, run `orca plugin uninstall lazy9sascha.p-999k`. The [plugin packaging guide](../packaging/README.md#orca-plugin-archive) also covers building from source.
 
-1. Install the CLI on the Mac that will run the hub. Install the plugin in Orca and review its permissions. In a local workspace, open **P-999K** in the right sidebar. Choose **Initial setup** and open its terminal. On a fresh home, setup starts the local hub with its private stdio socket, creates one sender and lists zero external peers.
+1. In a local workspace, open **P-999K** in the right sidebar. Choose **Initial setup** and open its terminal. On a fresh home, setup starts the local hub with its private stdio socket, creates one sender and lists zero external peers.
 2. To manage connections in chat, select **Set up a management bot**. In **Bots → New bot**, create **P-999K** with the purpose shown in the panel. Open its Home Chat and ask **“Connect Muse.”** You can also select Muse in the plugin panel. Choose **I’ll do it myself** for the manual steps, or **Ask my assistant to do it** to copy a request to an assistant that already has that capability. Both paths run the same command on the Mac:
 
    ```sh
@@ -138,7 +148,7 @@ If you already run a managed hub, follow the [existing installation upgrade](../
 4. Complete the selected peer’s transport setup below. Where supported, copy the suggested prompt into the peer’s existing conversation. Complete consent and credential entry using the app’s own settings or secure inputs. An HTTPS-capable runtime can use the mailbox directly where the app supports it.
 5. Ask in your project chat, for example, **“Ask Muse for a shorter release title.”** The relay reports **Queued** after the hub accepts the request. Verify the exchange by checking that the matching reply returns to the project chat that asked. If you have the original request ID, rerun the same peer setup with `--orca-proof-original <original-id>` to check the linked reply in the hub without sending another message.
 
-Run `999k init --orca` with no selection to list authorized peers. This stays local. Installation and verification use the CLI and supported app controls. External providers may require their own owner approval or configuration. If the first wait ends empty, ask the same relay to check the original again. The proof command can exit successfully for a pending or invalid original. Read the reported outcome and check for the linked answer in your project chat.
+Run `999k init --orca` with no selection to list authorized peers. This stays local. Installation and verification use the CLI and supported app controls. External providers may require their own owner approval or configuration. If the first wait ends empty, ask the same relay to check the original again. The proof command succeeds when the hub can verify the linked reply. Pending and invalid originals return a failure status. Check separately that the answer reached the originating chat.
 
 #### Prepare the selected peer’s transport
 
@@ -166,7 +176,7 @@ You need Python 3 for this optional test. It does not require Rust or a source c
 Set `version` to the installed version, without a leading `v`. Use its copy of the script from the source tag.
 
 ```sh
-version=0.2.0
+version=0.2.1
 curl -q --proto '=https' -fLsS -o 999k-smoke.sh \
   "https://raw.githubusercontent.com/lazy9sascha/p-999k/$version/scripts/smoke-release.sh" &&
 sh ./999k-smoke.sh --installed "$(dirname "$RADIO999K_BIN")" "$version"

@@ -3,7 +3,7 @@
 Build and smoke-test each native archive before rendering its installers.
 
 ```sh
-python3 packaging/render.py 0.2.0 target/artifacts target/distribution
+python3 packaging/render.py 0.2.1 target/artifacts target/distribution
 ```
 
 The archive directory must contain `SHA256SUMS` and the archives it lists.
@@ -11,6 +11,7 @@ Use a new output directory. The renderer checks the archive hashes and layout.
 It generates three install paths for the same release:
 
 - `install.sh`: a release asset. It installs both binaries in `$HOME/.local/bin` by default.
+  When the matching native archive is beside the downloaded script, the installer uses that file and verifies the same pinned checksum.
   Use `--bin-dir /absolute/path` to choose another writable directory.
   It does not replace existing files that differ from the release binaries.
   If another install holds the directory lock, try again after it stops.
@@ -56,7 +57,7 @@ checksum. Build it locally with Python 3:
 ```sh
 python3 packaging/package_orca.py 0.2.1 target/orca-plugin
 python3 tests/orca_release_package.py
-(cd target/orca-plugin && shasum -a 256 p-999k-0.2.1.tar.gz > SHA256SUMS)
+(cd target/orca-plugin && shasum -a 256 p-999k-0.2.1.tar.gz > SHA256SUMS-orca)
 ```
 
 The plugin version comes from its manifest and can differ from the CLI version. The archive contains a single
@@ -64,11 +65,11 @@ installable folder, `p-999k-0.2.1`. Keep the Orca checksum with the Orca
 archive in its own directory. The native installer checksum file lists platform
 archives only.
 
-Install the [candidate CLI](../docs/quickstart.md#connect-orca-to-your-existing-peers) first. The plugin runs `$HOME/.local/bin/999k`. The 0.2.0 release archive lacks the required `--orca-peer` and `pair` commands. Use Orca 1.4.268 or newer
-and run these commands from the directory containing the Orca archive and checksum.
+Install the [0.2.1 CLI](../docs/quickstart.md#connect-orca-to-your-existing-peers) first. The plugin runs `$HOME/.local/bin/999k`. The 0.2.0 release archive lacks the required `--orca-peer` and `pair` commands. Use Orca 1.4.268 or newer
+and run these commands from the directory containing the Orca archive and its release checksum file.
 
 ```sh
-shasum -a 256 --check SHA256SUMS
+shasum -a 256 --check SHA256SUMS-orca
 tar -xzf p-999k-0.2.1.tar.gz
 orca plugin validate ./p-999k-0.2.1
 orca plugin install ./p-999k-0.2.1

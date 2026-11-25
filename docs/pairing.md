@@ -19,13 +19,13 @@ Only publish paths for peers you intend to connect. Dot uses a [private Secure M
 
 ## Offer and redeem
 
-On the hub Mac, run this in an owner-controlled terminal. The command uses the selected managed mailbox's saved credential and verifies its exact HTTPS MCP endpoint from your private `orca-ingress.json` file. For an explicitly approved origin, pass `--origin https://radio.example.com` without a path. For a separately configured credential, pass its private file path with `--bearer-file`.
+On the hub Mac, run this in an owner-controlled terminal. The command uses the selected managed mailbox's saved credential and verifies its exact HTTPS MCP endpoint and pairing path from your private `orca-ingress.json` file. For a manually verified origin, pass `--origin https://radio.example.com` without a path. This form skips automatic route verification. For a separately configured credential, pass its private file path with `--bearer-file`.
 
 ```sh
 999k pair offer muse
 ```
 
-Set the displayed HTTPS origin in the receiving app’s private configuration and paste the offer into the selected peer’s own private conversation. The offer identifies the peer, code, pairing endpoint, and MCP route. The app can redeem the code by sending `{"code":"<one-time-code>"}` in an HTTPS POST to its pairing path. Require HTTPS, disable redirects, and keep the response out of logs. Check that the response reports the expected `mailbox`, exact `mcp_path`, and `token_type` of `Bearer`. Save `access_token` in an owner-only file or secure credential store.
+Set the displayed HTTPS origin in the receiving app’s private configuration. Copy the peer-specific instructions to its own conversation. Supply the one-time code using the app’s private enrollment flow. Use the secure form when Instinct offers one. The app can redeem the code by sending `{"code":"<one-time-code>"}` in an HTTPS POST to its pairing path. Require HTTPS, disable redirects, and keep the response out of logs. Check that the response reports the expected `mailbox`, exact `mcp_path`, and `token_type` of `Bearer`. Save `access_token` in an owner-only file or secure credential store.
 
 For peers with terminal access, the 999k CLI can perform the same exchange. On macOS, the following command prompts without echoing the code and saves the Bearer without printing it. Linux peers use protected standard input or a private code file. Use a new file in an owner-private directory.
 

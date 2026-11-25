@@ -231,6 +231,21 @@ def verify(binary):
             def local():
                 return HTTPConnection("127.0.0.1", port, timeout=5)
 
+            sender_file = home / "fixture-sender.bearer"
+            private_file(sender_file, tokens["codex-cloud"])
+
+            def check_proof(original, expected, *, success):
+                result = subprocess.run(
+                    [binary, "init", "--orca", "--orca-peer", "muse", "--home", home,
+                     "--orca-sender", "codex-cloud", "--orca-bearer-file", sender_file,
+                     "--orca-proof-original", original],
+                    capture_output=True, text=True, timeout=10,
+                )
+                assert (result.returncode == 0) == success
+                assert expected in result.stdout + result.stderr
+
+            status, _, denial = http(remote(), "/muse/pair", {})
+            assert status == 401 and denial["error"]["code"] == "pairing_denied"
             code = offer(binary, home)
             bad = {"code": code[:-1] + ("Z" if code[-1] != "Z" else "Y")}
             assert http(remote(), "/dot/pair", {"code": code})[0] == 404
@@ -250,6 +265,8 @@ def verify(binary):
             request = tool(local(), "codex-cloud", tokens["codex-cloud"], "p-999k_send",
                            recipient="muse", body="synthetic pairing request", idempotency_key="pair-fixture")
             original = request["message"]["id"]
+            check_proof(original, "pending", success=False)
+            check_proof("x" * 513, "could not verify", success=False)
             inbound = tool(remote(), "muse", bearer, "p-999k_read", message_id=original)
             assert inbound["body"] == "synthetic pairing request"
             reply = tool(remote(), "muse", bearer, "p-999k_reply", message_id=original,
@@ -262,6 +279,7 @@ def verify(binary):
             with sqlite3.connect(queue.as_uri() + "?mode=ro", uri=True) as db:
                 assert db.execute("SELECT acknowledged_at_ms IS NOT NULL FROM messages WHERE id=?",
                                   (original,)).fetchone() == (1,)
+            check_proof(original, "verified in the hub", success=True)
             revoked_code = offer(binary, home)
             registration = home / "pigeonmq-cloud-registration.json"
             bindings = json.loads(registration.read_text())

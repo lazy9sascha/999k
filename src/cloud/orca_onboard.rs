@@ -136,10 +136,10 @@ fn purpose(peer: &str) -> String {
 
 fn relay_matches(bot: &Bot, peer: &str) -> bool {
     let description = bot.specialty.as_deref().unwrap_or_default().to_lowercase();
-    (description.contains("999k") || description.contains("pigeonmq"))
-        && description
-            .split(|c: char| !c.is_alphanumeric() && c != '-')
-            .any(|s| s == peer)
+    let identity = description.split('.').next().unwrap_or_default().trim();
+    ["999k", "p-999k", "pigeonmq"]
+        .iter()
+        .any(|brand| identity == format!("{brand} relay for {peer}"))
 }
 
 fn path_arg(path: &Path) -> Result<&str> {
@@ -200,7 +200,12 @@ fn orca(args: &[&str]) -> Result<Value> {
 }
 
 // A successful result includes the expected configured command, including its peer.
-fn attach(bot: &Bot, command: &str, run: &impl Fn(&[&str]) -> Result<Value>) -> Result<()> {
+fn attach(
+    bot: &Bot,
+    peer: &str,
+    command: &str,
+    run: &impl Fn(&[&str]) -> Result<Value>,
+) -> Result<()> {
     let inventory = || -> Result<Inventory> {
         Ok(serde_json::from_value(run(&[
             "bot", "tools", "--bot", &bot.name,
@@ -239,6 +244,14 @@ fn attach(bot: &Bot, command: &str, run: &impl Fn(&[&str]) -> Result<Value>) -> 
     };
     if matches(&initial) {
         return Ok(());
+    }
+    if !relay_matches(bot, peer) {
+        return Err(format!(
+            "Review the existing {} bot in Orca. To use it as this relay, set its identity to: {}",
+            bot.name,
+            purpose(peer)
+        )
+        .into());
     }
     if inherits(&initial, TOOL) {
         return Err(format!(
@@ -300,14 +313,17 @@ impl Setup<'_> {
             .clone()
             .filter(|bot| bot.name.eq_ignore_ascii_case(name));
         if let Some(bot) = candidates.next() {
-            if candidates.next().is_some() || !relay_matches(bot, peer) {
-                return Err(format!("Review the existing {name} bot in Orca. Its identity must designate the 999K relay for {peer}.").into());
+            if candidates.next().is_some() {
+                return Err(format!(
+                    "Multiple local bots have the name {name}. Choose a unique relay name in Orca."
+                )
+                .into());
             }
             let command = format!(
                 "{} stdio-mcp --home {} --mailbox {} --bearer-file {} --peer {peer}",
                 self.executable, self.home, self.sender, self.bearer
             );
-            attach(bot, &command, run)?;
+            attach(bot, peer, &command, run)?;
             if pending.offers.remove(peer) {
                 pending.save(state_path)?;
             }
@@ -485,20 +501,28 @@ pub(crate) fn onboard(
     };
     if let Some(original) = proof_original {
         match stdio_mcp::orca_linked_reply(&home, sender, bearer_file, peer.0, original) {
-            Ok(true) => println!(
-                "Linked reply from {}: verified in the hub. Check the originating project chat for the answer.",
-                peer.0
-            ),
-            Ok(false) => println!(
-                "Linked reply from {}: pending for the selected original request.",
-                peer.0
-            ),
-            Err(_) => println!(
-                "Linked reply from {}: could not verify the selected original request.",
-                peer.0
-            ),
+            Ok(true) => {
+                println!(
+                    "Linked reply from {}: verified in the hub. Check the originating project chat for the answer.",
+                    peer.0
+                );
+                return Ok(());
+            }
+            Ok(false) => {
+                return Err(format!(
+                    "Linked reply from {}: pending for the selected original request.",
+                    peer.0
+                )
+                .into());
+            }
+            Err(_) => {
+                return Err(format!(
+                    "Linked reply from {}: could not verify the selected original request.",
+                    peer.0
+                )
+                .into());
+            }
         }
-        return Ok(());
     }
     if let Some(recipient) = email_recipient
         && !configured_email
@@ -660,12 +684,23 @@ mod tests {
                 Ok(json!({"own":[{"name": tool, "remote": false,
                                   "detail": format!("{path} --peer dot")}],"inherited":[]}))
             };
-            attach(&bot, "/bin/999k --peer dot", &run).unwrap();
-            assert!(attach(&bot, "/bin/999k --peer cue", &run).is_err());
-            assert!(attach(&bot, "/another/bin/999k --peer dot", &run).is_err());
+            attach(&bot, "dot", "/bin/999k --peer dot", &run).unwrap();
+            assert!(attach(&bot, "dot", "/bin/999k --peer cue", &run).is_err());
+            assert!(attach(&bot, "dot", "/another/bin/999k --peer dot", &run).is_err());
         }
         assert!(relay_matches(&bot, "dot"));
         assert!(!relay_matches(&bot, "cue"));
+        let unrelated = Bot {
+            specialty: Some("Reviews 999K docs and asks Dot for help".into()),
+            id: "unrelated".into(),
+            name: "Dot".into(),
+            server: None,
+        };
+        let list_only = |args: &[&str]| -> Result<Value> {
+            assert_eq!(args, ["bot", "tools", "--bot", "Dot"]);
+            Ok(json!({"own":[],"inherited":[]}))
+        };
+        assert!(attach(&unrelated, "dot", "/bin/999k --peer dot", &list_only).is_err());
         let old = Bot {
             specialty: Some("PigeonMQ relay for dot.".into()),
             ..bot
@@ -711,8 +746,8 @@ mod tests {
                 _ => panic!("unexpected operation"),
             }
         };
-        attach(&bot, command, &run).unwrap();
-        attach(&bot, command, &run).unwrap();
+        attach(&bot, "dot", command, &run).unwrap();
+        attach(&bot, "dot", command, &run).unwrap();
         assert!(added.get());
     }
 

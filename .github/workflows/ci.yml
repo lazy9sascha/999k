@@ -37,3 +37,6 @@ jobs:
 
       - name: Test
         run: cargo test --locked -- --test-threads=1
+
+      - name: Verify single-use pairing and linked reply
+        run: python3 tests/pairing_https.py ./target/release/999k

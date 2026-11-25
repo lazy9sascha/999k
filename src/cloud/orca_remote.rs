@@ -127,8 +127,9 @@ pub(crate) fn verified_pairing_origin(
     bearer_file: &Path,
 ) -> std::io::Result<String> {
     use std::io::Error;
-    let (route, _) = crate::pairing::route(peer)
-        .ok_or_else(|| Error::other("Pairing is available for muse, grok-bot, and cue"))?;
+    let (route, pair) = crate::pairing::route(peer).ok_or_else(|| {
+        Error::other("Pairing is available for muse, grok-bot, cue, and instinct")
+    })?;
     let inventory = super::read_private_json::<BTreeMap<String, String>>(&home.join(INVENTORY))
         .map_err(|_| Error::other("Check the owner-private orca-ingress.json file"))?
         .ok_or_else(|| Error::other("Configure the selected peer's HTTPS ingress in the owner-private orca-ingress.json file"))?;
@@ -143,7 +144,39 @@ pub(crate) fn verified_pairing_origin(
             "The selected peer's HTTPS ingress did not pass the authenticated MCP check",
         ));
     }
+    if !pairing_route_available(url.origin().ascii_serialization().as_str(), pair) {
+        return Err(Error::other(
+            "The selected peer's pairing route is not published on the HTTPS ingress",
+        ));
+    }
     Ok(url.origin().ascii_serialization())
+}
+
+fn pairing_route_available(origin: &str, pair: &str) -> bool {
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+    else {
+        return false;
+    };
+    let Ok(response) = client
+        .post(format!("{origin}{pair}"))
+        .json(&json!({}))
+        .send()
+    else {
+        return false;
+    };
+    if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return false;
+    }
+    let mut body = Vec::new();
+    const MAX_BYTES: u64 = 4096;
+    response.take(MAX_BYTES + 1).read_to_end(&mut body).is_ok()
+        && body.len() as u64 <= MAX_BYTES
+        && radio999k::mcp_request::strict_json(&body)
+            .is_ok_and(|value| value["error"]["code"] == "pairing_denied")
 }
 
 pub(super) fn prepare(home: &Path, peer: &str, options: Options<'_>) {
@@ -312,5 +345,49 @@ mod tests {
         ] {
             assert!(endpoint(url, route).is_none(), "{url}");
         }
+    }
+}
+#[cfg(test)]
+mod pairing_route_tests {
+    use super::pairing_route_available;
+
+    #[test]
+    fn accepts_structured_denial_only() {
+        use std::{io::Read, io::Write, net::TcpListener};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 256];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"error":{"code":"pairing_denied"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        assert!(pairing_route_available(&origin, "/muse/pair"));
+        server.join().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 256];
+            let _ = stream.read(&mut buf);
+            let body = "not found";
+            write!(
+                stream,
+                "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        assert!(!pairing_route_available(&origin, "/muse/pair"));
+        server.join().unwrap();
     }
 }

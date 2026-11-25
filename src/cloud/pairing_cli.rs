@@ -224,6 +224,7 @@ pub(crate) fn run(action: &Action) -> io::Result<()> {
                 None => orca_onboard::resolve_bearer_file(&home, peer)
                     .map_err(|_| io::Error::other("Attach the peer's managed bearer or pass --bearer-file with its private file path"))?,
             };
+            let origin_explicit = origin.is_some();
             let origin = match origin {
                 Some(explicit) => routes(peer, explicit)?.0,
                 None => orca_onboard::verified_pairing_origin(&home, peer, &bearer)?,
@@ -232,9 +233,21 @@ pub(crate) fn run(action: &Action) -> io::Result<()> {
             let mut stdout = io::stdout().lock();
             let (_, mcp, pair) = routes(peer, &origin)?;
             writeln!(stdout, "HTTPS hub origin: {origin}")?;
+            if origin_explicit {
+                writeln!(
+                    stdout,
+                    "Pairing route scope: manual origin supplied; ensure {} is published on this origin.",
+                    pair
+                )?;
+            }
             writeln!(
                 stdout,
                 "Set this address in the receiving client's private connection settings."
+            )?;
+            writeln!(stdout, "Pairing code: {code}")?;
+            writeln!(
+                stdout,
+                "Give this code only to the selected peer through its private enrollment flow. Use its secure form when available."
             )?;
             writeln!(
                 stdout,
@@ -251,7 +264,6 @@ pub(crate) fn run(action: &Action) -> io::Result<()> {
                     "Connect your existing {peer} app to its P-999K mailbox through authenticated Streamable HTTP MCP."
                 )?;
             }
-            writeln!(stdout, "Pairing code: {code}")?;
             writeln!(
                 stdout,
                 "Redeem this code once within 10 minutes. POST JSON with a single code field to {pair} on the approved origin in your connection settings. Require HTTPS, disable redirects and keep the response out of logs."

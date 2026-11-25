@@ -4,9 +4,9 @@ Ask an existing 999K peer from your Orca project chat. The relay retrieves the l
 
 **Catalog summary.** Ask one existing peer from your project chat. The relay retrieves the linked answer. The first check can be empty.
 
-P-999K 0.2.1 needs Orca 1.4.268 or newer. Its catalog ID is `lazy9sascha.p-999k`. The panel runs `$HOME/.local/bin/999k`. Check that this executable lists `--orca-peer` in `init --help` and accepts `pair --help`. The published 0.2.0 binary lacks both. [Install the candidate CLI](../../docs/quickstart.md#connect-orca-to-your-existing-peers).
+P-999K 0.2.1 needs Orca 1.4.268 or newer. Its catalog ID is `lazy9sascha.p-999k`. The panel runs `$HOME/.local/bin/999k`. Check that this executable lists `--orca-peer` in `init --help` and accepts `pair --help`. Use native CLI 0.2.1. [Install the CLI and plugin](../../docs/quickstart.md#connect-orca-to-your-existing-peers).
 
-Catalog publication is pending. A fresh Orca profile has not yet completed owner approval and the first linked reply. Do not treat those results as done.
+The release archive installs through Orca’s local plugin flow. Catalog availability is tracked separately.
 
 Orca displays the trusted worker’s permissions before installation. `workspace:read` lets setup find the active local workspace. `terminal:send` lets it open a terminal there and run the selected CLI command. Review the exact files and access before approving. To stop an installed plugin, run `orca plugin disable lazy9sascha.p-999k`. To remove its files and approval, run `orca plugin uninstall lazy9sascha.p-999k`. Peer credentials and the hub have their own lifecycle.
 
