@@ -241,10 +241,9 @@ impl Profile {
             }
             "p-999k_wait" => {
                 let b: Wait = serde_json::from_value(args).map_err(|_| (400, "invalid_fields"))?;
-                if b.timeout_ms > 10000
-                    || b.in_reply_to
-                        .as_ref()
-                        .is_some_and(|s| s.is_empty() || s.len() > 128)
+                if b.in_reply_to
+                    .as_ref()
+                    .is_some_and(|s| s.is_empty() || s.len() > 128)
                 {
                     return Err((400, "invalid_fields"));
                 }
@@ -625,9 +624,16 @@ struct Read {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Wait {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wait_timeout_ms")]
     timeout_ms: u64,
     in_reply_to: Option<String>,
+}
+fn wait_timeout_ms<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let ms = f64::deserialize(d)?;
+    if !(0.0..=10000.0).contains(&ms) || ms.fract() != 0.0 {
+        return Err(serde::de::Error::custom("invalid wait timeout"));
+    }
+    Ok(ms as u64)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
