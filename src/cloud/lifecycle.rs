@@ -564,7 +564,7 @@ pub(crate) fn verify_finite_cue_pairing_bearer(home: &Path, bearer: &str) -> io:
     };
     let unavailable = || error("active finite hosted Cue Bearer required");
     let owner = read_hosted_owner(home)?.ok_or_else(unavailable)?;
-    let (id, descriptor) = hosted_scope(home, &owner)?;
+    let (id, descriptor, _) = hosted_scope(home, &owner)?;
     let profile = state.profiles.get("cue").ok_or_else(unavailable)?;
     if *installation != id.to_string()
         || profile.phase != Phase::Active
@@ -597,7 +597,7 @@ pub(crate) fn verify_finite_cue_pairing_bearer(home: &Path, bearer: &str) -> io:
 pub(crate) fn hosted_cue_bearer_status(home: &Path) -> io::Result<Value> {
     let home = private_dir(home)?;
     let owner = read_hosted_owner(&home)?.ok_or_else(|| error("no managed hosted Unix owner"))?;
-    let (installation, _) = hosted_scope(&home, &owner)?;
+    let (installation, _, _) = hosted_scope(&home, &owner)?;
     if !hosted_cue_mode(&home, installation)? {
         return Ok(json!({"state":"legacy"}));
     }
@@ -611,7 +611,7 @@ pub(crate) fn hosted_cue_bearer(home: &Path, rotate: Option<(u64, &Path)>) -> io
     let dir = private_dir(&home.join(DIRECTORY))?;
     let _owner_guard = lock(&dir)?;
     let owner = read_hosted_owner(&home)?.ok_or_else(|| error("no managed hosted Unix owner"))?;
-    let (installation, descriptor) = hosted_scope(&home, &owner)?;
+    let (installation, descriptor, _) = hosted_scope(&home, &owner)?;
     let state_path = dir.join(STATE);
     let mut state: Registry = read_json(&state_path)?;
     if !scope_matches(&state, &descriptor)
@@ -666,14 +666,20 @@ pub(crate) fn hosted_cue_bearer(home: &Path, rotate: Option<(u64, &Path)>) -> io
 fn hosted_scope(
     home: &Path,
     owner: &HostedOwner,
-) -> io::Result<(uuid::Uuid, crate::hosted_registration::OriginDescriptor)> {
-    let (id, scope, _) = crate::hosted_enrollment::staged_unix(home)
+) -> io::Result<(
+    uuid::Uuid,
+    crate::hosted_registration::OriginDescriptor,
+    String,
+)> {
+    let (id, scope, public_url) = crate::hosted_enrollment::staged_unix(home)
         .map_err(io::Error::other)?
         .ok_or_else(|| error("hosted Unix enrollment is not staged"))?;
     if id.to_string() != owner.installation {
         return Err(error("hosted ownership does not match the installation"));
     }
-    Ok((id, scope))
+    let origin = crate::registration_origin::https_origin(&public_url).map_err(io::Error::other)?;
+    let authority = origin[url::Position::BeforeHost..url::Position::AfterPort].to_owned();
+    Ok((id, scope, authority))
 }
 
 fn scope_matches(state: &Registry, scope: &crate::hosted_registration::OriginDescriptor) -> bool {
@@ -849,7 +855,7 @@ fn change(
     };
     if next.profiles[name].phase == Phase::Retired
         && let Some(owner) = read_hosted_owner(home)?
-        && !hosted_scope(home, &owner).is_ok_and(|(_, scope)| scope_matches(&next, &scope))
+        && !hosted_scope(home, &owner).is_ok_and(|(_, scope, _)| scope_matches(&next, &scope))
     {
         stop_hosted(jobs, home, &owner)?;
     }
@@ -1195,7 +1201,7 @@ pub(crate) fn serve_hosted_connector(home: &Path) -> io::Result<()> {
     let dir = private_dir(&home.join(DIRECTORY))?;
     let owner = read_hosted_owner(&home)?
         .ok_or_else(|| error("hosted LaunchAgent is not owned by this home"))?;
-    let (id, scope) = hosted_scope(&home, &owner)?;
+    let (id, scope, authority) = hosted_scope(&home, &owner)?;
     let (directory, executable, installation) = system_jobs()?;
     if owner.binary != executable
         || owner.cloudflared != installation.require_executable(&owner.cloudflared)?
@@ -1228,7 +1234,7 @@ pub(crate) fn serve_hosted_connector(home: &Path) -> io::Result<()> {
     let _owner = lock(&dir)?;
     if read_hosted_owner(&home)?.as_ref() != Some(&owner)
         || !scope_matches(&read_json(&dir.join(STATE))?, &scope)
-        || hosted_scope(&home, &owner)? != (id, scope)
+        || hosted_scope(&home, &owner)? != (id, scope, authority)
     {
         return Err(error("hosted LaunchAgent scope changed"));
     }
@@ -1826,8 +1832,8 @@ pub(crate) fn serve(home: &Path) -> io::Result<()> {
     let ports = state.port;
     let hosted = (|| {
         let owner = read_hosted_owner(&home).ok()??;
-        let (id, scope) = hosted_scope(&home, &owner).ok()?;
-        scope_matches(&state, &scope).then_some((id, scope))
+        let (id, scope, authority) = hosted_scope(&home, &owner).ok()?;
+        scope_matches(&state, &scope).then_some((id, scope, authority))
     })();
     let local_stdio = state.local_stdio && !active_routes(&state).is_empty();
     let routes = state
@@ -1836,8 +1842,16 @@ pub(crate) fn serve(home: &Path) -> io::Result<()> {
         .filter(|(_, p)| p.phase == Phase::Active)
         .map(|(name, profile)| profile.binding(&name, &state.registration))
         .collect::<io::Result<Vec<_>>>()?;
-    if let Some((id, scope)) = hosted {
-        crate::local_http::serve_managed_hosted_hub(queue, routes, ports, id, &scope, local_stdio)
+    if let Some((id, scope, authority)) = hosted {
+        crate::local_http::serve_managed_hosted_hub(
+            queue,
+            routes,
+            ports,
+            id,
+            &scope,
+            &authority,
+            local_stdio,
+        )
     } else {
         crate::local_http::serve_managed_hub(queue, routes, ports, local_stdio)
     }

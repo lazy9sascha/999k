@@ -584,6 +584,11 @@ fn hosted_unix_opt_in_stages_until_match_then_schedules_and_retires_only_owned_j
 
     crate::hosted_enrollment::stage_unix_fixture(&fixture.home, id, DEFAULT_PORT, &["/cue/mcp"]);
     assert!(schedule_hosted_with(&jobs, &fixture.home, &cloudflared).unwrap());
+    let owner = read_hosted_owner(&fixture.home).unwrap().unwrap();
+    assert_eq!(
+        hosted_scope(&fixture.home, &owner).unwrap().2,
+        "u-fixture.example.test"
+    );
     let plist = fixture.agents.join(format!("{HOSTED_LABEL}.plist"));
     let data = plist::Value::from_file(&plist).unwrap();
     let dict = data.as_dictionary().unwrap();

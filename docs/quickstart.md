@@ -4,12 +4,12 @@ Use the [Orca plugin](#connect-orca-to-your-existing-peers) to ask an existing a
 
 ## Connect Orca to your existing peers
 
-Use an Apple Silicon Mac with Orca 1.4.268 or later. Open a terminal in an empty download directory. This example installs the [0.2.1 release candidate](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1-rc.2). If this Mac already runs a managed hub, follow the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
+Use an Apple Silicon Mac with Orca 1.4.268 or later. Open a terminal in an empty download directory. This example installs the [0.2.1 release candidate](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1-rc.3). If this Mac already runs a managed hub, follow the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
 
 ```sh
 (
   set -e
-  release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.1-rc.2
+  release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.1-rc.3
   for file in install.sh 999k-0.2.1-aarch64-apple-darwin.tar.gz p-999k-0.2.1.tar.gz SHA256SUMS-orca; do
     curl -q --proto '=https' --proto-redir '=https' -fLsS -o "$file" "$release/$file"
   done
@@ -41,11 +41,11 @@ Run `999k init --orca` with no selection to list authorized peers. This stays lo
 
 ### Prepare the selected peer’s transport
 
-**Operator-hosted Cue pilot (0.2.1-rc.2).** The CLI includes the operator’s registration address. A clean Mac received a signup email containing only a link. The pilot still needs a successful numeric-code signup and a linked reply returned to the originating project chat on a fresh install. If you already have a manual Cue endpoint in `orca-ingress.json`, setup reuses it. For a different self-hosted provider, set `RADIO999K_REGISTRATION_URL` and use the CLI with the peer that provider supports.
+**Operator-hosted Cue pilot (0.2.1-rc.3).** The CLI includes the operator’s registration address. A clean Mac approved registration by email and connected its tunnel on RC2. RC3 fixes the hub’s rejection of requests forwarded with the assigned hostname. A fresh RC3 install and a linked reply in the originating project chat remain under test. If you already have a manual Cue endpoint in `orca-ingress.json`, setup reuses it. For a different self-hosted provider, set `RADIO999K_REGISTRATION_URL` and use the CLI with the peer that provider supports.
 
 1. Install `cloudflared` on your Mac. With Homebrew, run `brew install cloudflared`. Check that `cloudflared --version` works in the same terminal used for setup. [Cloudflare downloads for macOS](https://developers.cloudflare.com/tunnel/downloads/#macos)
 2. Select **Cue → I’ll do it myself → Set up hosted address**. From the terminal, the equivalent command is `"$HOME/.local/bin/999k" init --orca --orca-peer cue --orca-reserve-address`.
-3. Enter your email in the browser opened by setup. Both first-time and returning users need the numeric code from the email. If the email contains only a link, contact the pilot operator to correct the email template. The operator provides the address and manages Cloudflare. Your Mac runs the connector and stores questions and replies. If setup times out, repeat the same command.
+3. Enter your email in the browser opened by setup. Both first-time and returning users need the numeric code from the email. If the email contains only a link, contact the pilot operator to correct the email template. The operator provides the address and manages Cloudflare. Your Mac runs the connector and stores questions and replies. If setup times out or the new address does not resolve yet, DNS may have cached an earlier lookup. Wait for the DNS cache to expire, then repeat the same command with the same hub home and credentials.
 4. When setup reports authenticated MCP access, choose **Get a setup code** for Cue. Use Cue’s supported secure credential input if available, or follow the [HTTPS pairing steps](pairing.md#offer-and-redeem) in an owner-controlled Cue runtime. Check a question and its linked reply in the original project chat.
 
 - **Dot** uses its [private Secure MCP Tunnel](configuration.md#dot-through-a-private-secure-mcp-tunnel). Set it up from the Dot workspace. The Orca command binds the local relay and asks you to verify the private transport from Dot.
@@ -70,7 +70,7 @@ When a project agent calls a bot, keep the Orca question ID with the 999K origin
 
 ## 1. Install
 
-Open the [0.2.1 candidate downloads](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1-rc.2). Download `install.sh` and the native archive for your computer into the same empty directory.
+Open the [0.2.1 candidate downloads](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1-rc.3). Download `install.sh` and the native archive for your computer into the same empty directory.
 
 | Computer | Native archive |
 | --- | --- |
@@ -188,7 +188,7 @@ Use the smoke script from the tag you installed. The 0.2.1 candidate reports bin
 ```sh
 version=0.2.1
 curl -q --proto '=https' -fLsS -o 999k-smoke.sh \
-  "https://raw.githubusercontent.com/lazy9sascha/p-999k/0.2.1-rc.2/scripts/smoke-release.sh" &&
+  "https://raw.githubusercontent.com/lazy9sascha/p-999k/0.2.1-rc.3/scripts/smoke-release.sh" &&
 sh ./999k-smoke.sh --installed "$(dirname "$RADIO999K_BIN")" "$version"
 ```
 

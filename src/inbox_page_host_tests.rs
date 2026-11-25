@@ -127,7 +127,7 @@ fn request(
         "POST /muse/mcp HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\n\r\n",
         body.len(),
     );
-    let mut input = transport::parse_head(head.as_bytes(), authority, route_body_limit)?;
+    let mut input = transport::parse_head(head.as_bytes(), authority, None, route_body_limit)?;
     input.authorization = authorization.to_vec();
     let deadline = Instant::now() + Duration::from_secs(15);
     dispatch_muse(

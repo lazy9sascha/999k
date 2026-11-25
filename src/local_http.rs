@@ -115,7 +115,7 @@ fn route_body_limit(path: &str) -> Result<usize, Fault> {
 }
 #[cfg(test)]
 fn parse_head(bytes: &[u8], authority: &str) -> Result<Input, Fault> {
-    transport::parse_head(bytes, authority, route_body_limit)
+    transport::parse_head(bytes, authority, None, route_body_limit)
 }
 fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, Fault> {
     serde_json::from_slice(body).map_err(|_| (400, "invalid_json_or_fields"))
@@ -562,7 +562,7 @@ mod tests {
                 "POST /messages/dlq HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 body.len()
             );
-            let input = transport::parse_head(head.as_bytes(), authority, |p| {
+            let input = transport::parse_head(head.as_bytes(), authority, None, |p| {
                 state.routes.get(p).map(|route| route.body_limit)
             })?;
             match dispatch_hub_request(state, authority, &input, body.as_bytes(), &|| false, None) {
@@ -2018,12 +2018,13 @@ fn handle_hub_routes(
     authority: &str,
     state: &HubState,
     allowed: Option<&[String]>,
-    hosted: Option<uuid::Uuid>,
+    hosted: Option<(uuid::Uuid, &str)>,
     legacy_tool_listing: bool,
 ) {
     transport::handle_connection(
         stream,
         authority,
+        hosted.map(|(_, public_authority)| public_authority),
         |path| {
             let pairing = crate::pairing::by_path(path);
             let mcp = pairing.map_or(path, |(_, mcp)| mcp);
@@ -2038,6 +2039,7 @@ fn handle_hub_routes(
                 .map(|route| pairing.map_or(route.body_limit, |_| crate::pairing::BODY_LIMIT))
         },
         |input, body, peer_closed| {
+            let hosted = hosted.map(|(installation, _)| installation);
             if crate::pairing::by_path(&input.path).is_some() {
                 return dispatch_pairing(state, authority, input, body, peer_closed, hosted);
             }
@@ -2187,6 +2189,7 @@ pub(crate) fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
 struct HostedSocket<'a> {
     installation: uuid::Uuid,
     scope: &'a crate::hosted_registration::OriginDescriptor,
+    public_authority: &'a str,
     #[cfg(test)]
     fixture_root: Option<&'a Path>,
 }
@@ -2209,6 +2212,7 @@ pub(crate) fn serve_managed_hosted_hub(
     port: u16,
     installation: uuid::Uuid,
     scope: &crate::hosted_registration::OriginDescriptor,
+    public_authority: &str,
     local_stdio: bool,
 ) -> io::Result<()> {
     serve_hub_on(
@@ -2223,6 +2227,7 @@ pub(crate) fn serve_managed_hosted_hub(
         Some(HostedSocket {
             installation,
             scope,
+            public_authority,
             #[cfg(test)]
             fixture_root: None,
         }),
@@ -2511,6 +2516,7 @@ fn serve_hub_on(
     if let (Some(holder), Some(socket)) = (&hosted_listener, &hosted) {
         let allowed = socket.scope.mcp_paths.clone();
         let installation = socket.installation;
+        let public_authority = socket.public_authority.to_owned();
         let hosted_state = state.clone();
         listeners.push((
             ProfileListener::Unix(holder.listener.try_clone()?, format!("127.0.0.1:{port}")),
@@ -2520,7 +2526,7 @@ fn serve_hub_on(
                     authority,
                     &hosted_state,
                     Some(&allowed),
-                    Some(installation),
+                    Some((installation, &public_authority)),
                     false,
                 );
             }),
@@ -2684,7 +2690,7 @@ mod dot_wire {
             .tempdir_in("/tmp")
             .unwrap();
         fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let db = home.path().join("queue.sqlite3");
+        let db = home.path().join(crate::mailbox_startup::QUEUE);
         drop(Queue::open(&db).unwrap());
         fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
         let local = "test-local-cue";
@@ -2749,6 +2755,7 @@ mod dot_wire {
                 Some(HostedSocket {
                     installation,
                     scope: &descriptor,
+                    public_authority: "u-fixture.example.test",
                     fixture_root: Some(&root_path),
                 }),
             )
@@ -2757,22 +2764,77 @@ mod dot_wire {
         while !(socket.exists() && stdio.exists()) && Instant::now() < ready {
             std::thread::sleep(Duration::from_millis(10));
         }
-        let post = |socket: &Path, host: &str, route: &str, bearer: &str| -> u16 {
+        let request = |socket: &Path, host: &str, route: &str, extra: &str, body: &str| {
             let mut client = UnixStream::connect(socket).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
-            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
-            write!(client,"POST {route} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {bearer}\r\nContent-Length: {}\r\n\r\n{body}",body.len()).unwrap();
+            write!(client, "POST {route} HTTP/1.1\r\nHost: {host}\r\n{extra}Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
             let mut response = String::new();
             client.read_to_string(&mut response).unwrap();
-            response.split_whitespace().nth(1).unwrap().parse().unwrap()
+            let (head, body) = response.split_once("\r\n\r\n").unwrap();
+            (
+                head.split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .parse::<u16>()
+                    .unwrap(),
+                serde_json::from_str::<Value>(body).unwrap(),
+            )
         };
+        let post = |socket: &Path, host: &str, route: &str, bearer: &str| {
+            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+            request(
+                socket,
+                host,
+                route,
+                &format!("Authorization: Bearer {bearer}\r\n"),
+                body,
+            )
+            .0
+        };
+        let public = "u-fixture.example.test";
         let authority = format!("127.0.0.1:{port}");
-        let hosted = |token| post(&socket, &authority, "/cue/mcp", token);
+        let hosted = |token| post(&socket, public, "/cue/mcp", token);
         let local_post = |token| post(&stdio, crate::stdio_mcp::AUTHORITY, "/cue/mcp", token);
         assert_eq!(hosted(local), 200); // Legacy installations have not enabled C22.
+        assert_eq!(post(&socket, &authority, "/cue/mcp", local), 200);
+        assert_eq!(post(&stdio, public, "/cue/mcp", local), 403);
         assert_eq!(local_post(local), 200);
+        let mut tcp = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        write!(tcp, "POST /cue/pair HTTP/1.1\r\nHost: {public}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}").unwrap();
+        let mut response = String::new();
+        tcp.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 403 "));
+        let bearer_file = home.path().join("synthetic-cue.key");
+        radio999k::private_file::replace_private(&bearer_file, local.as_bytes()).unwrap();
+        let code = crate::pairing::issue(home.path(), "cue", &bearer_file).unwrap();
+        let body = json!({"code": code}).to_string();
+        let pair = |host, route, extra| request(&socket, host, route, extra, &body);
+        assert_eq!(pair("another.example.test", "/cue/pair", "").0, 403);
+        assert_eq!(
+            pair(public, "/cue/pair", "Host: u-fixture.example.test\r\n").0,
+            403
+        );
+        assert_eq!(
+            pair(
+                public,
+                "/cue/pair",
+                "Origin: https://u-fixture.example.test\r\n"
+            )
+            .0,
+            403
+        );
+        assert_eq!(
+            pair(public, "/cue/pair", "Sec-Fetch-Site: same-origin\r\n").0,
+            403
+        );
+        assert_eq!(pair(public, "/muse/pair", "").0, 404);
+        let (status, redeemed) = pair(public, "/cue/pair", "");
+        assert_eq!(status, 200);
+        assert!(redeemed["access_token"] == local);
+        assert_eq!(pair(public, "/cue/pair", "").0, 401);
         let scope = crate::hosted_mailbox_bearer::Scope::new(home.path(), installation);
         let transfer = tempfile::tempdir().unwrap();
         fs::set_permissions(transfer.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -2853,6 +2915,7 @@ mod dot_wire {
                 Some(HostedSocket {
                     installation,
                     scope: &scope,
+                    public_authority: "u-fixture.example.test",
                     fixture_root: Some(&root_path),
                 }),
             )
@@ -2956,7 +3019,7 @@ mod dot_wire {
                 ));
             }
             head.push_str("\r\n");
-            let input = transport::parse_head(head.as_bytes(), authority, |path| {
+            let input = transport::parse_head(head.as_bytes(), authority, None, |path| {
                 state.routes.get(path).map(|route| route.body_limit)
             })
             .unwrap();

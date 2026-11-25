@@ -47,7 +47,7 @@ Verify the assigned route and an authenticated MCP exchange after finish.
 }
 ```
 
-The public pilot supports Cue. Set `hub_port` to 54843, the managed user hub port, and publish only `/cue/mcp`. Unix connector setup also publishes its exact sibling `/cue/pair`. Use loopback port 54900 for the registration service on the operator Mac.
+The public pilot supports Cue. Set `hub_port` to 54843, the managed user hub port, and publish only `/cue/mcp`. Unix connector setup also publishes its exact sibling `/cue/pair`. Use loopback port 54900 for the registration service on the operator Mac. The user hub accepts its assigned public Host on the managed Unix socket. It also accepts the loopback Host used by its local readiness probe.
 
 For a separately configured operator, set
 `"mcp_paths": ["/dot/mcp", "/codex/mcp"]` to publish both paths on the same
