@@ -281,12 +281,12 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
     .unwrap();
     assert_eq!(f.state(&id), (0, None));
     assert_eq!(
-        f.tool(&r, "radio999k_read", json!({"message_id":id}))["id"],
+        f.tool(&r, "p-999k_read", json!({"message_id":id}))["id"],
         id
     );
     let reply = f.tool(
         &r,
-        "radio999k_reply",
+        "p-999k_reply",
         json!({"message_id":id,"body":"synthetic handler result, not model inference"}),
     );
     assert_eq!(reply["state"], "replied");
@@ -322,16 +322,16 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
         })
     })
     .unwrap();
-    assert!(f.tool(&r, "radio999k_wait", json!({"timeout_ms":0}))["message"].is_null());
+    assert!(f.tool(&r, "p-999k_wait", json!({"timeout_ms":0}))["message"].is_null());
     assert_eq!(
         f.tool(
             &r,
-            "radio999k_wait",
+            "p-999k_wait",
             json!({"timeout_ms":0,"in_reply_to":original_id})
         )["message"]["id"],
         terminal
     );
-    f.tool(&r, "radio999k_read", json!({"message_id":terminal}));
+    f.tool(&r, "p-999k_read", json!({"message_id":terminal}));
     assert_eq!(f.state(&terminal), (0, None));
     let count: i64 = f
         .conn()
@@ -339,7 +339,7 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
         .unwrap();
     let confirmation = f.tool(
         &r,
-        "radio999k_confirm_terminal",
+        "p-999k_confirm_terminal",
         json!({"message_id":terminal}),
     );
     assert_eq!(confirmation["duplicate"], false);
@@ -347,7 +347,7 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
     assert!(
         f.tool(
             &r,
-            "radio999k_wait",
+            "p-999k_wait",
             json!({"timeout_ms":0,"in_reply_to":original_id})
         )["message"]
             .is_null()
@@ -356,7 +356,7 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
     assert_eq!(
         f.tool(
             &r,
-            "radio999k_confirm_terminal",
+            "p-999k_confirm_terminal",
             json!({"message_id":terminal})
         )["duplicate"],
         true
@@ -370,7 +370,7 @@ fn idle_arrival_delivery_completion_and_terminal_confirmation_use_shared_queue()
     let denied = f.rpc(
         &r,
         "tools/call",
-        json!({"name":"radio999k_confirm_terminal","arguments":{"message_id":id}}),
+        json!({"name":"p-999k_confirm_terminal","arguments":{"message_id":id}}),
     );
     assert_eq!(denied["result"]["isError"], true);
 }
@@ -587,7 +587,7 @@ fn confirmation_rejects_claimed_terminal_and_revoked_sender() {
     let denied = f.rpc(
         &r,
         "tools/call",
-        json!({"name":"radio999k_confirm_terminal","arguments":{"message_id":terminal}}),
+        json!({"name":"p-999k_confirm_terminal","arguments":{"message_id":terminal}}),
     );
     assert_eq!(denied["result"]["isError"], true);
     assert!(f.state(&terminal).1.is_none());
@@ -648,7 +648,7 @@ fn inline_discovery_then_exact_read_preserves_queue_state() {
     let read = f.rpc(
         &r,
         "tools/call",
-        json!({"_meta":meta,"name":"radio999k_read","arguments":{"message_id":id}}),
+        json!({"_meta":meta,"name":"p-999k_read","arguments":{"message_id":id}}),
     );
     let body: Value =
         serde_json::from_str(read["result"]["content"][0]["text"].as_str().unwrap()).unwrap();

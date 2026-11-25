@@ -211,7 +211,7 @@ fn prepared_codex_events_are_exposed_only_on_the_existing_authenticated_hub_rout
         "/codex/mcp",
         "fixture",
         "tools/call",
-        json!({"name":"radio999k_reply","arguments":{"message_id":incoming,"body":"\u{1}".repeat(16384)}}),
+        json!({"name":"p-999k_reply","arguments":{"message_id":incoming,"body":"\u{1}".repeat(16384)}}),
     );
     let result: Value =
         serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -333,7 +333,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
             "/codex/mcp",
             token,
             "tools/call",
-            json!({"name":"radio999k_read","arguments":{"message_id":"missing-fixture"}}),
+            json!({"name":"p-999k_read","arguments":{"message_id":"missing-fixture"}}),
         );
         assert_eq!(status, 200);
         assert_eq!(reply["id"], 1);
@@ -385,14 +385,14 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
     assert_eq!(
         names,
         [
-            "radio999k_confirm_terminal",
-            "radio999k_inbox",
-            "radio999k_read",
-            "radio999k_read_thread",
-            "radio999k_recipients",
-            "radio999k_reply",
-            "radio999k_send",
-            "radio999k_wait"
+            "p-999k_confirm_terminal",
+            "p-999k_inbox",
+            "p-999k_read",
+            "p-999k_read_thread",
+            "p-999k_recipients",
+            "p-999k_reply",
+            "p-999k_send",
+            "p-999k_wait"
         ]
     );
     for method in ["events/list", "events/subscribe", "events/unsubscribe"] {
@@ -409,7 +409,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
         "/codex/mcp",
         token,
         "tools/call",
-        json!({"name":"radio999k_read","arguments":{"message_id":incoming}}),
+        json!({"name":"p-999k_read","arguments":{"message_id":incoming}}),
     );
     assert_eq!(status, 200, "{read}");
     let read = unpack(read);
@@ -430,7 +430,7 @@ fn codex_mailbox_without_events_serves_manual_tools_without_preparation() {
         "/codex/mcp",
         token,
         "tools/call",
-        json!({"name":"radio999k_reply","arguments":{"message_id":incoming,"body":"manual answer"}}),
+        json!({"name":"p-999k_reply","arguments":{"message_id":incoming,"body":"manual answer"}}),
     );
     assert_eq!(status, 200, "{replied}");
     let replied = unpack(replied);
@@ -522,12 +522,12 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
         }).to_string());
             (status, serde_json::from_str::<Value>(&response).unwrap())
         };
-    let (is_error, recipients) = codex("radio999k_recipients", json!({}));
+    let (is_error, recipients) = codex("p-999k_recipients", json!({}));
     assert_eq!(is_error, false);
     assert_eq!(recipients["recipients"], json!(["peer"]));
     assert_eq!(
         codex(
-            "radio999k_send",
+            "p-999k_send",
             json!({
                 "recipient":"peer","body":"Codex fixture","idempotency_key":"codex-to-peer"
             })
@@ -543,10 +543,10 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
     // An explicit generic grant does not affect registration-backed Codex discovery.
     policy_value["principals"][0]["send_to"] = json!(["codex-cloud", "generic-only"]);
     write(&policy, &policy_value);
-    assert_eq!(codex("radio999k_recipients", json!({})).1, recipients);
+    assert_eq!(codex("p-999k_recipients", json!({})).1, recipients);
     assert_eq!(
         codex(
-            "radio999k_send",
+            "p-999k_send",
             json!({
                 "recipient":"generic-only","body":"fixture","idempotency_key":"not-registered"
             })
@@ -561,7 +561,7 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
 
     // Authorized self traffic takes the normal enqueue and delivery paths.
     let (is_error, own_mail) = codex(
-        "radio999k_send",
+        "p-999k_send",
         json!({
             "recipient":"codex-cloud","body":"Codex note","idempotency_key":"self-note"
         }),
@@ -569,7 +569,7 @@ fn codex_registration_does_not_grant_generic_targets_even_with_the_same_policy()
     assert_eq!(is_error, false);
     let own_id = own_mail["message"]["id"].as_str().unwrap();
     assert_eq!(
-        codex("radio999k_read", json!({"message_id":own_id})).1["envelope"]["body"],
+        codex("p-999k_read", json!({"message_id":own_id})).1["envelope"]["body"],
         "Codex note"
     );
     let (status, rpc) = generic("/rpc/request", "codex-cloud", "self-rpc");

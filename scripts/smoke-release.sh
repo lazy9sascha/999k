@@ -186,14 +186,14 @@ def run_demo(bins, version, root):
                     {"sender": "a", "recipient": "muse", "body": REQUEST}, sender)["message"]
         message_id = sent["id"]
         args = {"message_id": message_id}
-        read = tool("radio999k_read", **args)
+        read = tool("p-999k_read", **args)
         check((read["message_id"], read["state"], read["body"]) == (message_id, "pending", REQUEST),
               "the expected pending message was not read")
-        reply = tool("radio999k_reply", **args, body=REPLY)
+        reply = tool("p-999k_reply", **args, body=REPLY)
         reply_id = reply["reply_id"]
         check(reply_id and reply_id != message_id and not reply["duplicate"],
               "no new linked reply was created")
-        read = tool("radio999k_read", **args)
+        read = tool("p-999k_read", **args)
         check((read["state"], read["reply_id"]) == ("replied", reply_id),
               "the original did not reference the reply")
         legacy = tool("pigeonmq_read", **args)
@@ -204,11 +204,11 @@ def run_demo(bins, version, root):
 
     with running_hub(command, env, home, port):
         tool = mcp_client(port, muse)
-        read = tool("radio999k_read", **args)
+        read = tool("p-999k_read", **args)
         check((read["message_id"], read["state"], read["reply_id"]) == (
             message_id, "replied", reply_id
         ), "the original linked reply ID changed after restart")
-        thread = tool("radio999k_read_thread", conversation_id=sent["conversation_id"])
+        thread = tool("p-999k_read_thread", conversation_id=sent["conversation_id"])
         check(any((msg["message_id"], msg["in_reply_to"], msg["body"], msg["sender"],
                    msg["recipient"]) == (reply_id, message_id, REPLY, "muse", "a")
                   for msg in thread["messages"]), "the linked reply was not present after restart")

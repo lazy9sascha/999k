@@ -33,6 +33,8 @@ struct Enrollment {
     unix_nonce: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unix_descriptor: Option<OriginDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selected_mcp_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -84,6 +86,7 @@ fn new_enrollment(origin: &Url) -> Enrollment {
         binding: None,
         unix_nonce: None,
         unix_descriptor: None,
+        selected_mcp_path: None,
     }
 }
 
@@ -197,6 +200,7 @@ fn enroll(
     wait: Duration,
     poll: Duration,
     intent: OriginIntent,
+    selected_mcp_path: Option<&str>,
     open: impl FnOnce(&Url) -> Result<(), String>,
     finalize: impl FnOnce(&str, &str, &str) -> Result<(), String>,
 ) -> Result<String, String> {
@@ -215,10 +219,24 @@ fn enroll(
                     .map_err(|_| "cannot select a hosted Unix origin")?;
                 enrollment.unix_nonce = Some(nonce.nonce().to_owned());
             }
+            enrollment.selected_mcp_path = selected_mcp_path.map(str::to_owned);
             save(&path, &enrollment)?;
             enrollment
         }
     };
+    if let Some(selected) = selected_mcp_path
+        && Some(selected) != saved.selected_mcp_path.as_deref()
+        && !saved
+            .unix_descriptor
+            .as_ref()
+            .is_some_and(|scope| exact_peer_scope(&scope.mcp_paths, selected))
+    {
+        return Err("This home has a different hosted enrollment. Preserve it and use an approved exact ingress for this peer.".into());
+    }
+    let required_path = saved
+        .selected_mcp_path
+        .clone()
+        .or_else(|| selected_mcp_path.map(str::to_owned));
     let unix = saved.unix_nonce.as_deref().and_then(UnixOrigin::parse);
 
     // Retry the same begin even if the last call reached the server but lost its response.
@@ -299,6 +317,12 @@ fn enroll(
             return Err("invalid hosted finish response".into());
         }
         if let Some(descriptor) = descriptor {
+            if required_path
+                .as_deref()
+                .is_some_and(|path| !exact_peer_scope(&descriptor.mcp_paths, path))
+            {
+                return Err("Registration provider did not approve exactly the selected peer route; connector remains unattached".into());
+            }
             if saved
                 .unix_descriptor
                 .as_ref()
@@ -326,6 +350,9 @@ fn enroll(
         Err(reason) if reason == "registration_revoked" => Err(
             "Registration was revoked. Do not reuse this enrollment. Contact the operator.".into(),
         ),
+        Err(reason) if required_path.is_some() => Err(format!(
+            "{reason}. Repeat the same selected-peer setup command to resume."
+        )),
         Err(reason) => Err(format!("{reason}. {RESUME}")),
         Ok(url) => Ok(url),
     }
@@ -353,7 +380,25 @@ pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor)
     Ok(Some((id, descriptor)))
 }
 
+fn exact_peer_scope(paths: &[String], selected: &str) -> bool {
+    paths == [selected]
+}
+
 pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
+    reserve(home, unix, None).map(|_| ())
+}
+
+pub(crate) fn reserve_selected_peer(home: &Path, route: &str) -> Result<String, String> {
+    if !matches!(
+        route,
+        "/muse/mcp" | "/grok/mcp" | "/cue/mcp" | "/instinct/mcp"
+    ) {
+        return Err("The selected peer does not support hosted HTTPS enrollment.".into());
+    }
+    reserve(home, true, Some(route))
+}
+
+fn reserve(home: &Path, unix: bool, selected_mcp_path: Option<&str>) -> Result<String, String> {
     let configured = std::env::var_os("RADIO999K_REGISTRATION_URL")
         .or_else(|| std::env::var_os("PIGEONMQ_REGISTRATION_URL"))
         .and_then(|url| url.into_string().ok())
@@ -380,10 +425,13 @@ pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
         } else {
             OriginIntent::Legacy
         },
+        selected_mcp_path,
         open_browser,
         |url, id, token| crate::hosted_connector::stage(&home, url, id, token),
     )?;
-    println!("reserved_address={public_url}");
+    if selected_mcp_path.is_none() {
+        println!("reserved_address={public_url}");
+    }
     let scheduled = if unix {
         match crate::lifecycle::schedule_hosted_unix(&home) {
             Ok(value) => value,
@@ -410,7 +458,10 @@ pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
             );
         }
     }
-    Ok(())
+    if selected_mcp_path.is_some() && !scheduled {
+        return Err("The selected route is staged. Start its managed profile and repeat selected-peer setup.".into());
+    }
+    Ok(public_url)
 }
 
 #[cfg(test)]
@@ -582,6 +633,7 @@ mod tests {
             Duration::ZERO,
             Duration::ZERO,
             OriginIntent::Legacy,
+            None,
             open,
             finalize,
         )
@@ -601,6 +653,7 @@ mod tests {
                 Duration::ZERO,
                 Duration::ZERO,
                 intent,
+                None,
                 |_| panic!("unexpected opener"),
                 |_, _, _| Ok(()),
             )
@@ -675,6 +728,76 @@ mod tests {
         assert!(stored.proof == first.proof && stored.unix_nonce == first.unix_nonce);
         assert_eq!(stored.unix_descriptor.unwrap().mcp_paths, ["/muse/mcp"]);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn selected_enrollment_never_finalizes_a_wider_provider_scope() {
+        let home = temp_home();
+        let path = home.path().join(FILE);
+        let origin = https_origin(ORIGIN).unwrap();
+        let selected = "/muse/mcp";
+        let (drop_api, dropped) = operator_with_intent(home.path(), vec![(BEGIN, None)], true);
+        let run = |api: &str, finalize: fn(&str, &str, &str) -> Result<(), String>| {
+            enroll(
+                home.path(),
+                &origin,
+                api,
+                Duration::ZERO,
+                Duration::ZERO,
+                OriginIntent::UnixV1,
+                Some(selected),
+                |_| panic!("unexpected opener"),
+                finalize,
+            )
+        };
+        assert!(run(&drop_api, |_, _, _| panic!("unexpected finalization")).is_err());
+        dropped.join().unwrap();
+        let pending = load(&path).unwrap().unwrap();
+        assert_eq!(pending.selected_mcp_path.as_deref(), Some(selected));
+        let nonce = pending.unix_nonce.as_deref().unwrap();
+        let finish =
+            "POST /v1/enrollments/11111111-1111-4111-8111-111111111111/finish-unix HTTP/1.1";
+        let complete = |paths: &[&str]| {
+            vec![
+                (BEGIN, Some((200, begin(ORIGIN, ID, None)))),
+                (
+                    STATUS,
+                    Some((200, json!({"state":"approved","public_url":PUBLIC}))),
+                ),
+                (
+                    finish,
+                    Some((
+                        200,
+                        json!({
+                            "state":"ready", "public_url":PUBLIC, "connector_token":"fixture-token",
+                            "origin":{"kind":"unix_v1","nonce":nonce,"hub_port":54843,"mcp_paths":paths}
+                        }),
+                    )),
+                ),
+            ]
+        };
+        let (api, server) =
+            operator_with_intent(home.path(), complete(&[selected, "/cue/mcp"]), true);
+        let error = run(&api, |_, _, _| {
+            panic!("broader ingress must not reach finalization")
+        })
+        .unwrap_err();
+        assert!(error.contains("did not approve exactly the selected peer route"));
+        server.join().unwrap();
+        assert!(load(&path).unwrap().unwrap().unix_descriptor.is_none());
+
+        let (api, server) = operator_with_intent(home.path(), complete(&[selected]), true);
+        assert_eq!(run(&api, |_, _, _| Ok(())).unwrap(), PUBLIC);
+        server.join().unwrap();
+        assert_eq!(
+            load(&path)
+                .unwrap()
+                .unwrap()
+                .unix_descriptor
+                .unwrap()
+                .mcp_paths,
+            [selected]
+        );
     }
 
     #[test]

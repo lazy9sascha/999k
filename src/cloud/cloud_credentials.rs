@@ -733,7 +733,7 @@ pub(crate) fn setup_grok_wake(
 }
 
 #[cfg(target_os = "macos")]
-fn hidden_tty(prompt: &std::ffi::CStr) -> io::Result<String> {
+pub(crate) fn hidden_tty(prompt: &std::ffi::CStr) -> io::Result<String> {
     use std::ffi::{c_char, c_int};
     unsafe extern "C" {
         fn readpassphrase(
@@ -763,7 +763,7 @@ fn hidden_tty(prompt: &std::ffi::CStr) -> io::Result<String> {
             .filter(|text| text.to_bytes().len() < buf.len() - 1)
             .and_then(|text| text.to_str().ok())
             .map(str::to_owned)
-            .ok_or_else(|| io::Error::other("Invalid or too-long webhook input"))
+            .ok_or_else(|| io::Error::other("Invalid or too-long hidden input"))
     };
     buf.fill(0);
     value

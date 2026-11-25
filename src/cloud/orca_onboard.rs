@@ -1,6 +1,9 @@
 //! Attach a separate, peer-scoped 999K tool to each local Orca relay bot.
 use crate::{cloud_setup, stdio_mcp};
+#[path = "orca_remote.rs"]
+mod remote;
 use radio999k::private_file;
+pub(crate) use remote::{Options as RemoteOptions, verified_pairing_origin};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -9,14 +12,15 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PEERS: [(&str, &str); 5] = [
+pub(crate) const PEERS: [(&str, &str); 5] = [
     ("dot", "Dot"),
     ("instinct", "Instinct"),
     ("cue", "Cue"),
     ("muse", "Muse"),
     ("grok-bot", "GrokBot"),
 ];
-const TOOL: &str = "radio999k";
+const TOOL: &str = "p-999k";
+const PREVIOUS_TOOL: &str = "radio999k";
 const LEGACY_TOOL: &str = "pigeonmq";
 const BOT_CHAT_REQUIRED: &str = "Orca requires a bot-owned chat to propose new bots";
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -29,9 +33,16 @@ pub(crate) fn resolve_bearer_file(home: &Path, sender: &str) -> Result<PathBuf> 
         return Ok(PathBuf::from(file));
     }
     if sender == "codex-cloud" {
+        // Existing installations can use a header exported from Keychain.
         let file = home.join("pigeonmq-cloud-codex-header");
         if file.is_file() {
             return Ok(file);
+        }
+        let token = home.join("pigeonmq-cloud-codex-cloud-token");
+        if home.join(".pigeonmq-lifecycle/profiles.json").is_file() && token.try_exists()? {
+            private_file::open_private_file(&token)
+                .map_err(|_| "Invalid private sender credential")?;
+            return Ok(token);
         }
     }
     Err("Pass --orca-bearer-file with the existing sender's private bearer file path.".into())
@@ -94,6 +105,7 @@ fn setup_lock(state: &Path) -> Result<std::fs::File> {
 
 #[derive(Deserialize)]
 struct Bot {
+    #[allow(dead_code)]
     id: String,
     name: String,
     #[serde(default)]
@@ -118,7 +130,7 @@ struct Inventory {
 
 fn purpose(peer: &str) -> String {
     format!(
-        "999K relay for {peer}. Use the local radio999k tool and radio999k_send to send only to {peer}. Report Queued after acceptance. Call radio999k_wait with the original ID, and return the matching peer reply to its originating chat."
+        "999K relay for {peer}. Use the local peer-scoped MCP connector to send only to {peer}. Report Queued after acceptance. Wait with the original ID, and return the matching peer reply to its originating chat."
     )
 }
 
@@ -191,7 +203,7 @@ fn orca(args: &[&str]) -> Result<Value> {
 fn attach(bot: &Bot, command: &str, run: &impl Fn(&[&str]) -> Result<Value>) -> Result<()> {
     let inventory = || -> Result<Inventory> {
         Ok(serde_json::from_value(run(&[
-            "bot", "tools", "--bot", &bot.id,
+            "bot", "tools", "--bot", &bot.name,
         ])?)?)
     };
     let initial = inventory()?;
@@ -212,10 +224,10 @@ fn attach(bot: &Bot, command: &str, run: &impl Fn(&[&str]) -> Result<Value>) -> 
         let mut ours = tools
             .own
             .iter()
-            .filter(|entry| matches!(entry.name.as_str(), TOOL | LEGACY_TOOL));
+            .filter(|entry| matches!(entry.name.as_str(), TOOL | PREVIOUS_TOOL | LEGACY_TOOL));
         ours.next().is_some_and(|entry| {
             let expected = match entry.name.as_str() {
-                TOOL => entry.detail == command,
+                TOOL | PREVIOUS_TOOL => entry.detail == command,
                 LEGACY_TOOL => {
                     entry.detail == command
                         || legacy_command.as_deref() == Some(entry.detail.as_str())
@@ -238,7 +250,7 @@ fn attach(bot: &Bot, command: &str, run: &impl Fn(&[&str]) -> Result<Value>) -> 
     if initial
         .own
         .iter()
-        .any(|entry| matches!(entry.name.as_str(), TOOL | LEGACY_TOOL))
+        .any(|entry| matches!(entry.name.as_str(), TOOL | PREVIOUS_TOOL | LEGACY_TOOL))
     {
         return Err(format!(
             "{} already has a different 999K relay tool. Review it in Orca.",
@@ -247,7 +259,7 @@ fn attach(bot: &Bot, command: &str, run: &impl Fn(&[&str]) -> Result<Value>) -> 
         .into());
     }
     run(&[
-        "bot", "tools", "add", command, "--name", TOOL, "--bot", &bot.id,
+        "bot", "tools", "add", command, "--name", TOOL, "--bot", &bot.name,
     ])?;
     let final_inventory = inventory()?;
     if !matches(&final_inventory) || !final_inventory.own.iter().any(|entry| entry.name == TOOL) {
@@ -261,47 +273,33 @@ struct Setup<'a> {
     home: &'a str,
     sender: &'a str,
     bearer: &'a str,
-    peers: Vec<(&'static str, &'static str)>,
+    peer: (&'static str, &'static str),
+    wait_for_approval: bool,
 }
 
 impl Setup<'_> {
     fn resume_command(&self) -> String {
         format!(
-            "{} init --orca --home {} --orca-sender {} --orca-bearer-file {}",
-            self.executable, self.home, self.sender, self.bearer
+            "{} init --orca --orca-peer {} --home {} --orca-sender {} --orca-bearer-file {}",
+            self.executable, self.peer.0, self.home, self.sender, self.bearer
         )
     }
 
     fn pass(
         &self,
         state_path: &Path,
-        retry: Option<&str>,
+        retry: bool,
         run: &impl Fn(&[&str]) -> Result<Value>,
     ) -> Result<(bool, String)> {
+        let (peer, name) = self.peer;
         let _lock = setup_lock(state_path)?;
         let mut pending: Pending = read_private_json(state_path)?.unwrap_or_default();
-        let mut bots: Vec<Bot> = serde_json::from_value(run(&["bot", "list"])?["bots"].clone())?;
-        bots.retain(|bot| bot.server.is_none());
-        if let Some(peer) = retry {
-            if !self.peers.iter().any(|(id, _)| *id == peer) {
-                return Err("Unknown or unauthorized retry peer".into());
-            }
-            pending.offers.remove(peer);
-            pending.handoff = None;
-            pending.save(state_path)?;
-        }
-
-        let mut missing = Vec::new();
-        let mut configured = Vec::new();
-        let mut relay = None;
-        for &(peer, name) in &self.peers {
-            let mut candidates = bots
-                .iter()
-                .filter(|bot| bot.name.eq_ignore_ascii_case(name));
-            let Some(bot) = candidates.next() else {
-                missing.push((peer, name));
-                continue;
-            };
+        let bots: Vec<Bot> = serde_json::from_value(run(&["bot", "list"])?["bots"].clone())?;
+        let mut local = bots.iter().filter(|bot| bot.server.is_none());
+        let mut candidates = local
+            .clone()
+            .filter(|bot| bot.name.eq_ignore_ascii_case(name));
+        if let Some(bot) = candidates.next() {
             if candidates.next().is_some() || !relay_matches(bot, peer) {
                 return Err(format!("Review the existing {name} bot in Orca. Its identity must designate the 999K relay for {peer}.").into());
             }
@@ -313,49 +311,34 @@ impl Setup<'_> {
             if pending.offers.remove(peer) {
                 pending.save(state_path)?;
             }
-            relay.get_or_insert(name);
-            configured.push(name);
+            return Ok((true, format!("Local relay for {name}: bound in Orca.")));
         }
-        let summary = format!(
-            "Configured {}/{}: {}",
-            configured.len(),
-            self.peers.len(),
-            configured.join(", ")
-        );
-        if missing.is_empty() {
-            if pending.handoff.take().is_some() {
-                pending.save(state_path)?;
-            }
-            return Ok((true, summary));
+
+        if retry && pending.offers.remove(peer) {
+            pending.save(state_path)?;
         }
-        let (first, first_name) = missing[0];
-        if bots.is_empty() {
+        if local.next().is_none() {
+            let next = if self.wait_for_approval {
+                "Keep this terminal open. Setup continues after you create the bot.".to_owned()
+            } else {
+                format!(
+                    "After creation, run setup again:\n{}",
+                    self.resume_command()
+                )
+            };
             return Ok((
                 false,
                 format!(
-                    "{summary}\nOrca needs its first bot. Open Bots → New bot, name it {first_name}, set its identity to the following text and select Create with your provider:\n{}\nLeave this setup terminal open. For a noninteractive run, resume from that bot's Home Chat with: {}",
-                    purpose(first),
-                    self.resume_command()
+                    "Open Bots → New bot. Choose your agent and select Create.\n\nName: {name}\nIdentity: {}\n\n{next}",
+                    purpose(peer)
                 ),
             ));
         }
-        let missing_names = missing
-            .iter()
-            .map(|(_, n)| *n)
-            .collect::<Vec<_>>()
-            .join(", ");
-        for (peer, name) in missing {
-            if pending.offers.contains(peer) {
-                continue;
-            }
-            // If the caller is a plain setup terminal, use an already verified
-            // relay's real Home Chat for native offers. Never forge a caller ID.
-            if pending.handoff.is_some() && std::env::var_os("ORCA_AGENT_SESSION_ID").is_none() {
-                break;
-            }
+
+        if !pending.offers.contains(peer) {
             pending.offers.insert(peer.to_owned());
             pending.save(state_path)?;
-            let result = run(&[
+            if let Err(err) = run(&[
                 "bot",
                 "create",
                 "--offer",
@@ -363,83 +346,100 @@ impl Setup<'_> {
                 name,
                 "--purpose",
                 &purpose(peer),
-            ]);
-            if let Err(err) = result {
+            ]) {
                 if err.to_string() != BOT_CHAT_REQUIRED {
                     return Err(format!("{err} Inspect the approval card for {name}. If none exists, repeat with --retry-orca-offer {peer}.").into());
                 }
                 // A wrong-context rejection cannot have offered a card.
                 pending.offers.remove(peer);
                 pending.save(state_path)?;
-                if let Some(bot_name) = relay {
-                    if pending.handoff.is_none() {
-                        let prompt = format!(
-                            "The owner started local 999K setup. Run this setup command once in this Home Chat to propose missing relay bots for owner approval: {} . Do not send any peer messages.",
-                            self.resume_command()
-                        );
-                        pending.handoff = Some(bot_name.to_owned());
-                        pending.save(state_path)?;
-                        if run(&[
-                            "orchestration",
-                            "send",
-                            "--to",
-                            &format!("bot:{bot_name}"),
-                            "--type",
-                            "handoff",
-                            "--subject",
-                            "Set up 999K relay bots",
-                            "--body",
-                            &prompt,
-                        ])
-                        .is_err()
-                        {
-                            return Ok((
-                                false,
-                                format!(
-                                    "{summary}\nIn {bot_name}'s Home Chat, ask it to run: {}",
-                                    self.resume_command()
-                                ),
-                            ));
-                        }
-                    }
-                } else {
-                    return Ok((
-                        false,
-                        format!(
-                            "{summary}\nIn an existing Orca bot's Home Chat, ask it to run: {}",
-                            self.resume_command()
-                        ),
-                    ));
-                }
-                break;
+                return Ok((
+                    false,
+                    format!(
+                        "In an existing Orca bot's Home Chat, ask it to run: {}",
+                        self.resume_command()
+                    ),
+                ));
             }
         }
-        if let Some(bot_name) = &pending.handoff
-            && pending.offers.is_empty()
-        {
-            return Ok((
-                false,
-                format!(
-                    "{summary}\nWaiting for {bot_name}'s setup turn. If no approval cards appear, ask its Home Chat to run: {}",
-                    self.resume_command()
-                ),
-            ));
-        }
+
         Ok((
             false,
             format!(
-                "{summary}\nWaiting for owner-approved bots: {missing_names}. Check the relay Home Chat for Create bot cards. If a card was dismissed, use --retry-orca-offer <peer> after checking Orca."
+                "Waiting for owner approval for {name}. If its Create bot card was dismissed, repeat with --retry-orca-offer {peer} after checking Orca."
             ),
         ))
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PeerAction {
+    List(Vec<&'static str>),
+    SetUp((&'static str, &'static str)),
+}
+
+fn authorized_peer(
+    selected: Option<&str>,
+    may_provision: bool,
+    mut discover: impl FnMut() -> io::Result<Vec<String>>,
+    provision: impl FnOnce(&str) -> io::Result<()>,
+) -> Result<PeerAction> {
+    let available = discover()?;
+    let Some(selected) = selected else {
+        let peers: Vec<_> = PEERS
+            .iter()
+            .filter_map(|(id, _)| available.iter().any(|peer| peer == id).then_some(*id))
+            .collect();
+        return Ok(PeerAction::List(peers));
+    };
+    let peer = PEERS
+        .iter()
+        .copied()
+        .find(|(id, _)| *id == selected)
+        .ok_or("Unsupported Orca peer")?;
+    if !available.iter().any(|id| id == selected) {
+        if !may_provision {
+            return Err(format!("Orca sender is not authorized for {selected}.").into());
+        }
+        provision(selected)?;
+        if !discover()?.iter().any(|id| id == selected) {
+            return Err(format!(
+                "Orca sender is still not authorized for {selected} after local setup."
+            )
+            .into());
+        }
+    }
+    Ok(PeerAction::SetUp(peer))
+}
+
+pub(crate) struct OnboardOptions<'a> {
+    pub(crate) selected: Option<&'a str>,
+    pub(crate) retry: bool,
+    pub(crate) may_provision: bool,
+    pub(crate) remote: RemoteOptions<'a>,
+    pub(crate) proof_original: Option<&'a str>,
+    pub(crate) email_recipient: Option<&'a str>,
+    pub(crate) relay_command: Option<&'a Path>,
 }
 
 pub(crate) fn onboard(
     home: &Path,
     sender: &str,
     bearer_file: &Path,
-    retry: Option<&str>,
+    options: OnboardOptions<'_>,
 ) -> Result<()> {
+    let OnboardOptions {
+        selected,
+        retry,
+        may_provision,
+        remote,
+        proof_original,
+        email_recipient,
+        relay_command,
+    } = options;
+    if email_recipient.is_some() && !matches!(selected, Some("cue" | "instinct")) {
+        return Err("Email arrival setup is available for Cue and Instinct only.".into());
+    }
     if sender.is_empty()
         || !sender
             .bytes()
@@ -447,39 +447,117 @@ pub(crate) fn onboard(
     {
         return Err("Invalid sender mailbox".into());
     }
-    let home = cloud_setup::require_home(home)?;
-    let executable = std::env::current_exe()?;
-    let available = stdio_mcp::orca_recipients(&home, sender, bearer_file)?;
-    let peers: Vec<_> = PEERS
-        .into_iter()
-        .filter(|(id, _)| available.iter().any(|s| s == id))
-        .collect();
-    if peers.is_empty() {
-        return Err("No supported Orca peers were found for this sender.".into());
+    if email_recipient.is_some() && (!may_provision || retry) {
+        return Err("Configure email arrivals with the default managed local sender.".into());
     }
+    let home = cloud_setup::require_home(home)?;
+    let mut configured_email = false;
+    let peer = match authorized_peer(
+        selected,
+        may_provision && !retry,
+        || stdio_mcp::orca_recipients(&home, sender, bearer_file),
+        |name| {
+            match email_recipient {
+                Some(recipient) => {
+                    let result = crate::lifecycle::add_orca_peer_with_email(
+                        &home,
+                        name,
+                        recipient,
+                        relay_command,
+                    );
+                    configured_email = result.is_ok();
+                    result
+                }
+                None => crate::lifecycle::add_orca_peer(&home, name),
+            }
+            .map(|_| ())
+        },
+    )? {
+        PeerAction::SetUp(peer) => peer,
+        PeerAction::List(peers) => {
+            if peers.is_empty() {
+                println!("Authorized Orca peers: 0");
+            } else {
+                println!("Authorized Orca peers: {}", peers.join(", "));
+            }
+            return Ok(());
+        }
+    };
+    if let Some(original) = proof_original {
+        match stdio_mcp::orca_linked_reply(&home, sender, bearer_file, peer.0, original) {
+            Ok(true) => println!(
+                "Linked reply from {}: verified in the hub. Check the originating project chat for the answer.",
+                peer.0
+            ),
+            Ok(false) => println!(
+                "Linked reply from {}: pending for the selected original request.",
+                peer.0
+            ),
+            Err(_) => println!(
+                "Linked reply from {}: could not verify the selected original request.",
+                peer.0
+            ),
+        }
+        return Ok(());
+    }
+    if let Some(recipient) = email_recipient
+        && !configured_email
+    {
+        crate::lifecycle::add_orca_peer_with_email(&home, peer.0, recipient, relay_command)?;
+    }
+    remote::prepare(&home, peer.0, remote);
+    print_email_status(&home, peer.0);
+    println!(
+        "Linked reply from {}: unverified. Complete a request and matching reply in the originating project chat.",
+        peer.0
+    );
+    println!("{}", crate::orca_handoff::instructions(peer.0));
+    let executable = std::env::current_exe()?;
+    let wait_for_approval = io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && std::env::var_os("ORCA_AGENT_SESSION_ID").is_none();
     let setup = Setup {
         executable: path_arg(&executable)?,
         home: path_arg(&home)?,
         sender,
         bearer: path_arg(bearer_file)?,
-        peers,
+        peer,
+        wait_for_approval,
     };
     let state_path = home.join("orca-pending-offers.json");
-    let wait = io::stdin().is_terminal()
-        && io::stdout().is_terminal()
-        && std::env::var_os("ORCA_AGENT_SESSION_ID").is_none();
     let mut previous = String::new();
     let mut retry = retry;
     loop {
-        let (complete, status) = setup.pass(&state_path, retry.take(), &orca)?;
+        let (complete, status) = setup.pass(&state_path, std::mem::take(&mut retry), &orca)?;
         if previous != status {
             println!("{status}");
             previous = status;
         }
-        if complete || !wait {
+        if complete || !setup.wait_for_approval {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+}
+
+fn print_email_status(home: &Path, peer: &str) {
+    if !matches!(peer, "cue" | "instinct") {
+        return;
+    }
+    let path = home.join(".pigeonmq-lifecycle/relay-profiles.json");
+    match read_private_json::<radio999k::arrival_notify::RelayConfig>(&path) {
+        Ok(Some(config)) if config.contains_key(peer) => {
+            println!("Email arrivals for {peer}: configured. Provider delivery unverified.");
+        }
+        Ok(_) if peer == "instinct" => {}
+        Ok(_) => {
+            println!(
+                "Email arrivals for {peer}: waiting for a recipient and an approved relay command. Pass --orca-email-recipient and, if needed, --orca-relay-command to opt in."
+            );
+        }
+        Err(_) => {
+            println!("Email arrivals for {peer}: could not verify the private relay settings.");
+        }
     }
 }
 
@@ -496,7 +574,8 @@ mod tests {
             home: "/fixture",
             sender: "codex-cloud",
             bearer: "/fixture/header",
-            peers: vec![("dot", "Dot"), ("cue", "Cue"), ("muse", "Muse")],
+            wait_for_approval: true,
+            peer: ("dot", "Dot"),
         }
     }
 
@@ -514,9 +593,17 @@ mod tests {
             assert_eq!(args, ["bot", "list"]);
             Ok(json!({"bots":[{"id":"remote","name":"Dot","server":{"name":"elsewhere"}}]}))
         };
-        let (done, summary) = setup().pass(&state, None, &run).unwrap();
+        let (done, summary) = setup().pass(&state, false, &run).unwrap();
         assert!(!done);
+        assert!(summary.contains("Name: Dot"));
         assert!(summary.contains("New bot"));
+        assert!(!summary.contains("--orca-bearer-file"));
+        let one_shot = Setup {
+            wait_for_approval: false,
+            ..setup()
+        };
+        let (_, summary) = one_shot.pass(&state, false, &run).unwrap();
+        assert!(summary.contains(&one_shot.resume_command()));
         assert!(!state.exists());
     }
 
@@ -530,20 +617,29 @@ mod tests {
                 ["bot", "list"] => Ok(json!({"bots":[{"id":"local","name":"Coordinator"}]})),
                 ["bot", "create", "--offer", "--name", name, "--purpose", _] => {
                     cards.borrow_mut().push(name.to_string());
-                    if *name == "Cue" {
-                        return Err("unknown receipt".into());
-                    }
-                    Ok(json!({"message":"card offered"}))
+                    Err("unknown receipt".into())
                 }
                 _ => panic!("unexpected operation"),
             }
         };
-        assert!(setup().pass(&state, None, &run).is_err());
-        assert_eq!(*cards.borrow(), ["Dot", "Cue"]);
-        assert!(!setup().pass(&state, None, &run).unwrap().0);
-        assert_eq!(*cards.borrow(), ["Dot", "Cue", "Muse"]);
-        assert!(setup().pass(&state, Some("cue"), &run).is_err());
-        assert_eq!(*cards.borrow(), ["Dot", "Cue", "Muse", "Cue"]);
+        let initial = Pending {
+            offers: BTreeSet::from(["cue".into()]),
+            handoff: None,
+        };
+        initial.save(&state).unwrap();
+        assert!(setup().pass(&state, false, &run).is_err());
+        assert_eq!(*cards.borrow(), ["Dot"]);
+        assert!(!setup().pass(&state, false, &run).unwrap().0);
+        assert_eq!(*cards.borrow(), ["Dot"]);
+        assert!(setup().pass(&state, true, &run).is_err());
+        assert_eq!(*cards.borrow(), ["Dot", "Dot"]);
+        assert_eq!(
+            read_private_json::<Pending>(&state)
+                .unwrap()
+                .unwrap()
+                .offers,
+            BTreeSet::from(["cue".into(), "dot".into()]),
+        )
     }
 
     #[test]
@@ -554,9 +650,13 @@ mod tests {
             specialty: Some(purpose("dot")),
             server: None,
         };
-        for (tool, path) in [(TOOL, "/bin/999k"), (LEGACY_TOOL, "/bin/pigeonmq")] {
+        for (tool, path) in [
+            (TOOL, "/bin/999k"),
+            (PREVIOUS_TOOL, "/bin/999k"),
+            (LEGACY_TOOL, "/bin/pigeonmq"),
+        ] {
             let run = |args: &[&str]| -> Result<Value> {
-                assert_eq!(args, ["bot", "tools", "--bot", "local-id"]);
+                assert_eq!(args, ["bot", "tools", "--bot", "Dot"]);
                 Ok(json!({"own":[{"name": tool, "remote": false,
                                   "detail": format!("{path} --peer dot")}],"inherited":[]}))
             };
@@ -586,7 +686,7 @@ mod tests {
         let added = std::cell::Cell::new(false);
         let run = |args: &[&str]| -> Result<Value> {
             match args {
-                ["bot", "tools", "--bot", "local-id"] => {
+                ["bot", "tools", "--bot", "Dot"] => {
                     let own = if added.get() {
                         vec![json!({"name": TOOL, "remote": false, "detail": command})]
                     } else {
@@ -602,7 +702,7 @@ mod tests {
                     "--name",
                     TOOL,
                     "--bot",
-                    "local-id",
+                    "Dot",
                 ] => {
                     assert_eq!(*detail, command);
                     assert!(!added.replace(true));
@@ -617,6 +717,86 @@ mod tests {
     }
 
     #[test]
+    fn discovery_only_lists_authorized_supported_peers_without_provisioning() {
+        for (available, expected) in [
+            (vec!["other"], vec![]),
+            (vec!["cue", "other", "dot"], vec!["dot", "cue"]),
+        ] {
+            let discovered = authorized_peer(
+                None,
+                true,
+                || Ok(available.iter().map(|id| (*id).to_owned()).collect()),
+                |_| panic!("discovery must not provision"),
+            )
+            .unwrap();
+            assert_eq!(discovered, PeerAction::List(expected));
+        }
+    }
+
+    #[test]
+    fn authorization_fences_provisioning_and_requires_a_fresh_read() {
+        let calls = RefCell::new(Vec::new());
+        let already = authorized_peer(
+            Some("cue"),
+            true,
+            || Ok(vec!["cue".into()]),
+            |_| panic!("an already authorized peer must not be provisioned"),
+        )
+        .unwrap();
+        assert_eq!(already, PeerAction::SetUp(("cue", "Cue")));
+        assert!(
+            authorized_peer(
+                Some("cue"),
+                false,
+                || Ok(vec!["dot".into()]),
+                |_| panic!("an alternate sender or retry must not provision")
+            )
+            .is_err()
+        );
+        assert!(
+            authorized_peer(
+                Some("cue"),
+                true,
+                || {
+                    let mut calls = calls.borrow_mut();
+                    calls.push("discover".to_owned());
+                    Ok(vec!["dot".into()])
+                },
+                |id| {
+                    calls.borrow_mut().push(id.to_owned());
+                    Ok(())
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(*calls.borrow(), ["discover", "cue", "discover"]);
+    }
+
+    #[test]
+    fn binding_touches_only_the_selected_local_bot() {
+        let home = scratch();
+        let state = home.path().join("pending.json");
+        let selected = setup();
+        let command = "/bin/999k stdio-mcp --home /fixture --mailbox codex-cloud --bearer-file /fixture/header --peer dot";
+        let run = |args: &[&str]| -> Result<Value> {
+            match args {
+                ["bot", "list"] => Ok(json!({"bots":[
+                    {"id":"dot","name":"Dot","specialty":purpose("dot")},
+                    {"id":"cue","name":"Cue","specialty":purpose("cue")},
+                ]})),
+                ["bot", "tools", "--bot", "Dot"] => Ok(
+                    json!({"own":[{"name":TOOL,"remote":false,"detail":command}],"inherited":[]}),
+                ),
+                _ => panic!("must not access the other bot"),
+            }
+        };
+        let (done, summary) = selected.pass(&state, false, &run).unwrap();
+        assert!(done);
+        assert_eq!(summary, "Local relay for Dot: bound in Orca.");
+        assert!(selected.resume_command().contains("--orca-peer dot"));
+    }
+
+    #[test]
     fn corrupted_receipt_prevents_another_offer() {
         let home = scratch();
         let state = home.path().join("pending.json");
@@ -624,6 +804,6 @@ mod tests {
         let run = |_args: &[&str]| -> Result<Value> {
             panic!("must stop before contacting Orca");
         };
-        assert!(setup().pass(&state, None, &run).is_err());
+        assert!(setup().pass(&state, false, &run).is_err());
     }
 }

@@ -330,6 +330,13 @@ fn muse_now_ms() -> Result<u64, Fault> {
 }
 
 impl MusePrincipal {
+    pub(crate) fn validate_pairing_registration(&self) -> Result<(), Fault> {
+        let path = self
+            .registration
+            .as_deref()
+            .ok_or((503, "registration_unavailable"))?;
+        radio999k::registration::validate_registration(Path::new(path), "muse", "muse")
+    }
     fn registered_peers(&self) -> Result<Vec<String>, Fault> {
         radio999k::registration::active_peers(
             Path::new(

@@ -1,5 +1,7 @@
 # Quickstart
 
+The examples use the new `p-999k_*` MCP names. On the released 0.2.0 hub or stdio client, use the `radio999k_*` names returned by `tools/list`.
+
 Install 999K, set up a local mailbox on macOS, and connect a client over stdio.
 A reverse tunnel is optional and is only for a remote agent.
 For agent-specific connections, see [agents and capabilities](agents.md).
@@ -9,13 +11,13 @@ For agent-specific connections, see [agents and capabilities](agents.md).
 ## 1. Install
 
 The 0.2.0 installer supports Apple Silicon Macs and Linux on x86-64 and ARM64.
-Use the installer from [GitHub Releases](https://github.com/lazy9sascha/999k/releases) when the release assets are available.
+Use the installer from [GitHub Releases](https://github.com/lazy9sascha/p-999k/releases) when the release assets are available.
 It installs `999k` and `999k-dot-resolve` in `$HOME/.local/bin` by default. No Rust toolchain is needed.
 
 ```sh
 version=0.2.0
 curl -q --proto '=https' -fLsS -o 999k-install.sh \
-  "https://github.com/lazy9sascha/999k/releases/download/$version/install.sh" &&
+  "https://github.com/lazy9sascha/p-999k/releases/download/$version/install.sh" &&
 sh ./999k-install.sh
 ```
 
@@ -90,7 +92,7 @@ If your client uses an `mcpServers` object, enter this configuration. Otherwise,
 ```json
 {
   "mcpServers": {
-    "radio999k": {
+    "p-999k": {
       "command": "/absolute/path/to/999k",
       "args": [
         "stdio-mcp",
@@ -115,25 +117,37 @@ See [Local MCP over stdio](configuration.md#local-mcp-over-stdio) for foreground
 
 #### Connect Orca to your existing peers
 
-After setup, ask from the chat you are in. For example, “Ask Muse for a shorter title for ‘Getting started with 999K’.” Your project agent can bring Muse’s answer back to that question.
+Use the CLI from this checkout with the local [P-999K 0.2.1 plugin archive](../packaging/README.md#orca-plugin-archive). The published 999K 0.2.0 CLI requires an existing hub. Peer selection needs the updated CLI. The Orca catalog ID is `lazy9sascha.p-999k`. Catalog publication is pending.
 
-Open **Bots → Muse** to see the bot’s Home Chat. It shows tool calls and the bot’s own updates. **Queued** means 999K accepted the question. If Muse replies later, the bot may need another check to retrieve the matching answer.
+1. Install the CLI on the Mac that will run the hub. Install the plugin in Orca and review its permissions. In a local workspace, open **P-999K** in the right sidebar. Choose **Initial setup** and open its terminal. On a fresh home, setup starts the local hub with its private stdio socket, creates one sender and lists zero external peers.
+2. To manage connections in chat, select **Set up a management bot**. In **Bots → New bot**, create **P-999K** with the purpose shown in the panel. Open its Home Chat and ask **“Connect Muse.”** You can also select Muse in the plugin panel. Choose **I’ll do it myself** for the manual steps, or **Ask my assistant to do it** to copy a request to an assistant that already has that capability. Both paths run the same command on the Mac:
 
-Use the Mac that runs the hub. Enable its [private stdio socket](configuration.md#local-mcp-over-stdio) and use the existing sender mailbox. The sender needs permission to send to the peers and read their replies. Peers see that mailbox as the sender. Keep its bearer in the private file on your Mac.
+   ```sh
+   "$HOME/.local/bin/999k" init --orca --orca-peer muse
+   ```
 
-1. Install the native 999K executable and the [Orca plugin archive](../packaging/README.md#orca-plugin-archive). Review the plugin permissions in Orca. Open a local workspace, select **P-999K**, then **Open setup terminal**. For the default installation this runs `999k init --orca`.
-2. Leave the setup terminal open. On an empty Orca profile, use **Bots → New bot**, enter the name and identity shown in the terminal, choose the provider, and select **Create**. Setup binds that bot to its existing peer, then asks its Home Chat to propose the remaining relay bots. If Orca cannot deliver the handoff, the terminal prints a command for that Home Chat. Review the cards there. Each time you select **Create bot**, the terminal detects the new bot and attaches its scoped connector. You can close setup and run it again. If you dismissed a card, check Orca before using `--retry-orca-offer <peer>`.
-3. Inspect the setup result. In each configured bot’s Home Chat, ask it to list recipients through its own connector. A new connector is named `radio999k` and offers `radio999k_recipients`. A preserved connector may still be named `pigeonmq` and advertise `pigeonmq_recipients`. Use the name in its tool list. It should return only the bound peer. A configured tool can still be unavailable to an existing chat. Verify the call before sending a message.
-4. Send one message. Once the tool returns an original ID, the bot can report **Queued**. To get the answer, use `radio999k_wait` in that chat with the original ID as `in_reply_to`. A matching peer reply confirms the exchange. Retry an empty wait with the same ID.
+3. Create or approve the relay in Orca’s native UI when prompted. If setup prints a resume command, run it after approval. Setup reuses a relay with the same peer binding. A command run unattended prints the native action still required so an owner can complete it.
+4. Complete the selected peer’s transport setup below. Where supported, copy the suggested prompt into the peer’s existing conversation. Complete consent and credential entry using the app’s own settings or secure inputs. An HTTPS-capable runtime can use the mailbox directly where the app supports it.
+5. Ask in your project chat, for example, **“Ask Muse for a shorter release title.”** The relay reports **Queued** after the hub accepts the request. Verify the exchange by checking that the matching reply returns to the project chat that asked. If you have the original request ID, rerun the same peer setup with `--orca-proof-original <original-id>` to check the linked reply in the hub without sending another message.
 
-For a custom installation or an existing sender bearer at a different path, run:
+Run `999k init --orca` with no selection to list authorized peers. This stays local. Installation and verification use the CLI and supported app controls. External providers may require their own owner approval or configuration. A bound relay does not confirm provider enrollment or a completed exchange.
+
+#### Prepare the selected peer’s transport
+
+- **Dot** uses its [private Secure MCP Tunnel](configuration.md#dot-through-a-private-secure-mcp-tunnel). Set it up from the Dot workspace. The Orca command binds the local relay and asks you to verify the private transport from Dot.
+- **Muse and GrokBot** use an approved HTTPS MCP route. For your own [HTTPS ingress](tunnels.md#use-your-own-https-origin), publish the selected peer’s exact path and keep the hub on loopback. Put the full endpoint in the owner-private `orca-ingress.json` in the same hub home. Use a JSON object keyed by the peer ID, for example `{"muse":"https://radio.example.com/muse/mcp"}`. Set file mode 600. When an operator-run registration provider is configured for that one route, set `RADIO999K_REGISTRATION_URL` and add `--orca-reserve-address` to the selected setup command. Approve setup in the browser. The CLI connects the hosted origin only if the provider approves exactly that route.
+- **Cue and Instinct** use an approved HTTPS MCP route configured with the same ingress steps. Cue can use [email arrivals](configuration.md#opt-in-to-email-arrivals). The Mac relay sends an arrival notice and Cue’s mail integration handles the wake. Enable it explicitly with `--orca-email-recipient` and supply an approved `--orca-relay-command` if needed. The opt-in covers new arrivals. Instinct setup starts in its existing iMessage conversation. An existing Instinct email relay can still be configured explicitly. See [peer pairing and verification](pairing.md#check-the-existing-conversation) for direct HTTPS runtime use.
+
+For a reserved address, use the origin in the owner-private `hosted-connection.json` and append the selected MCP route. For your own ingress, use its exact endpoint from `orca-ingress.json`. When the selected HTTPS endpoint is available, setup checks authenticated MCP access on that route. To use a separate peer credential, pass its private file path with `--orca-remote-bearer-file`. Local binding, authenticated transport, and a linked reply are separate results.
+
+To hand a remote peer its credential, use a [one-time pairing code](pairing.md). Approve the peer’s exact HTTPS pairing and MCP paths first. The peer redeems the code over HTTPS and saves the Bearer privately. Dot follows its private setup above.
+
+For a custom installation, pass absolute paths. Orca relay tool commands require paths without spaces or shell metacharacters.
 
 ```sh
-"$RADIO999K_BIN" init --orca --home /absolute/path/to/hub-home \
+"$RADIO999K_BIN" init --orca --orca-peer muse --home /absolute/path/to/hub-home \
   --orca-sender codex-cloud --orca-bearer-file /absolute/path/to/private-bearer-file
 ```
-
-Setup reads the existing authorized recipients and configures the supported ones among Dot, Instinct, Cue, Muse and GrokBot. An existing bot must have the expected name and an identity that designates that 999K peer. Setup reports conflicting names and tools. For this Orca version, use absolute executable, home and bearer paths without spaces or shell metacharacters.
 
 When a project agent calls a bot, keep the Orca question ID with the 999K original ID. After retrieving the matching answer, the bot can use `orca orchestration reply --id <original-orca-question-id> --body-file -` and pass the answer on standard input.
 
@@ -145,7 +159,7 @@ Set `version` to the installed version, without a leading `v`. Use its copy of t
 ```sh
 version=0.2.0
 curl -q --proto '=https' -fLsS -o 999k-smoke.sh \
-  "https://raw.githubusercontent.com/lazy9sascha/999k/$version/scripts/smoke-release.sh" &&
+  "https://raw.githubusercontent.com/lazy9sascha/p-999k/$version/scripts/smoke-release.sh" &&
 sh ./999k-smoke.sh --installed "$(dirname "$RADIO999K_BIN")" "$version"
 ```
 
@@ -270,7 +284,7 @@ For example, add this entry to [Claude Code's `.mcp.json`](https://code.claude.c
 ```json
 {
   "mcpServers": {
-    "radio999k": {
+    "p-999k": {
       "type": "http",
       "url": "http://127.0.0.1:54843/instinct/mcp",
       "headers": {
@@ -292,7 +306,7 @@ RADIO999K_TOKEN="$(cat /absolute/path/to/protected-token-file)" claude
 Do not paste the token into chat, source, config, or a command line.
 If the client cannot accept a secure Bearer value, stop. An OAuth-only connection cannot use this Bearer flow.
 This example configures the client only. It does not enable a hub route, grant mailbox access, or set up Events.
-Make a permitted read-only call such as `radio999k_inbox` to confirm access.
+Make a permitted read-only call such as `p-999k_inbox` to confirm access.
 To verify delivery, read a known test message sent by an authorized peer.
 
 ### Muse or Grok Bot handoff on macOS
@@ -312,16 +326,16 @@ Paste it into the app's chat if it accepts setup by prompt. Then copy the token 
 
 Copy something else afterwards to clear the clipboard. If the app has no secure field for a Bearer token, stop: that app can't use this connection yet.
 
-**Check it works:** ask the app to `radio999k_read` a known test message ID. A tool list alone only proves the connector loaded.
+**Check it works:** ask the app to `p-999k_read` a known test message ID. A tool list alone only proves the connector loaded.
 
 ### Upgrade an existing app to 0.1.2
 
 On November 19, 2026, the hub listed `radio999k_inbox` and `radio999k_read_thread` while the saved Dot and Codex apps still had older catalogs. Refreshing each saved app restored the tools. Check the serving hub and each saved app separately during an upgrade.
 
 1. Check the replacement binary with `"$RADIO999K_BIN" --version`. Restart the existing hub with that binary using the same `--home`, routes, policies, and transport. The release uses the existing queue, including its sent and received history.
-2. Use an authenticated MCP client to call `tools/list` on the serving `/dot/mcp`, `/codex/mcp`, `/muse/mcp`, `/grok/mcp`, and any enabled registered mailbox route with read access. For `radio999k_inbox`, check that `inputSchema.properties` includes `scope`, `query`, and `order` alongside `limit` and `continuation`. Use each route's existing credential. If a route still advertises the old schema, verify which hub serves it before refreshing the app. For a manual request, [negotiate MCP first](tunnels.md#verify-and-update-the-clients).
+2. Use an authenticated MCP client to call `tools/list` on the serving `/dot/mcp`, `/codex/mcp`, `/muse/mcp`, `/grok/mcp`, and any enabled registered mailbox route with read access. For `p-999k_inbox`, check that `inputSchema.properties` includes `scope`, `query`, and `order` alongside `limit` and `continuation`. Use each route's existing credential. If a route still advertises the old schema, verify which hub serves it before refreshing the app. For a manual request, [negotiate MCP first](tunnels.md#verify-and-update-the-clients).
 3. Refresh discovery for the existing saved Dot and Codex connections in the intended ChatGPT account or workspace. Open each connection in ChatGPT Plugins and use **Refresh** if available. The server's `tools/list` checks the running hub. The app refresh pulls that schema into ChatGPT. Reuse each app ID, connection, and existing Events subscription. [OpenAI's metadata refresh guide](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata).
-4. Select the same saved app in each intended conversation and call `radio999k_inbox` with `{"scope":"all","query":"<known test phrase>"}`. Inspect the tool arguments and confirm known sent and received test messages from before the upgrade appear with the same IDs, newest first, with metadata only. Check `{"scope":"inbox","query":"<known test phrase>"}` for the received test messages. Where a conversation still shows the old schema after refresh, try the same saved app in a new conversation and verify the call again. [More mailbox examples](architecture.md#mcp-tools).
+4. Select the same saved app in each intended conversation and call `p-999k_inbox` with `{"scope":"all","query":"<known test phrase>"}`. Inspect the tool arguments and confirm known sent and received test messages from before the upgrade appear with the same IDs, newest first, with metadata only. Check `{"scope":"inbox","query":"<known test phrase>"}` for the received test messages. Where a conversation still shows the old schema after refresh, try the same saved app in a new conversation and verify the call again. [More mailbox examples](architecture.md#mcp-tools).
 
 ## 5. Optional: Grok Bot wake
 
@@ -342,7 +356,7 @@ The notifier reads the Keychain item once at startup. Restart the hub after you 
 Use the two mode 600 files `grok-webhook-url` and `grok-webhook-auth` only when Keychain mode is not selected. In file mode, the notifier reads both files for each send. In Keychain mode, it does not fall back to files.
 
 In the routine's instructions, tell Grok Bot to do the following.
-Read the message with `radio999k_read` on the wake's `message_id`.
+Read the message with `p-999k_read` on the wake's `message_id`.
 Never trust the webhook body.
 Handle each ID once.
 Treat `reply_conflict` as already answered.

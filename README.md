@@ -34,13 +34,16 @@ flowchart LR
     subgraph Orca["Orca on your Mac"]
         Chat["Project chat agent"]
         Bot["Muse relay bot"]
-        Chat -->|Ask via Orca orchestration| Bot
+        Chat -->|Ask| Bot
     end
-    Bot -->|Send and check via stdio| Hub["999K hub on your Mac"]
-    Muse["Your existing Muse agent"] -->|Poll mailbox and post reply via MCP| Hub
+    Bot -->|Send and check via stdio| Hub["999K hub on 127.0.0.1"]
+    Muse["Existing Muse"] -->|MCP over HTTPS + Bearer| Tunnel["Public HTTPS tunnel"]
+    Tunnel --> Hub
 ```
 
-Muse reads the question from its mailbox and sends a linked reply. The relay bot can check later and return the matching reply to the project chat. Dot, Grok Bot, Cue and Instinct can use the same pattern. Cue and Instinct can also receive an email when a message is waiting. They read and answer it through MCP.
+The hub binds to loopback. Muse polls `/muse/mcp` through the public tunnel and the hub’s reverse tunnel. The plugin does not open that tunnel. Muse posts a linked reply on that same route. The relay bot can check later and return the matching reply to the project chat. Dot, Grok Bot, Cue and Instinct are meant to use their own existing routes. Cue and Instinct can also receive an email when a message is waiting. They read and answer it through MCP.
+
+This drawing is the intended path. It is not a completed round trip for five bound stdio connectors. 999K 0.2.0 is the shipped CLI and hub. Earlier live replies used the Cloud Codex mailbox. Synthetic stdio used a temporary queue. A fresh Orca profile has not finished that round trip with the five real peers.
 
 Local clients can use the same hub directly through stdio. [Hub architecture](docs/architecture.md)
 
@@ -59,12 +62,12 @@ For local Codex sessions, see the [companion project](https://github.com/lazy9sa
 
 ## Quickstart
 
-The public command is `999k`. Use an installer from [GitHub Releases](https://github.com/lazy9sascha/999k/releases) for your platform. The installer places `999k` and `999k-dot-resolve` in `$HOME/.local/bin`. It does not start a service or open a tunnel.
+The public command is `999k`. Use an installer from [GitHub Releases](https://github.com/lazy9sascha/p-999k/releases) for your platform. The installer places `999k` and `999k-dot-resolve` in `$HOME/.local/bin`. It does not start a service or open a tunnel.
 
 ```sh
 version=0.2.0
 curl -q --proto '=https' -fLsS -o 999k-install.sh \
-  "https://github.com/lazy9sascha/999k/releases/download/$version/install.sh" &&
+  "https://github.com/lazy9sascha/p-999k/releases/download/$version/install.sh" &&
 sh ./999k-install.sh
 ```
 
@@ -88,7 +91,7 @@ A reverse tunnel is optional. Use it only for a remote agent.
 - Managed setup, Keychain, and native Codex roles need macOS.
 - The Orca plugin needs Orca 1.4.268 or newer. Review the plugin permissions and each bot creation request in Orca.
 - Keep an existing hub on its current path. Read the Quickstart before you add stdio to a home that already runs.
-- Release archives exist only for targets published on [GitHub Releases](https://github.com/lazy9sascha/999k/releases). Use the Quickstart to build 999K when that list has no archive for your machine.
+- Release archives exist only for targets published on [GitHub Releases](https://github.com/lazy9sascha/p-999k/releases). Use the Quickstart to build 999K when that list has no archive for your machine.
 
 ## Documentation
 
@@ -98,7 +101,7 @@ A reverse tunnel is optional. Use it only for a remote agent.
 - [Research log](docs/research.md): what we tested and what is still unverified.
 - [Contributing](CONTRIBUTING.md): how to test a change.
 
-Trying an agent we have not listed? [Tell us what worked.](https://github.com/lazy9sascha/999k/issues)
+Trying an agent we have not listed? [Tell us what worked.](https://github.com/lazy9sascha/p-999k/issues)
 
 ## License
 

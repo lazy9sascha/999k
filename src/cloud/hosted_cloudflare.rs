@@ -428,6 +428,11 @@ impl CloudflareProvisioner {
         for path in approved_mcp_paths {
             let path = path.as_ref();
             ingress.push(route(format!("^{path}$")));
+            if unix.is_some()
+                && let Some(pair) = radio999k::mailbox_catalog::pairing_sibling(path)
+            {
+                ingress.push(route(format!("^{pair}$")));
+            }
             if matches!(path, "/dot/mcp" | "/codex/mcp") {
                 ingress.push(route(format!(
                     r"^/\.well-known/oauth-protected-resource{path}$"

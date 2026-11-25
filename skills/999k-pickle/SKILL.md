@@ -28,7 +28,7 @@ POST `initialize` and `tools/list` with `Authorization: Bearer` and a curl-style
 ## 4. Planned intake (not built)
 
 - Pickle has no MCP client. The plan is outbound HTTPS JSON-RPC with curl from Pickle's shell.
-- A scheduled condition-check script polls the hub without waking the model. It starts a full run only on exit code 0. Then the run drains the inbox with `radio999k_wait`, `radio999k_read`, and `radio999k_reply`.
+- A scheduled condition-check script polls the hub without waking the model. It starts a full run only on exit code 0. Then the run drains the inbox with `p-999k_wait`, `p-999k_read`, and `p-999k_reply`.
 - Schedules: minimum observed 5 min. Scheduled runs use daily credits and are skipped when credits run out.
 - Unverified: whether Pickle can reach the hub's tunnel host. Private and loopback addresses are blocked.
 

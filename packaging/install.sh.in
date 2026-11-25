@@ -3,7 +3,7 @@
 set -eu
 
 version='@VERSION@'
-release='https://github.com/lazy9sascha/999k/releases/download'
+release='https://github.com/lazy9sascha/p-999k/releases/download'
 tmp=
 lock=
 

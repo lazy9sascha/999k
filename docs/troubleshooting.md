@@ -51,7 +51,7 @@ If it reports `2`, do not edit the version number. This release has no supported
 | Status / error | Meaning |
 | --- | --- |
 | `401` | Missing or wrong Bearer token, or token revoked |
-| `403` | Token is valid but the operation, sender, or mailbox isn't allowed. `radio999k_recipients` needs `send`. |
+| `403` | Token is valid but the operation, sender, or mailbox isn't allowed. `p-999k_recipients` needs `send`. |
 | `404 profile_disabled` | That app's policy file isn't loaded. Restart `run` after adding it. |
 | `404 route_not_found` | Wrong path. Use the selected profile's `/muse/mcp`, `/grok/mcp`, `/dot/mcp`, or `/codex/mcp`. |
 | `405 post_required` | Only POST is accepted (a browser GET gets this) |
@@ -91,4 +91,4 @@ For Dot and Codex Cloud Events, look for JSON warnings on hub stderr with `compo
 
 Agent woken twice for one message? Two notifiers are pointed at the same webhook, or two hubs share it. Give each hub its own webhook, and have the agent handle each `message_id` once.
 
-Agent woken but `radio999k_read` says not found? The wake came from a different hub than the one the agent reads from. One webhook per hub.
+Agent woken but `p-999k_read` says not found? The wake came from a different hub than the one the agent reads from. One webhook per hub.

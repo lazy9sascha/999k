@@ -317,7 +317,7 @@ printf '%s %s\n' "$1" "$2" >> "$0.out"
             "/dot/mcp",
             TOKEN,
             &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-                "name":"radio999k_read","arguments":{"message_id":self.id}
+                "name":"p-999k_read","arguments":{"message_id":self.id}
             }}),
         )
         .unwrap();

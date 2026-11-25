@@ -10,7 +10,7 @@ on:
       - Cargo.lock
       - LICENSE
       - 'packaging/**'
-      - 'plugins/orca-999k/**'
+      - 'plugins/p-999k/**'
       - 'scripts/**'
       - 'src/**'
       - tests/release_install.py
@@ -143,7 +143,7 @@ jobs:
         shell: bash
         id: plugin
         run: |
-          version=$(jq -er .version plugins/orca-999k/orca-plugin.json)
+          version=$(jq -er .version plugins/p-999k/orca-plugin.json)
           archive=$(python3 packaging/package_orca.py "$version" target/orca-plugin)
           cd -- "$(dirname -- "$archive")"
           shasum -a 256 "${archive##*/}" > SHA256SUMS
@@ -154,7 +154,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: 999k-orca-${{ steps.plugin.outputs.version }}-${{ github.run_attempt }}
+          name: p-999k-${{ steps.plugin.outputs.version }}-${{ github.run_attempt }}
           path: |
             target/orca-plugin/*.tar.gz
             target/orca-plugin/SHA256SUMS

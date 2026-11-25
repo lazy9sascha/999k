@@ -20,7 +20,7 @@ SUPPORT_FILES = {"setup.ts", "999k-field-radio-ink.png"}
 def package(version, output):
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("Expected a numbered release version.")
-    source = ROOT / "plugins" / "orca-999k"
+    source = ROOT / "plugins" / "p-999k"
     members = {}
     for filename in sorted({MANIFEST, *ENTRY_POINTS, *SUPPORT_FILES}):
         path = source / filename
@@ -38,7 +38,7 @@ def package(version, output):
     members["LICENSE"] = (ROOT / "LICENSE").read_bytes()
 
     output.mkdir(parents=True, exist_ok=True)
-    folder = f"999k-orca-{version}"
+    folder = f"p-999k-{version}"
     archive = output / f"{folder}.tar.gz"
     with TemporaryDirectory(prefix=".package-", dir=output) as scratch:
         staged = Path(scratch) / archive.name

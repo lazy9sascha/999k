@@ -74,14 +74,14 @@ fn check_scoped_mailbox(
     assert_eq!(
         names,
         [
-            "radio999k_confirm_terminal",
-            "radio999k_inbox",
-            "radio999k_read",
-            "radio999k_read_thread",
-            "radio999k_recipients",
-            "radio999k_reply",
-            "radio999k_send",
-            "radio999k_wait"
+            "p-999k_confirm_terminal",
+            "p-999k_inbox",
+            "p-999k_read",
+            "p-999k_read_thread",
+            "p-999k_recipients",
+            "p-999k_reply",
+            "p-999k_send",
+            "p-999k_wait"
         ]
     );
 
@@ -104,36 +104,34 @@ fn check_scoped_mailbox(
     let revoked = send("revoked", mailbox);
     assert!(
         profile
-            .call(&headers, "radio999k_read", json!({"message_id":original}))
+            .call(&headers, "p-999k_read", json!({"message_id":original}))
             .is_ok()
     );
     assert_eq!(
         profile
-            .call(&headers, "radio999k_read", json!({"message_id":unrelated}))
+            .call(&headers, "p-999k_read", json!({"message_id":unrelated}))
             .unwrap_err()
             .0,
         404
     );
     assert!(
         profile
-            .call(&headers, "radio999k_read", json!({"message_id":revoked}))
+            .call(&headers, "p-999k_read", json!({"message_id":revoked}))
             .is_err()
     );
     assert!(
         profile
-            .call(&headers, "radio999k_wait", json!({"timeout_ms":0}))
+            .call(&headers, "p-999k_wait", json!({"timeout_ms":0}))
             .unwrap()["message"]
             .is_object()
     );
-    let inbox = profile
-        .call(&headers, "radio999k_inbox", json!({}))
-        .unwrap();
+    let inbox = profile.call(&headers, "p-999k_inbox", json!({})).unwrap();
     assert_eq!(inbox["messages"].as_array().unwrap().len(), 1);
     assert!(
         profile
             .call(
                 &headers,
-                "radio999k_read_thread",
+                "p-999k_read_thread",
                 json!({"conversation_id":original})
             )
             .is_ok()
@@ -141,14 +139,14 @@ fn check_scoped_mailbox(
     let unrelated_thread = profile
         .call(
             &headers,
-            "radio999k_read_thread",
+            "p-999k_read_thread",
             json!({"conversation_id":unrelated}),
         )
         .unwrap();
     assert!(unrelated_thread["messages"].as_array().unwrap().is_empty());
     assert!(unrelated_thread["next_cursor"].is_null());
     let recipients = profile
-        .call(&headers, "radio999k_recipients", json!({}))
+        .call(&headers, "p-999k_recipients", json!({}))
         .unwrap();
     assert!(
         recipients["recipients"]
@@ -161,7 +159,7 @@ fn check_scoped_mailbox(
         profile
             .call(
                 &headers,
-                "radio999k_send",
+                "p-999k_send",
                 json!({"recipient":"revoked","body":"must not deliver","idempotency_key":"invalid"})
             )
             .is_err()
@@ -169,7 +167,7 @@ fn check_scoped_mailbox(
     let reply = |id: &str, body: &str| {
         profile.call(
             &headers,
-            "radio999k_reply",
+            "p-999k_reply",
             json!({"message_id":id,"body":body}),
         )
     };
@@ -179,7 +177,7 @@ fn check_scoped_mailbox(
         profile
             .call(
                 &other_headers,
-                "radio999k_reply",
+                "p-999k_reply",
                 json!({"message_id":original,"body":"wrong principal"})
             )
             .is_err()
@@ -219,7 +217,7 @@ fn check_scoped_mailbox(
         queue.ordinary_metadata(&revoked, mailbox).unwrap()["state"],
         "pending"
     );
-    let outgoing = profile.call(&headers, "radio999k_send", json!({
+    let outgoing = profile.call(&headers, "p-999k_send", json!({
         "recipient":"dot","body":"Synthetic request from own mailbox","idempotency_key":"outgoing-fixture"
     })).unwrap();
     assert_eq!(outgoing["message"]["envelope"]["sender"], mailbox);
@@ -242,7 +240,7 @@ fn check_scoped_mailbox(
     let done = profile
         .call(
             &headers,
-            "radio999k_confirm_terminal",
+            "p-999k_confirm_terminal",
             json!({"message_id":terminal.id}),
         )
         .unwrap();

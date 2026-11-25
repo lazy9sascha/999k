@@ -121,9 +121,9 @@ impl Backend for DotBackend {
                 .ok_or(Fault::new(-32602, "invalid_string"))
         };
         match name {
-            "radio999k_recipients" => self.mailbox.recipients(owner, bearer, context),
-            "radio999k_inbox" => self.mailbox.inbox(owner, bearer, args, context),
-            "radio999k_send" => self.mailbox.send_with_conversation(
+            "p-999k_recipients" => self.mailbox.recipients(owner, bearer, context),
+            "p-999k_inbox" => self.mailbox.inbox(owner, bearer, args, context),
+            "p-999k_send" => self.mailbox.send_with_conversation(
                 owner,
                 bearer,
                 string("recipient")?,
@@ -142,21 +142,21 @@ impl Backend for DotBackend {
             crate::mailbox_tools::READ_THREAD => {
                 self.mailbox.read_thread(owner, bearer, args, context)
             }
-            "radio999k_read" => self
+            "p-999k_read" => self
                 .mailbox
                 .read(owner, bearer, string("message_id")?, context),
-            "radio999k_confirm_terminal" => {
+            "p-999k_confirm_terminal" => {
                 self.mailbox
                     .confirm_terminal(owner, bearer, string("message_id")?, context)
             }
-            "radio999k_reply" => self.mailbox.reply(
+            "p-999k_reply" => self.mailbox.reply(
                 owner,
                 bearer,
                 string("message_id")?,
                 string("body")?,
                 context,
             ),
-            "radio999k_wait" => self.mailbox.wait_filtered(
+            "p-999k_wait" => self.mailbox.wait_filtered(
                 owner,
                 bearer,
                 args["timeout_ms"]

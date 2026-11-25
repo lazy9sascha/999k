@@ -56,11 +56,11 @@ checksum. Build it locally with Python 3:
 ```sh
 python3 packaging/package_orca.py 0.2.1 target/orca-plugin
 python3 tests/orca_release_package.py
-(cd target/orca-plugin && shasum -a 256 999k-orca-0.2.1.tar.gz > SHA256SUMS)
+(cd target/orca-plugin && shasum -a 256 p-999k-0.2.1.tar.gz > SHA256SUMS)
 ```
 
 The plugin version comes from its manifest and can differ from the CLI version. The archive contains a single
-installable folder, `999k-orca-0.2.1`. Keep the Orca checksum with the Orca
+installable folder, `p-999k-0.2.1`. Keep the Orca checksum with the Orca
 archive in its own directory. The native installer checksum file lists platform
 archives only.
 
@@ -70,9 +70,9 @@ and run these commands from the directory containing the Orca archive and checks
 
 ```sh
 shasum -a 256 --check SHA256SUMS
-tar -xzf 999k-orca-0.2.1.tar.gz
-orca plugin validate ./999k-orca-0.2.1
-orca plugin install ./999k-orca-0.2.1
+tar -xzf p-999k-0.2.1.tar.gz
+orca plugin validate ./p-999k-0.2.1
+orca plugin install ./p-999k-0.2.1
 ```
 
 The catalog ID is `lazy9sascha.p-999k`. Existing local installations of 0.2.0 use `local.radio999k`. Review the trusted worker and its `workspace:read` and `terminal:send` permissions. After approval, open **P-999K** in your local workspace. For a custom 999K

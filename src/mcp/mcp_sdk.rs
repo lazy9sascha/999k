@@ -169,7 +169,7 @@ pub(crate) fn execute_tool(
     call: &mut impl FnMut(&str, Value) -> Result<Value, Fault>,
 ) -> Result<Value, Fault> {
     // FIXME(yagni): comma-separated fan-out is existing tool behavior.
-    let subset = (name == "radio999k_send")
+    let subset = (name == "p-999k_send")
         .then(|| arguments["recipient"].as_str())
         .flatten()
         .filter(|recipient| recipient.contains(','));
@@ -194,7 +194,7 @@ pub(crate) fn execute_tool(
         return Err((503, "recipient_preflight_unavailable"));
     }
     // Preflight before the first enqueue. The host rechecks authority on each send.
-    let available = call("radio999k_recipients", json!({}))?;
+    let available = call("p-999k_recipients", json!({}))?;
     let available = available["recipients"]
         .as_array()
         .and_then(|items| items.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
@@ -291,11 +291,9 @@ pub fn dispatch_streamable(
     mut call: impl FnMut(&RequestId, &str, Value) -> Result<Value, Fault>,
     event: impl FnMut(&str, Value) -> Result<Result<Value, ErrorData>, Fault>,
 ) -> Result<http::Response<Vec<u8>>, Fault> {
-    let recipient_discovery = tools.as_array().is_some_and(|tools| {
-        tools
-            .iter()
-            .any(|tool| tool["name"] == "radio999k_recipients")
-    });
+    let recipient_discovery = tools
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "p-999k_recipients"));
     dispatch_streamable_with_tools(
         server_name,
         tools,
@@ -464,9 +462,9 @@ mod tests {
     fn legacy_and_canonical_calls_hit_the_same_tool() {
         use std::time::{Duration, Instant};
 
-        let send = "radio999k_send";
+        let send = "p-999k_send";
         let tools = json!([{"name":send,"inputSchema":{"type":"object"}}]);
-        for name in ["pigeonmq_send", send] {
+        for name in ["pigeonmq_send", "radio999k_send", send] {
             let body = json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":name,"arguments":{}}});
             let request = http::Request::post("/fixture/mcp")
                 .header("Host", "127.0.0.1:1234")

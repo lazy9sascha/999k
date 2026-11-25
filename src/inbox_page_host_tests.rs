@@ -180,12 +180,12 @@ fn server_lists_metadata_tool_and_preserves_exact_read() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|v| v["name"] == "radio999k_inbox")
+            .find(|v| v["name"] == "p-999k_inbox")
             .unwrap();
         assert_eq!(tool["annotations"]["readOnlyHint"], true);
-        let first = f.call("radio999k_inbox", json!({"limit":1}));
+        let first = f.call("p-999k_inbox", json!({"limit":1}));
         let next = f.call(
-            "radio999k_inbox",
+            "p-999k_inbox",
             json!({"continuation":first["next_continuation"]}),
         );
         assert_eq!(first["messages"].as_array().unwrap().len(), 1);
@@ -197,7 +197,7 @@ fn server_lists_metadata_tool_and_preserves_exact_read() {
             assert_eq!(page["messages"][0]["recipient"], mailbox);
         }
         let read = f.call(
-            "radio999k_read",
+            "p-999k_read",
             json!({"message_id":first["messages"][0]["id"]}),
         );
         assert_eq!(read["body"], "EXACT_READ_FIXTURE_BODY");
@@ -218,7 +218,7 @@ fn page_rechecks_read_permission_registry_and_credential() {
             // Each denial starts from an independently successful, authorized fixture.
             let f = Fixture::new(mailbox);
             let before = std::fs::read(&f.db).unwrap();
-            let first = f.call("radio999k_inbox", json!({"limit":1}));
+            let first = f.call("p-999k_inbox", json!({"limit":1}));
             assert_eq!(first["messages"].as_array().unwrap().len(), 1);
             let mut policy: Value =
                 serde_json::from_slice(&std::fs::read(&f.policy).unwrap()).unwrap();
@@ -263,7 +263,7 @@ fn page_rechecks_read_permission_registry_and_credential() {
                     json!({}),
                     json!({"continuation":first["next_continuation"]}),
                 ] {
-                    let wire = f.call_wire("radio999k_inbox", args);
+                    let wire = f.call_wire("p-999k_inbox", args);
                     if status == 401 {
                         assert_eq!(wire.0, Err((status, reason)), "{mailbox}/{condition}");
                     } else {
@@ -272,14 +272,14 @@ fn page_rechecks_read_permission_registry_and_credential() {
                 }
             } else {
                 assert!(
-                    f.call("radio999k_inbox", json!({}))["messages"]
+                    f.call("p-999k_inbox", json!({}))["messages"]
                         .as_array()
                         .unwrap()
                         .is_empty()
                 );
                 assert_tool_error(
                     f.call_wire(
-                        "radio999k_inbox",
+                        "p-999k_inbox",
                         json!({"continuation":first["next_continuation"]}),
                     ),
                     "invalid_continuation",
@@ -287,7 +287,7 @@ fn page_rechecks_read_permission_registry_and_credential() {
             }
             private(&f.policy, &original_policy);
             private(&f.registry, &registry);
-            assert_eq!(f.call("radio999k_inbox", json!({"limit":1})), first);
+            assert_eq!(f.call("p-999k_inbox", json!({"limit":1})), first);
             assert_eq!(std::fs::read(&f.db).unwrap(), before);
         }
     }
@@ -302,13 +302,13 @@ fn mcp_rejects_invalid_page_fields_and_limits() {
             json!({"limit":51}),
             json!({"limit":"1"}),
         ] {
-            assert_tool_error(f.call_wire("radio999k_inbox", args), "invalid_limit");
+            assert_tool_error(f.call_wire("p-999k_inbox", args), "invalid_limit");
         }
         for args in [
             json!({"continuation":"-1:3"}),
             json!({"continuation":"0:99999"}),
         ] {
-            assert_tool_error(f.call_wire("radio999k_inbox", args), "invalid_continuation");
+            assert_tool_error(f.call_wire("p-999k_inbox", args), "invalid_continuation");
         }
         for args in [
             json!({"sender":"dot"}),
@@ -316,10 +316,10 @@ fn mcp_rejects_invalid_page_fields_and_limits() {
             json!({"receipt":"synthetic"}),
             json!({"cursor":1}),
         ] {
-            assert_protocol_error(f.call_wire("radio999k_inbox", args), 200, json!(1), -32602);
+            assert_protocol_error(f.call_wire("p-999k_inbox", args), 200, json!(1), -32602);
         }
         assert_eq!(
-            f.dispatch(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_inbox","arguments":{"limit":1,"limit":2}}}"#),
+            f.dispatch(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"p-999k_inbox","arguments":{"limit":1,"limit":2}}}"#),
             (Err((400, "invalid_fields")), 400),
         );
         assert_eq!(std::fs::read(&f.db).unwrap(), before);
@@ -353,7 +353,7 @@ fn mailbox_pages_keep_tie_order_and_exclude_new_arrivals_until_refreshed() {
             [&first, &second, &third]
         };
         let first_page = f.call(
-            "radio999k_inbox",
+            "p-999k_inbox",
             json!({"scope":"all","query":"mailbox-page","order":order,"limit":1}),
         );
         assert_eq!(page_ids(&first_page), [expected[0].as_str()]);
@@ -362,7 +362,7 @@ fn mailbox_pages_keep_tie_order_and_exclude_new_arrivals_until_refreshed() {
         f.tie_timestamps();
         let before = std::fs::read(&f.db).unwrap();
         let next = f.call(
-            "radio999k_inbox",
+            "p-999k_inbox",
             json!({"scope":"all","query":"mailbox-page","order":order,"limit":2,
                    "continuation":first_page["next_continuation"]}),
         );
@@ -372,7 +372,7 @@ fn mailbox_pages_keep_tie_order_and_exclude_new_arrivals_until_refreshed() {
         );
         if !next["next_continuation"].is_null() {
             let last = f.call(
-                "radio999k_inbox",
+                "p-999k_inbox",
                 json!({"scope":"all","query":"mailbox-page","order":order,
                        "continuation":next["next_continuation"]}),
             );
@@ -381,7 +381,7 @@ fn mailbox_pages_keep_tie_order_and_exclude_new_arrivals_until_refreshed() {
         }
 
         let fresh = f.call(
-            "radio999k_inbox",
+            "p-999k_inbox",
             json!({"scope":"all","query":"mailbox-page","order":order}),
         );
         let fresh = page_ids(&fresh);
@@ -405,13 +405,13 @@ fn mailbox_search_matches_literal_body_only_within_current_read_scope() {
     f.store("dot", "muse", "before fixtureXwild' 뒤에");
 
     let query = "FiXtUrE_%' 뒤에";
-    let inbox = f.call("radio999k_inbox", json!({"query":query}));
+    let inbox = f.call("p-999k_inbox", json!({"query":query}));
     assert_eq!(page_ids(&inbox), [received.as_str()]);
-    let all = f.call("radio999k_inbox", json!({"scope":"all","query":query}));
+    let all = f.call("p-999k_inbox", json!({"scope":"all","query":query}));
     assert_eq!(page_ids(&all), [sent.as_str(), received.as_str()]);
     assert!(inbox["next_continuation"].is_null());
     assert!(all["next_continuation"].is_null());
-    let exact = f.call("radio999k_read", json!({"message_id":received}));
+    let exact = f.call("p-999k_read", json!({"message_id":received}));
     assert_eq!(exact["body"], "before fIXTURE_%' 뒤에");
 }
 
@@ -420,7 +420,7 @@ fn mailbox_all_search_includes_a_linked_sent_reply() {
     let f = Fixture::new("muse");
     let original = f.store("dot", "muse", "synthetic original request");
     let reply = f.call(
-        "radio999k_reply",
+        "p-999k_reply",
         json!({"message_id":original,"body":"outbound-search-fixture linked-marker"}),
     );
     let unacknowledged = f.store("dot", "muse", "another original still pending");
@@ -436,13 +436,10 @@ fn mailbox_all_search_includes_a_linked_sent_reply() {
         })
         .unwrap();
 
-    let inbox = f.call(
-        "radio999k_inbox",
-        json!({"query":"outbound-search-fixture"}),
-    );
+    let inbox = f.call("p-999k_inbox", json!({"query":"outbound-search-fixture"}));
     assert!(page_ids(&inbox).is_empty());
     let all = f.call(
-        "radio999k_inbox",
+        "p-999k_inbox",
         json!({"scope":"all","query":"outbound-search-fixture"}),
     );
     assert_eq!(page_ids(&all), [reply["reply_id"].as_str().unwrap()]);
@@ -451,7 +448,7 @@ fn mailbox_all_search_includes_a_linked_sent_reply() {
     // Matching an unreadable body must not be visible through pagination.
     let first_page = |query| {
         f.call(
-            "radio999k_inbox",
+            "p-999k_inbox",
             json!({"scope":"all","query":query,"order":"oldest","limit":1}),
         )
     };
@@ -468,7 +465,7 @@ fn mailbox_all_search_includes_a_linked_sent_reply() {
 fn mailbox_continuation_binds_scope_query_and_order() {
     let f = Fixture::new("muse");
     let page = f.call(
-        "radio999k_inbox",
+        "p-999k_inbox",
         json!({"query":"EXACT_READ_FIXTURE_BODY","limit":1}),
     );
     let cursor = &page["next_continuation"];
@@ -479,11 +476,11 @@ fn mailbox_continuation_binds_scope_query_and_order() {
         json!({"query":"EXACT_READ_FIXTURE_BODY","order":"oldest","continuation":cursor}),
         json!({"continuation":cursor}),
     ] {
-        assert_tool_error(f.call_wire("radio999k_inbox", args), "invalid_continuation");
+        assert_tool_error(f.call_wire("p-999k_inbox", args), "invalid_continuation");
     }
 
     let next = f.call(
-        "radio999k_inbox",
+        "p-999k_inbox",
         json!({"scope":"inbox","query":"EXACT_READ_FIXTURE_BODY","order":"newest",
                "continuation":cursor}),
     );
@@ -498,13 +495,13 @@ fn muse_host_accepts_empty_and_large_registries() {
     let mut registry = json!({"muse":{"mailbox":"muse","revoked":false}});
     private(&f.registry, &registry);
     assert!(
-        f.call("radio999k_inbox", json!({}))["messages"]
+        f.call("p-999k_inbox", json!({}))["messages"]
             .as_array()
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        f.call("radio999k_wait", json!({"timeout_ms":0}))["state"],
+        f.call("p-999k_wait", json!({"timeout_ms":0}))["state"],
         "timeout"
     );
     for i in 0..33 {
@@ -513,16 +510,16 @@ fn muse_host_accepts_empty_and_large_registries() {
     }
     registry["dot"] = json!({"mailbox":"dot","revoked":false});
     private(&f.registry, &registry);
-    let page = f.call("radio999k_inbox", json!({}));
+    let page = f.call("p-999k_inbox", json!({}));
     assert_eq!(page["messages"].as_array().unwrap().len(), 2);
     let id = page["messages"][0]["id"].clone();
     assert_eq!(
-        f.call("radio999k_read", json!({"message_id":id}))["sender"],
+        f.call("p-999k_read", json!({"message_id":id}))["sender"],
         "dot"
     );
     registry["dot"]["revoked"] = json!(true);
     private(&f.registry, &registry);
-    let (reply, status) = f.call_wire("radio999k_reply", json!({"message_id":id,"body":"answer"}));
+    let (reply, status) = f.call_wire("p-999k_reply", json!({"message_id":id,"body":"answer"}));
     assert_eq!(status, 200);
     assert_eq!(reply.unwrap().unwrap()["result"]["isError"], true);
 }
@@ -560,19 +557,19 @@ fn muse_mcp_distinguishes_transport_protocol_and_tool_errors() {
         -32602,
     );
     assert_tool_error(
-        f.call_wire("radio999k_read", json!({"message_id":"missing-fixture"})),
+        f.call_wire("p-999k_read", json!({"message_id":"missing-fixture"})),
         "message_not_available",
     );
 
-    let pending = f.call("radio999k_inbox", json!({"limit":1}))["messages"][0]["id"].clone();
+    let pending = f.call("p-999k_inbox", json!({"limit":1}))["messages"][0]["id"].clone();
     let args = json!({"message_id":pending,"body":"synthetic reply"});
-    let first = f.call("radio999k_reply", args.clone());
-    let repeat = f.call("radio999k_reply", args);
+    let first = f.call("p-999k_reply", args.clone());
+    let repeat = f.call("p-999k_reply", args);
     assert_eq!(repeat["reply_id"], first["reply_id"]);
     assert_eq!(repeat["duplicate"], true);
     assert_tool_error(
         f.call_wire(
-            "radio999k_reply",
+            "p-999k_reply",
             json!({"message_id":pending,"body":"different synthetic reply"}),
         ),
         "reply_conflict",
@@ -631,7 +628,7 @@ fn muse_sdk_cancels_an_active_wait_only_after_acceptance() {
     );
     let state = &f.state();
     let auth = &Fixture::auth();
-    let wait = br#"{"jsonrpc":"2.0","id":"fixture-cancel","method":"tools/call","params":{"name":"radio999k_wait","arguments":{"timeout_ms":4000}}}"#;
+    let wait = br#"{"jsonrpc":"2.0","id":"fixture-cancel","method":"tools/call","params":{"name":"p-999k_wait","arguments":{"timeout_ms":4000}}}"#;
     let cancel = br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"fixture-cancel"}}"#;
 
     thread::scope(|scope| {
@@ -673,7 +670,7 @@ fn muse_continuation_rechecks_current_authority_inside_the_write() {
         .begin(RequestId::String("checkpoint-fixture".into()))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let parent = f.call("radio999k_inbox", json!({"limit":1}))["messages"][0]["id"].clone();
+    let parent = f.call("p-999k_inbox", json!({"limit":1}))["messages"][0]["id"].clone();
     let arguments = json!({
         "recipient":"dot", "body":"fixture continuation",
         "idempotency_key":"test-checkpoint", "continue_from_message_id":parent

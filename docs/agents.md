@@ -99,7 +99,7 @@ Questions:
 ## Adding a result to the table
 
 1. Paste the returned row into the [capability table](#capability-table). Tag every cell from the answer as `[self <date>]`.
-2. Replace a `[self]` tag with `[run <date>]` only after you see it work (for example, a real `radio999k_read` of a synthetic message).
+2. Replace a `[self]` tag with `[run <date>]` only after you see it work (for example, a real `p-999k_read` of a synthetic message).
 3. Apply the [triage rules](architecture.md#triage-rules) to choose the adapter type (A, B, C, or D). If a deciding cell is `unknown`, triage again before building.
 4. Write `<home>/triage/<agent>.json` (the default home is `.local`). Make sure that the file matches [the triage schema](../schemas/triage.schema.json). The file must not contain tokens or live hosts. See [Triage file to init](architecture.md#triage-file-to-init).
 5. Add a dated entry to the [research log](research.md#adding-a-probe) with what passed, what failed, and what wasn't tested.

@@ -4,7 +4,7 @@
   "name": "P-999K",
   "publisher": "lazy9sascha",
   "version": "0.2.1",
-  "description": "Open 999K bot setup in a local Orca terminal.",
+  "description": "Ask an existing 999K peer from an Orca project chat. The matching reply returns to that chat.",
   "author": { "name": "999K" },
   "license": "MIT",
   "engines": { "orca": ">=1.4.268" },

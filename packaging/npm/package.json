@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lazy9sascha/999k.git",
+    "url": "https://github.com/lazy9sascha/p-999k.git",
     "directory": "packaging/npm"
   },
   "bin": {

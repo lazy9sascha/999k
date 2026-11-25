@@ -10,7 +10,7 @@ import shutil
 import tarfile
 
 TEMPLATES = Path(__file__).resolve().parent
-RELEASE = "https://github.com/lazy9sascha/999k/releases/download"
+RELEASE = "https://github.com/lazy9sascha/p-999k/releases/download"
 BINARIES = ("999k", "999k-dot-resolve")
 TARGETS = {
     "aarch64-apple-darwin": ("Darwin:arm64", "on_macos", "on_arm"),

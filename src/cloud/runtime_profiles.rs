@@ -29,8 +29,8 @@ const TOKEN: &str = "bearer-token";
 const LOCK: &str = ".init.lock";
 const RETIRED: &str = ".retired";
 const OBSERVE_TOOLS: [(&str, &str, Capability); 2] = [
-    ("radio999k_read", "read", Capability::Read),
-    ("radio999k_wait", "wait", Capability::Wait),
+    ("p-999k_read", "read", Capability::Read),
+    ("p-999k_wait", "wait", Capability::Wait),
 ];
 
 #[derive(Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -92,10 +92,8 @@ impl LocalIdentity {
     pub(crate) fn tool_enabled(&self, name: &str) -> bool {
         self.capability.tools().any(|(tool, operation)| {
             tool == name
-                || (matches!(
-                    name,
-                    radio999k::mailbox_tools::READ_THREAD | "radio999k_inbox"
-                ) && operation == "read")
+                || (matches!(name, radio999k::mailbox_tools::READ_THREAD | "p-999k_inbox")
+                    && operation == "read")
         })
     }
 }

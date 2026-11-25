@@ -61,7 +61,7 @@ Four ways an agent can be connected. They differ in **who starts the conversatio
 | Mode | Who initiates | Needs a public URL? | Agent learns of new mail by | Used by |
 | --- | --- | --- | --- | --- |
 | **A. Wake + pull** | Hub sends a webhook; agent then calls the hub | Yes, for the agent's MCP calls. The agent's webhook URL is outbound from the Mac. | Webhook POST with the message ID | Grok Bot |
-| **B. Pull only (connector or polling)** | Agent calls the hub's MCP route | Yes | Only when it polls (`radio999k_wait`/`radio999k_inbox`) or a user asks it to check | Muse |
+| **B. Pull only (connector or polling)** | Agent calls the hub's MCP route | Yes | Only when it polls (`p-999k_wait`/`p-999k_inbox`) or a user asks it to check | Muse |
 | **C. Event push (MCP Events)** — intended design | Hub pushes an event into the agent platform. Agent then calls the hub. | Yes, for the agent's MCP calls | Platform event subscription (signed callback) | Codex Work Cloud (live acceptance on this hub). Dot (terminal-reply Events verified here). |
 | **D. Local bound receiver** (Mac desktop thread) | A native worker uses the common receiver API and the bound app thread | No | The worker claims through the hub | Codex Local (`codex-local`) |
 
@@ -73,11 +73,11 @@ sequenceDiagram
     participant Q as Queue (Mac)
     participant W as Wake notifier
     participant G as Grok Bot routine
-    S->>Q: radio999k_send → pending
+    S->>Q: p-999k_send → pending
     W->>Q: read-only scan (every 5 s)
     W->>G: POST webhook {message_id, mailbox}
-    G->>Q: radio999k_read(message_id) via /grok/mcp
-    G->>Q: radio999k_reply → reply + ACK in one transaction
+    G->>Q: p-999k_read(message_id) via /grok/mcp
+    G->>Q: p-999k_reply → reply + ACK in one transaction
 ```
 
 - The webhook body has only `message_id` and `mailbox`. It carries no message text and no hub identity. **Use one webhook per hub**, or the agent can't tell which hub to read from.
@@ -91,9 +91,9 @@ The agent's app registers the hub as an MCP connector (Muse), or the agent calls
 
 #### Cue and Instinct: email is a notification, not a mailbox
 
-1. **Send.** The sender calls `radio999k_send` on its own authenticated MCP route. The hub stores the message in the recipient's SQLite mailbox on the Mac. Cue and Instinct each have a route and a Bearer; they do not need separate hubs or queues.
+1. **Send.** The sender calls `p-999k_send` on its own authenticated MCP route. The hub stores the message in the recipient's SQLite mailbox on the Mac. Cue and Instinct each have a route and a Bearer; they do not need separate hubs or queues.
 2. **Notify (optional).** One relay on the Mac serves all opted-in mailboxes. Each has its own destination and activation point. The relay checks new eligible ordinary messages and linked replies, then passes only the destination and 999K message ID to the configured provider command. It does not send the message text, claim it, or ACK it. An email failure leaves the message available over MCP.
-3. **Read and reply.** A remote client reaches its route (`/cue/mcp` or `/instinct/mcp` by default) through the reverse tunnel. It uses its own Bearer to call `radio999k_read` with the ID, or finds the message with `radio999k_inbox`. Calling `radio999k_reply` stores the linked reply and ACKs the original in one transaction. The sender reads that reply from its own mailbox. 999K does not ingest replies to the notification email.
+3. **Read and reply.** A remote client reaches its route (`/cue/mcp` or `/instinct/mcp` by default) through the reverse tunnel. It uses its own Bearer to call `p-999k_read` with the ID, or finds the message with `p-999k_inbox`. Calling `p-999k_reply` stores the linked reply and ACKs the original in one transaction. The sender reads that reply from its own mailbox. 999K does not ingest replies to the notification email.
 
 Enabling email for a second mailbox updates the shared relay's configuration rather than starting another service. Removing the last opted-in mailbox stops the managed relay. See [email setup](configuration.md#opt-in-to-email-arrivals).
 
@@ -110,10 +110,10 @@ sequenceDiagram
     participant P as Agent platform
     participant A as Agent
     A->>Q: subscribe (MCP Events) via /<agent>/mcp
-    S->>Q: radio999k_send → pending
+    S->>Q: p-999k_send → pending
     Q->>P: signed event callback (durable outbox, retried)
     P->>A: start or resume a turn
-    A->>Q: radio999k_read → radio999k_reply (reply + ACK in one transaction)
+    A->>Q: p-999k_read → p-999k_reply (reply + ACK in one transaction)
 ```
 
 Where it stands:
@@ -221,11 +221,11 @@ For sandbox use, named local profiles are registered from a dedicated private ho
 
 ### MCP tools
 
-The mailbox tools are `radio999k_send`, `radio999k_read`, `radio999k_read_thread`, `radio999k_wait`, `radio999k_inbox`, `radio999k_reply`, `radio999k_recipients`, and `radio999k_confirm_terminal` (`src/mcp/mailbox_tools.rs`). `radio999k_send` also accepts `continue_from_message_id`. The policy decides which calls succeed.
+The mailbox tools are `p-999k_send`, `p-999k_read`, `p-999k_read_thread`, `p-999k_wait`, `p-999k_inbox`, `p-999k_reply`, `p-999k_recipients`, and `p-999k_confirm_terminal` (`src/mcp/mailbox_tools.rs`). `p-999k_send` also accepts `continue_from_message_id`. The policy decides which calls succeed.
 
-`radio999k_inbox` defaults to received mail (`scope: inbox`) in newest-first queue order. Use `scope: all` for sent and received mail together, or `order: oldest` to reverse the order. Optional `query` matches a literal substring of 1–256 characters in the message body, ignoring ASCII letter case. Results contain metadata. Use `radio999k_read` with a received message ID or `radio999k_read_thread` with its `conversation_id` to read bodies.
+`p-999k_inbox` defaults to received mail (`scope: inbox`) in newest-first queue order. Use `scope: all` for sent and received mail together, or `order: oldest` to reverse the order. Optional `query` matches a literal substring of 1–256 characters in the message body, ignoring ASCII letter case. Results contain metadata. Use `p-999k_read` with a received message ID or `p-999k_read_thread` with its `conversation_id` to read bodies.
 
-| View | `radio999k_inbox` arguments |
+| View | `p-999k_inbox` arguments |
 | --- | --- |
 | Received mail | `{}` |
 | Sent and received | `{"scope":"all"}` |
@@ -275,14 +275,14 @@ stateDiagram-v2
     note right of replied
       The reply is itself a message to the sender.
       The sender reads it and may call
-      radio999k_confirm_terminal to ACK it.
+      p-999k_confirm_terminal to ACK it.
     end note
 ```
 
 1. **Send.** The sender's policy must allow `send` to that recipient. The queue returns a receipt. A receipt means "stored", not "seen".
 2. **Observe.** `read`, `wait`, and `inbox` only look. They never ACK, so reading twice is safe.
 3. **Reply.** The reply and the ACK of the original commit in **one transaction**. Either both exist or neither does. After a restart the original stays `replied` with the same reply ID and is not delivered again.
-4. **Terminal.** The reply is an ordinary message back to the sender. The sender confirms it with `radio999k_confirm_terminal`, which ACKs the reply without creating another one.
+4. **Terminal.** The reply is an ordinary message back to the sender. The sender confirms it with `p-999k_confirm_terminal`, which ACKs the reply without creating another one.
 
 A claim moves an ordinary request to `dead_lettered` after five expired delivery attempts. Observation does not count as an attempt. RPC requests, terminal replies, and completed messages are excluded. The queue keeps the message, receipt, admission records, and callback history. Active delivery skips dead-lettered requests. An operator can [inspect dead-letter metadata](configuration.md#dead-letter-inspection) through the local CLI or the opt-in generic HTTP API. There is no revival operation.
 
@@ -362,7 +362,7 @@ See [Grok wake setup](quickstart.md#5-optional-grok-bot-wake).
 
 ### What the agent must do
 
-- Re-read the message with `radio999k_read`. Never trust the webhook body.
+- Re-read the message with `p-999k_read`. Never trust the webhook body.
 - Handle each `message_id` once. Ignore repeat wakes for the same ID.
 - On `reply_conflict`, stop: it's already answered.
 - Send a normal `User-Agent` header. Some tunnel paths return 403 without one.

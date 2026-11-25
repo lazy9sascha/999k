@@ -54,9 +54,9 @@ Use a Bearer token for a profile or API that already allows the operation.
 
 | Old command | Use instead |
 | --- | --- |
-| `send` | Call `radio999k_send` on the sender's MCP profile with `recipient`, `body`, and `idempotency_key`. Keep the same key on retry. If the generic API is already enabled with `--auth-policy`, scripts can use `POST /messages/send` with `sender`, `recipient`, and `body`. |
-| `reply` to an unclaimed request | Call `radio999k_reply` on the recipient's MCP profile with `message_id` and `body`. It stores the linked reply and ACKs the original in one transaction. |
-| `reply --receipt` for a leased request | Keep the worker's authenticated [`/receiver` completion path](#local-codex-receiver). `radio999k_reply` does not accept a receipt or replace leased completion. |
+| `send` | Call `p-999k_send` on the sender's MCP profile with `recipient`, `body`, and `idempotency_key`. Keep the same key on retry. If the generic API is already enabled with `--auth-policy`, scripts can use `POST /messages/send` with `sender`, `recipient`, and `body`. |
+| `reply` to an unclaimed request | Call `p-999k_reply` on the recipient's MCP profile with `message_id` and `body`. It stores the linked reply and ACKs the original in one transaction. |
+| `reply --receipt` for a leased request | Keep the worker's authenticated [`/receiver` completion path](#local-codex-receiver). `p-999k_reply` does not accept a receipt or replace leased completion. |
 
 ## Select existing hub profiles
 
@@ -204,7 +204,7 @@ These commands remain active. They do not install automatic startup after a rest
 7. Select **None** only for this private connection with the enforced upstream Bearer header.
 8. Accept the authorized risk notice. Create the plugin. Connect the plugin to the personal account.
 9. Check that ChatGPT lists the plugin as installed.
-10. Use the new plugin from the intended Dot to call `radio999k_recipients`.
+10. Use the new plugin from the intended Dot to call `p-999k_recipients`.
 
 **None** removes additional OAuth at the ChatGPT layer. It does not remove hub authentication.
 Each authorized caller through this tunnel uses the Dot identity. Do not share this connection with another agent identity.
@@ -357,7 +357,7 @@ Keep `codex-local` separate from the Cloud mailbox `codex-cloud`.
 Give each local session its own receiver token and mailbox, such as `codex-local1` or `codex-local2`.
 Register each mailbox and grant its worker `receive` and `reply` for that mailbox. The workers share the hub's `/receiver` route.
 
-In Dot, call `radio999k_recipients` to list registered mailboxes. Choose the session's exact mailbox name and pass it as `recipient` to `radio999k_send`.
+In Dot, call `p-999k_recipients` to list registered mailboxes. Choose the session's exact mailbox name and pass it as `recipient` to `p-999k_send`.
 A mailbox can appear in the list while its worker is offline.
 
 ### Configure the receiver
@@ -479,7 +479,7 @@ Codex Cloud, the common receiver, and the optional generic `--auth-policy` use a
 | --- | --- |
 | `principal`, `mailbox` | Who the token belongs to and which mailbox it may use |
 | `token_sha256` | SHA-256 hex of the Bearer token. Write `"keychain"` and the first `run` (or `setup-muse`) creates a token in the macOS Keychain and replaces this with its digest. Existing digests are never replaced. |
-| `operations` | Any of `read`, `send`, `wait`, `reply`. `radio999k_recipients` needs `send`. |
+| `operations` | Any of `read`, `send`, `wait`, `reply`. `p-999k_recipients` needs `send`. |
 | `enabled`, `expires_at_ms` | Off switch and expiry (milliseconds since epoch) |
 | `registration` | Absolute path to the registration file |
 

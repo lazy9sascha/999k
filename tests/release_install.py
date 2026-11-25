@@ -68,7 +68,7 @@ while [ "$#" -gt 1 ]; do
     shift
 done
 case $1 in
-    https://github.com/lazy9sascha/999k/releases/download/0.1.6/999k-0.1.6-*.tar.gz) ;;
+    https://github.com/lazy9sascha/p-999k/releases/download/0.1.6/999k-0.1.6-*.tar.gz) ;;
     *) exit 99 ;;
 esac
 printf '%s\\n' "${1##*/}" >> "$FIXTURE_DOWNLOADS"

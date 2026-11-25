@@ -485,6 +485,12 @@ async fn unix_ingress_uses_only_opaque_socket_and_deny_default() {
         {"hostname":HOST,"path":r"^/\.well-known/oauth-protected-resource/dot/mcp$",
          "service":"unix:/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock",
          "originRequest":{"httpHostHeader":"127.0.0.1:54843"}},
+        {"hostname":HOST,"path":"^/muse/mcp$",
+         "service":"unix:/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock",
+         "originRequest":{"httpHostHeader":"127.0.0.1:54843"}},
+        {"hostname":HOST,"path":"^/muse/pair$",
+         "service":"unix:/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock",
+         "originRequest":{"httpHostHeader":"127.0.0.1:54843"}},
         {"service":"http_status:404"}
     ]}}));
     let (provider, server) = fixture(vec![
@@ -503,7 +509,7 @@ async fn unix_ingress_uses_only_opaque_socket_and_deny_default() {
             HOST,
             54843,
             Some(&origin),
-            &["/dot/mcp"],
+            &["/dot/mcp", "/muse/mcp"],
             &mut resources,
             |_| Ok(()),
         )

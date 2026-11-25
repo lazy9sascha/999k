@@ -390,7 +390,6 @@ fn stage_fresh(
 ) -> io::Result<Profile> {
     let queue = home.join(QUEUE);
     let descriptor = catalog::http_by_id(name)
-        .filter(|_| fresh_profile(name))
         .ok_or_else(|| error("prepare this connector's protected policy before init"))?;
     if !absent(&home.join(descriptor.policy_file))?
         || registration_data(&state.registration)?.get(name).is_some()
@@ -402,7 +401,7 @@ fn stage_fresh(
     }
     let directory = home.join(DIRECTORY).join(format!("initial-{name}"));
     mkdir_private(&directory)?;
-    let result = crate::reply_mailbox_setup::stage(&directory, name)?;
+    let result = crate::reply_mailbox_setup::stage_local(&directory, name, &state.registration)?;
     let policy = result["policy"]
         .as_str()
         .map(PathBuf::from)
@@ -445,7 +444,7 @@ fn verify_staged(profile: &Profile, name: &str, registration: &Path) -> io::Resu
             return Err(error("staged credential paths changed"));
         }
     } else {
-        crate::reply_mailbox_setup::stage(stage, name)?;
+        crate::reply_mailbox_setup::stage_local(stage, name, registration)?;
     }
     Ok(())
 }
@@ -552,6 +551,47 @@ pub(crate) fn hosted_cue_mode(home: &Path, installation: uuid::Uuid) -> io::Resu
             "finite hosted Cue mode belongs to another installation",
         )),
     }
+}
+
+pub(crate) fn verify_finite_cue_pairing_bearer(home: &Path, bearer: &str) -> io::Result<bool> {
+    let state_path = home.join(DIRECTORY).join(STATE);
+    if absent(&state_path)? {
+        return Ok(false);
+    }
+    let state: Registry = read_json(&state_path)?;
+    let Some(installation) = &state.finite_cue_installation else {
+        return Ok(false);
+    };
+    let unavailable = || error("active finite hosted Cue Bearer required");
+    let owner = read_hosted_owner(home)?.ok_or_else(unavailable)?;
+    let (id, descriptor) = hosted_scope(home, &owner)?;
+    let profile = state.profiles.get("cue").ok_or_else(unavailable)?;
+    if *installation != id.to_string()
+        || profile.phase != Phase::Active
+        || profile.source.route != "/cue/mcp"
+        || !scope_matches(&state, &descriptor)
+        || !descriptor.mcp_paths.iter().any(|path| path == "/cue/mcp")
+    {
+        return Err(unavailable());
+    }
+    let generation = crate::local_http::protect_pairing_generation(
+        &home.join(QUEUE),
+        "cue",
+        profile.storage("cue"),
+    )?;
+    let scope = crate::hosted_mailbox_bearer::Scope::new(home, id);
+    let _grant = scope.lock(false)?;
+    if !hosted_cue_mode(home, id)? {
+        return Err(unavailable());
+    }
+    scope
+        .authorize(&[format!("Bearer {bearer}").into_bytes()])
+        .map_err(|_| unavailable())?;
+    crate::auth::active_hosted_cue_policy(&profile.policy).map_err(|_| unavailable())?;
+    radio999k::registration::validate_registration(&state.registration, "cue", "cue")
+        .map_err(|_| unavailable())?;
+    drop(generation);
+    Ok(true)
 }
 
 pub(crate) fn hosted_cue_bearer_status(home: &Path) -> io::Result<Value> {
@@ -761,6 +801,9 @@ fn change(
     let dir = home.join(DIRECTORY);
     let queue = home.join(QUEUE);
     let stdio_changed = next.local_stdio && !current.local_stdio;
+    let email_added = !phase_changed
+        && current.profiles[name].email_recipient.is_none()
+        && next.profiles[name].email_recipient.is_some();
     let want_relay = next
         .profiles
         .values()
@@ -781,7 +824,7 @@ fn change(
     } else {
         read_json(&relay_path)?
     };
-    let relay_configuration_changed = if phase_changed {
+    let relay_configuration_changed = if phase_changed || email_added {
         want_relay || !previous_relay.is_empty()
     } else {
         relay_config(&next)? != previous_relay
@@ -832,6 +875,16 @@ fn change(
                         set_revoked(&next.registration, name, false, profile.provisioned)?;
                     }
                     let binding = profile.binding(name, &next.registration)?;
+                    if profile.provisioned && profile.generation.is_none() {
+                        match name {
+                            "dot" => radio999k::dot_profile::check(&queue, &binding.policy, true)?,
+                            "muse" => radio999k::muse_mailbox::prepare(&queue)
+                                .map_err(io::Error::other)?,
+                            "grok-bot" => radio999k::grok_mailbox::prepare(&queue)
+                                .map_err(io::Error::other)?,
+                            _ => {}
+                        }
+                    }
                     lifecycle_profile::validate(&queue, &binding)?;
                     if profile.email_recipient.is_some() && profile.relay_after.is_none() {
                         profile.relay_after = Some(high_water(&queue)?);
@@ -905,6 +958,15 @@ fn change(
 
     if stdio_changed && !phase_changed {
         return Ok(());
+    }
+    if email_added {
+        // The relay-state lock fences this activation against delivery by the
+        // existing notifier. The new mailbox starts at the current queue edge.
+        next.profiles
+            .get_mut(name)
+            .ok_or_else(|| error("missing lifecycle profile"))?
+            .relay_after = Some(high_water(&queue)?);
+        write_json(&dir.join(STATE), &next)?;
     }
     let current_relay = relay_config(&next)?;
     if current_relay != previous_relay || (!current_relay.is_empty() && absent(&relay_path)?) {
@@ -1189,7 +1251,92 @@ pub(crate) fn managed_hub_queue(home: &Path) -> Option<PathBuf> {
         None
     }
 }
+/// A pending marker distinguishes an interrupted first run from an existing
+/// hub whose credentials are missing. Never provision over the latter.
+pub(crate) fn orca_sender_file(home: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    orca_sender_file_with(home, init)
+}
+
+fn orca_sender_file_with(
+    path: &Path,
+    activate: impl Fn(&Path, &str, &Options<'_>) -> io::Result<Value>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    mkdir_private(path)?;
+    let home = private_dir(path)?;
+    // Lock the directory itself so checking for an empty home adds no files.
+    let guard = File::open(&home)?;
+    guard.lock()?;
+    let pending = home.join(".orca-first-install-pending");
+    let sender = "codex-cloud";
+    if absent(&pending)? {
+        if fs::read_dir(&home)?.next().transpose()?.is_some() {
+            return crate::orca_onboard::resolve_bearer_file(&home, sender);
+        }
+        write_json(&pending, &1u8)?;
+    }
+    if read_json::<u8>(&pending)? != 1 {
+        return Err(error("invalid Orca first-install state").into());
+    }
+    let queue = home.join(QUEUE);
+    if !absent(&queue)? && open_private(&queue)?.metadata()?.len() == 0 {
+        // Resume after the first initialization created the private file but
+        // exited before SQLite wrote the schema.
+        radio999k::Queue::open(&queue)?;
+    }
+    crate::cloud_setup::initialize_home(&home)?;
+    let registration = home.join(REGISTRATION);
+    let entries = json!({
+        "codex-cloud":{"mailbox":"codex-cloud","revoked":false}
+    });
+    if absent(&registration)? {
+        write_json(&registration, &entries)?;
+    } else if registration_data(&registration)? != entries {
+        return Err(
+            error("Orca bootstrap registration changed; existing settings preserved").into(),
+        );
+    }
+    crate::reply_mailbox_setup::stage_local(&home, sender, &registration)?;
+    activate(&home, sender, &orca_options())?;
+    fs::remove_file(pending)?;
+    File::open(&home)?.sync_all()?;
+    println!("Local hub and sender ready.");
+    crate::orca_onboard::resolve_bearer_file(&home, sender)
+}
+
 pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result<Value> {
+    init_mode(home, name, options, false)
+}
+
+fn orca_options() -> Options<'static> {
+    Options {
+        profiles_file: None,
+        email_recipient: None,
+        relay_command: None,
+        port: None,
+        local_stdio: true,
+        apply: true,
+    }
+}
+
+pub(crate) fn add_orca_peer(home: &Path, name: &str) -> io::Result<Value> {
+    init_mode(home, name, &orca_options(), true)
+}
+
+pub(crate) fn add_orca_peer_with_email(
+    home: &Path,
+    name: &str,
+    recipient: &str,
+    relay_command: Option<&Path>,
+) -> io::Result<Value> {
+    let options = Options {
+        email_recipient: Some(recipient),
+        relay_command,
+        ..orca_options()
+    };
+    init_mode(home, name, &options, true)
+}
+
+fn init_mode(home: &Path, name: &str, options: &Options<'_>, selected: bool) -> io::Result<Value> {
     if options.apply {
         let (directory, executable, installation) = system_jobs()?;
         let jobs = Jobs {
@@ -1198,7 +1345,7 @@ pub(crate) fn init(home: &Path, name: &str, options: &Options<'_>) -> io::Result
             executable: &executable,
             installation: Some(&installation),
         };
-        init_with(home, name, options, Some(&jobs))
+        init_selected(home, name, options, Some(&jobs), selected)
     } else {
         init_with(home, name, options, None)
     }
@@ -1345,11 +1492,31 @@ fn init_with(
     options: &Options<'_>,
     jobs: Option<&Jobs<'_>>,
 ) -> io::Result<Value> {
-    let home = init_home(home, name, options.profiles_file)?;
+    init_selected(home, name, options, jobs, false)
+}
+
+fn init_selected(
+    home: &Path,
+    name: &str,
+    options: &Options<'_>,
+    jobs: Option<&Jobs<'_>>,
+    selected: bool,
+) -> io::Result<Value> {
+    let home = if selected {
+        if !matches!(name, "dot" | "cue" | "instinct" | "muse" | "grok-bot") {
+            return Err(error("unsupported Orca peer"));
+        }
+        private_dir(home)?
+    } else {
+        init_home(home, name, options.profiles_file)?
+    };
     let queue = home.join(QUEUE);
-    open_private(&queue)?;
     let dir = home.join(DIRECTORY);
     let state_path = dir.join(STATE);
+    if selected && absent(&state_path)? {
+        return Err(error("connect this peer on an existing managed hub"));
+    }
+    open_private(&queue)?;
     let prepared = generation::supports(&queue).map_err(io::Error::other)?;
     if !prepared {
         if options.apply
@@ -1427,6 +1594,32 @@ fn init_with(
             "configure an owner-private relay command with the email recipient",
         ));
     }
+    if selected {
+        if !state.local_stdio || active_routes(&state).is_empty() {
+            return Err(error(
+                "enable local stdio on an active managed hub before connecting a peer",
+            ));
+        }
+        let registrations = registration_data(&state.registration)?;
+        let profile = state.profiles.get(name);
+        if profile.is_some_and(|p| p.phase == Phase::Retired)
+            || registrations
+                .get(name)
+                .is_some_and(|r| r["revoked"] != false)
+            || (profile.is_none()
+                && (!absent(
+                    &home.join(
+                        catalog::http_by_id(name)
+                            .ok_or_else(|| error("unknown peer"))?
+                            .policy_file,
+                    ),
+                )? || registrations.get(name).is_some()))
+        {
+            return Err(error(
+                "Existing peer settings need review before connecting this mailbox",
+            ));
+        }
+    }
     if let Some(previous) = state.profiles.get(name) {
         if let Some(manifest) = options.profiles_file {
             let input = configured(&home, name, Some(manifest))?;
@@ -1439,6 +1632,20 @@ fn init_with(
             }
         }
         if previous.phase != Phase::Retired {
+            if let (true, Some(jobs), Some(recipient)) = (selected, jobs, options.email_recipient)
+                && previous.phase == Phase::Active
+                && previous.email_recipient.is_none()
+            {
+                lifecycle_profile::validate(&queue, &previous.binding(name, &state.registration)?)?;
+                let mut next = state.clone();
+                next.profiles
+                    .get_mut(name)
+                    .ok_or_else(|| error("missing lifecycle profile"))?
+                    .email_recipient = Some(recipient.to_owned());
+                change(jobs, &home, &before, next, name, false)?;
+                let active = read_json::<Registry>(&state_path)?;
+                return Ok(response(name, &active.profiles[name], true));
+            }
             if options
                 .email_recipient
                 .is_some_and(|value| Some(value) != previous.email_recipient.as_deref())
@@ -1484,7 +1691,7 @@ fn init_with(
                 },
             );
         }
-        None if fresh_profile(name)
+        None if (fresh_profile(name) || selected)
             && options.profiles_file.is_none()
             && absent(&home.join(catalog::http_by_id(name).unwrap().policy_file))? =>
         {

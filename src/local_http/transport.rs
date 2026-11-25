@@ -115,6 +115,23 @@ pub(super) struct Input {
     pub(super) access_assertions: Vec<Vec<u8>>,
     pub(super) sdk_headers: Vec<(String, Vec<u8>)>,
 }
+pub(super) fn mcp_probe_input(authority: &str, path: &str, bearer: &str) -> Input {
+    Input {
+        path: path.into(),
+        length: 0,
+        authorization: vec![format!("Bearer {bearer}").into_bytes()],
+        access_assertions: Vec::new(),
+        sdk_headers: [
+            ("Host", authority),
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json, text/event-stream"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value.as_bytes().to_vec()))
+        .collect(),
+    }
+}
+
 // FIXME(lib: hyper): hand-rolled HTTP/1.1 server on httparse+TcpStream; hyper is already in the lockfile via reqwest.
 pub(super) fn parse_head(
     bytes: &[u8],

@@ -121,7 +121,7 @@ impl Fixture {
             profile
                 .call(
                     &[format!("Bearer {TOKEN}").into_bytes()],
-                    "radio999k_reply",
+                    "p-999k_reply",
                     json!({"message_id":id,"body":body}),
                 )
                 .map_err(|(code, reason)| (i32::from(code), reason))
