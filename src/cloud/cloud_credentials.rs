@@ -609,11 +609,20 @@ pub(crate) fn provision(policy: &Path, app: App) -> io::Result<()> {
     }
 }
 
-#[cfg(target_os = "macos")]
-// NOTE: canonical Dot/OpenAI tunnel design; not wired yet, do not remove.
 pub(crate) fn read_keychain_bearer(home: &Path, app: App) -> io::Result<Vec<u8>> {
-    keychain::get(&account(home, app)?)?
-        .ok_or_else(|| io::Error::other("No Cloud bearer in Keychain"))
+    #[cfg(target_os = "macos")]
+    {
+        keychain::get(&account(home, app)?)?
+            .ok_or_else(|| io::Error::other("No Cloud bearer in Keychain"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (home, app);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Keychain requires macOS",
+        ))
+    }
 }
 
 /// Read only the paired webhook item for this queue home.

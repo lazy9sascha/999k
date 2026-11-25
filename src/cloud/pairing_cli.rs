@@ -267,7 +267,7 @@ pub(crate) fn run(action: &Action) -> io::Result<()> {
                     "Verify the response mailbox is {peer} and mcp_path is {mcp}, with a Bearer token type. Save access_token in private storage. Use it as the Authorization Bearer for MCP initialize and tools/list at {mcp}. Keep the token out of logs and chat."
                 )?;
             }
-            writeln!(stdout, "{}", crate::orca_handoff::intake(&peer))?;
+            writeln!(stdout, "{}", crate::orca_handoff::intake(peer))?;
             writeln!(stdout, "{}", crate::orca_handoff::VERIFY)?;
             Ok(())
         }

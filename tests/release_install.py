@@ -108,6 +108,17 @@ fi
     fetched = downloads.read_bytes()
     run("sh", installer, "--bin-dir", custom, env=env)
     assert downloads.read_bytes() == fetched
+    # A pre-fetched archive uses the same pinned digest without another network request.
+    sibling = installer.parent / name
+    sibling.write_bytes(good_archive)
+    local = home / "offline"
+    run("sh", installer, "--bin-dir", local, env=env)
+    assert (local / "999k").read_bytes() == (custom / "999k").read_bytes()
+    sibling.write_bytes(good_archive + b"corrupt")
+    failed = run("sh", installer, "--bin-dir", home / "bad local", env=env, code=1)
+    assert "SHA-256 mismatch" in failed.stderr
+    assert downloads.read_bytes() == fetched
+    sibling.unlink()
     old = home / "old"
     old.mkdir()
     write_command(old / "999k", "exit 91\n")
