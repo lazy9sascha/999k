@@ -1,25 +1,83 @@
 # Quickstart
 
-The examples use the new `p-999k_*` MCP names. On the released 0.2.0 hub or stdio client, use the `radio999k_*` names returned by `tools/list`.
+Use the [Orca plugin](#connect-orca-to-your-existing-peers) to ask an existing agent for help from your project chat. For a standalone hub, start with [the CLI](#1-install).
 
-Install 999K, set up a local mailbox on macOS, and connect a client over stdio.
-A reverse tunnel is optional and is only for a remote agent.
-For agent-specific connections, see [agents and capabilities](agents.md).
+## Connect Orca to your existing peers
+
+Use an Apple Silicon Mac with Orca 1.4.268 or later. Open a terminal in an empty download directory. This example installs the [0.2.1 release candidate](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1-rc.1). If this Mac already runs a managed hub, follow the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
+
+```sh
+(
+  set -e
+  release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.1-rc.1
+  for file in install.sh 999k-0.2.1-aarch64-apple-darwin.tar.gz p-999k-0.2.1.tar.gz SHA256SUMS-orca; do
+    curl -q --proto '=https' --proto-redir '=https' -fLsS -o "$file" "$release/$file"
+  done
+  sh ./install.sh
+  "$HOME/.local/bin/999k" --version
+  shasum -a 256 --check SHA256SUMS-orca
+  tar -xzf p-999k-0.2.1.tar.gz
+  orca plugin validate ./p-999k-0.2.1
+  orca plugin install ./p-999k-0.2.1
+)
+```
+
+If your shell cannot find `orca`, use the executable inside your installed Orca app for the last two commands. For an app in Applications, its path is `/Applications/Orca.app/Contents/Resources/bin/orca`.
+
+Expect `999k 0.2.1`. Orca will show the permissions for the exact package. The trusted worker finds the active local workspace and opens a terminal there to run the setup command. Review the permissions and use the approval command Orca prints. To revoke the plugin’s approval later, run `orca plugin uninstall lazy9sascha.p-999k`. The [plugin packaging guide](../packaging/README.md#orca-plugin-archive) also covers building from source.
+
+1. In a local workspace, open **P-999K** in the right sidebar. Choose **Initial setup** and open its terminal. On a fresh home, setup starts the local hub with its private stdio socket, creates one sender and lists zero external peers.
+2. To manage connections in chat, select **Set up a management bot**. In **Bots → New bot**, create **P-999K** with the purpose shown in the panel. Open its Home Chat and ask **“Connect Muse.”** You can also select Muse in the plugin panel. Choose **I’ll do it myself** for the manual steps, or **Ask my assistant to do it** to copy a request to an assistant that already has that capability. Both paths run the same command on the Mac:
+
+   ```sh
+   "$HOME/.local/bin/999k" init --orca --orca-peer muse
+   ```
+
+3. Create or approve the relay in Orca’s native UI when prompted. If setup prints a resume command, run it after approval. Setup reuses a relay with the same peer binding. A command run unattended prints the native action still required so an owner can complete it.
+4. Complete the selected peer’s transport setup below. Where supported, copy the suggested prompt into the peer’s existing conversation. Complete consent and credential entry using the app’s own settings or secure inputs. An HTTPS-capable runtime can use the mailbox directly where the app supports it.
+5. Ask in your project chat, for example, **“Ask Muse for a shorter release title.”** The relay reports **Queued** after the hub accepts the request. Verify the exchange by checking that the matching reply returns to the project chat that asked. If you have the original request ID, rerun the same peer setup with `--orca-proof-original <original-id>` to check the linked reply in the hub without sending another message.
+
+Run `999k init --orca` with no selection to list authorized peers. This stays local. Installation and verification use the CLI and supported app controls. External providers may require their own owner approval or configuration. If the first wait ends empty, ask the same relay to check the original again. The proof command succeeds when the hub can verify the linked reply. Pending and invalid originals return a failure status. Check separately that the answer reached the originating chat.
+
+### Prepare the selected peer’s transport
+
+- **Dot** uses its [private Secure MCP Tunnel](configuration.md#dot-through-a-private-secure-mcp-tunnel). Set it up from the Dot workspace. The Orca command binds the local relay and asks you to verify the private transport from Dot.
+- **Muse and GrokBot** use an approved HTTPS MCP route. For your own [HTTPS ingress](tunnels.md#use-your-own-https-origin), publish the selected peer’s exact MCP and pairing paths and keep the hub on loopback. Put the full endpoint in the owner-private `orca-ingress.json` in the same hub home. Use a JSON object keyed by the peer ID, for example `{"muse":"https://radio.example.com/muse/mcp"}`. Set file mode 600. When an operator-run registration provider is configured for that one route, set `RADIO999K_REGISTRATION_URL` and add `--orca-reserve-address` to the selected setup command. Approve setup in the browser. The CLI connects the hosted origin only if the provider approves exactly that route.
+- **Cue** reads and replies through its approved HTTPS MCP route. One manually sent ID-only email woke the existing app. For automatic mail, configure and verify the [email relay](configuration.md#opt-in-to-email-arrivals) separately.
+- **Instinct** starts in its existing Messages conversation. Enter the pairing code in its secure form when offered. A manual ID-only iMessage prompted a linked reply over MCP. Automatic iMessage delivery is unverified. See [peer pairing](pairing.md#check-the-existing-conversation).
+
+For a reserved address, use the origin in the owner-private `hosted-connection.json` and append the selected MCP route. For your own ingress, use its exact endpoint from `orca-ingress.json`. When the selected HTTPS endpoint is available, setup checks authenticated MCP access on that route. To use a separate peer credential, pass its private file path with `--orca-remote-bearer-file`. Local binding, authenticated transport, and a linked reply are separate results.
+
+To hand a remote peer its credential, use a [one-time pairing code](pairing.md). Approve the peer’s exact HTTPS pairing and MCP paths first. The peer redeems the code over HTTPS and saves the Bearer privately. Dot follows its private setup above.
+
+For a custom installation, pass absolute paths. Orca relay tool commands require paths without spaces or shell metacharacters.
+
+```sh
+"$RADIO999K_BIN" init --orca --orca-peer muse --home /absolute/path/to/hub-home \
+  --orca-sender codex-cloud --orca-bearer-file /absolute/path/to/private-bearer-file
+```
+
+When a project agent calls a bot, keep the Orca question ID with the 999K original ID. After retrieving the matching answer, the bot can use `orca orchestration reply --id <original-orca-question-id> --body-file -` and pass the answer on standard input.
 
 <a id="1-build"></a>
 
 ## 1. Install
 
-For P-999K on Orca, go to [Connect Orca to your existing peers](#connect-orca-to-your-existing-peers). The 0.2.1 installer is for 999K on Apple Silicon Macs and Linux on x86-64 and ARM64.
-Use the installer from [GitHub Releases](https://github.com/lazy9sascha/p-999k/releases) when the release assets are available.
-It installs `999k` and `999k-dot-resolve` in `$HOME/.local/bin` by default. No Rust toolchain is needed.
+Open the [0.2.1 candidate downloads](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1-rc.1). Download `install.sh` and the native archive for your computer into the same empty directory.
+
+| Computer | Native archive |
+| --- | --- |
+| Apple Silicon Mac | `999k-0.2.1-aarch64-apple-darwin.tar.gz` |
+| Linux x86-64 | `999k-0.2.1-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `999k-0.2.1-aarch64-unknown-linux-gnu.tar.gz` |
+
+From that directory, run:
 
 ```sh
-version=0.2.1
-curl -q --proto '=https' -fLsS -o 999k-install.sh \
-  "https://github.com/lazy9sascha/p-999k/releases/download/$version/install.sh" &&
-sh ./999k-install.sh
+sh ./install.sh
 ```
+
+The installer verifies the archive and installs `999k` and `999k-dot-resolve` in `$HOME/.local/bin` by default. To try it in another directory, pass `--bin-dir /absolute/path/to/bin`.
 
 If an archive is not available for your machine, build this checkout with stable Rust and 2024 edition support. Use a new directory so the source build does not replace an existing installation.
 
@@ -115,70 +173,15 @@ The adapter uses the mailbox policy already mounted in the hub. Closing the clie
 
 See [Local MCP over stdio](configuration.md#local-mcp-over-stdio) for foreground socket setup and protocol details.
 
-#### Connect Orca to your existing peers
-
-Install on the Apple Silicon Mac that runs Orca 1.4.268 or later. For a new installation, run the commands below in an empty download directory. They install the matching native CLI and check the plugin archive. An existing managed installation needs the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
-
-```sh
-release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.1
-(
-  set -e
-  for file in install.sh p-999k-0.2.1.tar.gz SHA256SUMS-orca; do
-    curl -q --proto '=https' -fLsS -o "$file" "$release/$file"
-  done
-  sh ./install.sh
-  "$HOME/.local/bin/999k" --version
-  shasum -a 256 --check SHA256SUMS-orca
-  tar -xzf p-999k-0.2.1.tar.gz
-  orca plugin validate ./p-999k-0.2.1
-  orca plugin install ./p-999k-0.2.1
-)
-```
-
-Expect `999k 0.2.1`. Orca will show the permissions for the exact package. The trusted worker finds the active local workspace and opens a terminal there to run the setup command. Review the permissions and use the approval command Orca prints. To revoke the plugin’s approval later, run `orca plugin uninstall lazy9sascha.p-999k`. The [plugin packaging guide](../packaging/README.md#orca-plugin-archive) also covers building from source.
-
-1. In a local workspace, open **P-999K** in the right sidebar. Choose **Initial setup** and open its terminal. On a fresh home, setup starts the local hub with its private stdio socket, creates one sender and lists zero external peers.
-2. To manage connections in chat, select **Set up a management bot**. In **Bots → New bot**, create **P-999K** with the purpose shown in the panel. Open its Home Chat and ask **“Connect Muse.”** You can also select Muse in the plugin panel. Choose **I’ll do it myself** for the manual steps, or **Ask my assistant to do it** to copy a request to an assistant that already has that capability. Both paths run the same command on the Mac:
-
-   ```sh
-   "$HOME/.local/bin/999k" init --orca --orca-peer muse
-   ```
-
-3. Create or approve the relay in Orca’s native UI when prompted. If setup prints a resume command, run it after approval. Setup reuses a relay with the same peer binding. A command run unattended prints the native action still required so an owner can complete it.
-4. Complete the selected peer’s transport setup below. Where supported, copy the suggested prompt into the peer’s existing conversation. Complete consent and credential entry using the app’s own settings or secure inputs. An HTTPS-capable runtime can use the mailbox directly where the app supports it.
-5. Ask in your project chat, for example, **“Ask Muse for a shorter release title.”** The relay reports **Queued** after the hub accepts the request. Verify the exchange by checking that the matching reply returns to the project chat that asked. If you have the original request ID, rerun the same peer setup with `--orca-proof-original <original-id>` to check the linked reply in the hub without sending another message.
-
-Run `999k init --orca` with no selection to list authorized peers. This stays local. Installation and verification use the CLI and supported app controls. External providers may require their own owner approval or configuration. If the first wait ends empty, ask the same relay to check the original again. The proof command succeeds when the hub can verify the linked reply. Pending and invalid originals return a failure status. Check separately that the answer reached the originating chat.
-
-#### Prepare the selected peer’s transport
-
-- **Dot** uses its [private Secure MCP Tunnel](configuration.md#dot-through-a-private-secure-mcp-tunnel). Set it up from the Dot workspace. The Orca command binds the local relay and asks you to verify the private transport from Dot.
-- **Muse and GrokBot** use an approved HTTPS MCP route. For your own [HTTPS ingress](tunnels.md#use-your-own-https-origin), publish the selected peer’s exact MCP and pairing paths and keep the hub on loopback. Put the full endpoint in the owner-private `orca-ingress.json` in the same hub home. Use a JSON object keyed by the peer ID, for example `{"muse":"https://radio.example.com/muse/mcp"}`. Set file mode 600. When an operator-run registration provider is configured for that one route, set `RADIO999K_REGISTRATION_URL` and add `--orca-reserve-address` to the selected setup command. Approve setup in the browser. The CLI connects the hosted origin only if the provider approves exactly that route.
-- **Cue** reads and replies through its approved HTTPS MCP route. One manually sent ID-only email woke the existing app. For automatic mail, configure and verify the [email relay](configuration.md#opt-in-to-email-arrivals) separately.
-- **Instinct** starts in its existing Messages conversation. Enter the pairing code in its secure form when offered. A manual ID-only iMessage prompted a linked reply over MCP. Automatic iMessage delivery is unverified. See [peer pairing](pairing.md#check-the-existing-conversation).
-
-For a reserved address, use the origin in the owner-private `hosted-connection.json` and append the selected MCP route. For your own ingress, use its exact endpoint from `orca-ingress.json`. When the selected HTTPS endpoint is available, setup checks authenticated MCP access on that route. To use a separate peer credential, pass its private file path with `--orca-remote-bearer-file`. Local binding, authenticated transport, and a linked reply are separate results.
-
-To hand a remote peer its credential, use a [one-time pairing code](pairing.md). Approve the peer’s exact HTTPS pairing and MCP paths first. The peer redeems the code over HTTPS and saves the Bearer privately. Dot follows its private setup above.
-
-For a custom installation, pass absolute paths. Orca relay tool commands require paths without spaces or shell metacharacters.
-
-```sh
-"$RADIO999K_BIN" init --orca --orca-peer muse --home /absolute/path/to/hub-home \
-  --orca-sender codex-cloud --orca-bearer-file /absolute/path/to/private-bearer-file
-```
-
-When a project agent calls a bot, keep the Orca question ID with the 999K original ID. After retrieving the matching answer, the bot can use `orca orchestration reply --id <original-orca-question-id> --body-file -` and pass the answer on standard input.
-
 ## 2. Try a local exchange
 
 You need Python 3 for this optional test. It does not require Rust or a source checkout.
-Set `version` to the installed version, without a leading `v`. Use its copy of the script from the source tag.
+Use the smoke script from the tag you installed. The 0.2.1 candidate reports binary version `0.2.1`.
 
 ```sh
 version=0.2.1
 curl -q --proto '=https' -fLsS -o 999k-smoke.sh \
-  "https://raw.githubusercontent.com/lazy9sascha/p-999k/$version/scripts/smoke-release.sh" &&
+  "https://raw.githubusercontent.com/lazy9sascha/p-999k/0.2.1-rc.1/scripts/smoke-release.sh" &&
 sh ./999k-smoke.sh --installed "$(dirname "$RADIO999K_BIN")" "$version"
 ```
 
