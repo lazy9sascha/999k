@@ -1,5 +1,5 @@
 import { atom, Button, Code, CodeView, Heading, Image, plugin, read, Select, set, Stack, Text } from 'orca'
-import { initialTarget, managementBotPurpose, setupFor, setupTargets } from './setup'
+import { cueSetupPrompt, initialTarget, managementBotPurpose, setupFor, setupTargets } from './setup'
 
 const opening = atom(false)
 const status = atom('')
@@ -71,12 +71,20 @@ export default function Panel() {
               <Button disabled={read(opening)} onPress={() => openSetup('hosted')}>Set up hosted address</Button>
             </Stack>
           )}
+          {selection === 'cue' && (
+            <Stack gap="sm">
+              <Text>After the terminal reports authenticated MCP access, copy this message and send it yourself in your existing Cue chat.</Text>
+              <CodeView label="Message for your Cue chat" code={cueSetupPrompt} wrap />
+              <Text>For this Mac’s connection, wait for Cue’s private form before getting a code. If the form is unavailable, pause here.</Text>
+            </Stack>
+          )}
           {pairing && (
             <Stack gap="sm">
-              <Text>When this peer’s HTTPS route is ready, get a single-use code.</Text>
+              <Text>{selection === 'cue' ? 'Enter the hub address and code from the terminal in Cue’s private form.' : 'When this peer’s HTTPS route is ready, get a single-use code.'}</Text>
               <Button disabled={read(opening)} onPress={() => openSetup('pair')}>Get a setup code</Button>
             </Stack>
           )}
+          {selection === 'cue' && <Text>Send your first question in the Orca project chat after Cue confirms it can list the mailbox tools at this Mac’s address.</Text>}
         </Stack>
       )}
       {!isInitial && mode === 'delegate' && setup && (
@@ -84,7 +92,7 @@ export default function Panel() {
           <Text>Copy this request to your own assistant if it has Computer Use. You can still choose guided setup at any time.</Text>
           <CodeView label="Computer Use request" code={[
             `Help me connect the selected P-999K peer. Start with ${setup.command} on my Mac.`,
-            'Follow the printed handoff in the existing peer app. Pause for my approval or private credential entry whenever required. Keep credentials out of logs and ordinary chat.',
+            selection === 'cue' ? 'After authenticated MCP access, let me send the guided setup message in my existing Cue chat. Wait for me to confirm that private input is available before offering a code. Keep the address and code out of chat.' : 'Follow the printed handoff in the existing peer app. Pause for my approval or private credential entry whenever required. Keep credentials out of logs and ordinary chat.',
             pairing ? `When the peer's HTTPS route is ready, use ${pairing.command} in an owner-controlled terminal. Let me enter the one-time code privately.` : 'Use the existing Dot workspace and its private Secure MCP Tunnel.',
             'Verify tool discovery in the existing peer app, then use one fresh project request to check the linked reply and original acknowledgement. Report any missing action.'
           ].join(' ')} wrap />

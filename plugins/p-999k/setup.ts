@@ -1,3 +1,5 @@
+export const cueSetupPrompt = 'Cue, add a separate P-999K connection for this Mac in this chat. Keep my other connections. Show me a secure form for this Mac’s HTTPS hub address and one-time pairing code. If private input is unavailable, tell me and stop. Pair at /cue/pair on the address I enter. Save the credential privately for that address and confirm that /cue/mcp on that same address lists the mailbox tools. Keep the address and code out of chat.'
+
 export const initialTarget = 'initial'
 export const setupTargets = [
   { value: initialTarget, label: 'Initial setup' },

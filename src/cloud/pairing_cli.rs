@@ -245,6 +245,13 @@ pub(crate) fn run(action: &Action) -> io::Result<()> {
                 "Set this address in the receiving client's private connection settings."
             )?;
             writeln!(stdout, "Pairing code: {code}")?;
+            if peer == "cue" {
+                writeln!(
+                    stdout,
+                    "Enter the displayed address and code in the private Cue input you requested, or use the documented private runtime flow. The code works once within ten minutes. Send your first question in Orca after Cue confirms mailbox tool discovery at this Mac’s address."
+                )?;
+                return Ok(());
+            }
             writeln!(
                 stdout,
                 "Give this code only to the selected peer through its private enrollment flow. Use its secure form when available."

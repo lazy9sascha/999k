@@ -29,10 +29,12 @@ pub(crate) fn instructions(peer: &str) -> String {
             intake(peer)
         );
     }
+    if peer == "cue" {
+        return "After the setup terminal reports authenticated MCP access, open P-999K → Cue → I’ll do it myself. Copy the setup message into your own existing Cue chat. For the same message with the RC3 plugin or CLI alone, see ‘Connect your existing Cue chat’ at https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1-rc.3. For this Mac’s connection, wait for its private form before running `999k pair offer cue` in your local terminal. Enter the displayed address and code privately. Send a question from your Orca project chat after Cue confirms tool discovery at this Mac’s address.".into();
+    }
     let app = match peer {
         "muse" => "Muse",
         "grok-bot" => "GrokBot",
-        "cue" => "Cue",
         "instinct" => "Instinct",
         _ => return "No setup instruction is available for this peer.".into(),
     };
@@ -52,7 +54,6 @@ mod tests {
         for (peer, app, intake_detail) in [
             ("muse", "Muse", MUSE_POLLING),
             ("grok-bot", "GrokBot", "dedicated wake routine"),
-            ("cue", "Cue", "arrival email as a notification"),
             (
                 "instinct",
                 "Instinct",
@@ -72,6 +73,12 @@ mod tests {
         assert!(dot.contains(intake("dot")) && dot.contains("Secure MCP Tunnel"));
         assert!(dot.contains(VERIFY) && !dot.contains("pair offer"));
         assert!(instructions("instinct").contains("secure login form"));
-        assert!(instructions("cue").contains("HTTPS-capable runtime"));
+        let cue = instructions("cue");
+        assert!(
+            cue.contains("your own existing Cue chat")
+                && cue.contains("Connect your existing Cue chat")
+        );
+        assert!(cue.contains("wait for its private form before running `999k pair offer cue`"));
+        assert!(cue.contains("after Cue confirms tool discovery"));
     }
 }
