@@ -55,6 +55,7 @@ export default function Panel() {
       <Text>Choose Initial setup for your hub or select one peer to set up its relay.</Text>
       {!isInitial && (
         <Stack gap="sm">
+          <Text>Set up the peer yourself, or copy a request to an assistant with Computer Use.</Text>
           <Button disabled={read(opening)} onPress={() => set(setupMode, 'guide')}>I’ll do it myself</Button>
           <Button disabled={read(opening)} onPress={() => set(setupMode, 'delegate')}>Ask my assistant to do it</Button>
         </Stack>
@@ -65,7 +66,7 @@ export default function Panel() {
           <Button icon="terminal" disabled={read(opening)} onPress={() => openSetup()}>Open setup terminal</Button>
           {pairing && (
             <Stack gap="sm">
-              <Text>After setting up the mailbox, give its remote client a single-use code.</Text>
+              <Text>Publish this mailbox’s HTTPS pairing and MCP routes first. Then open the terminal to generate a single-use code.</Text>
               <Button disabled={read(opening)} onPress={() => openSetup('pair')}>Get a setup code</Button>
             </Stack>
           )}

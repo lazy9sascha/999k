@@ -36,47 +36,10 @@ pub(crate) fn instructions(peer: &str) -> String {
         "instinct" => "Instinct",
         _ => return "No setup instruction is available for this peer.".into(),
     };
+    let (mcp, pair) = crate::pairing::route(peer).expect("remote Orca peer supports pairing");
     let intake = intake(peer);
-    let route = &radio999k::mailbox_catalog::http_by_id(peer)
-        .expect("built-in Orca peer has an HTTP route")
-        .route;
-    if peer != "muse" {
-        let (_, pair) = crate::pairing::route(peer).expect("remote Orca peer supports pairing");
-        return format!(
-            "Paste in {app}'s own private chat:\n\nConnect your existing {app} app to the P-999K mailbox `{peer}` at `{route}`. Use the owner-approved HTTPS origin and redeem the one-time code via JSON POST to `{pair}`. Keep the code and returned Bearer private. Authenticate MCP initialize and tools/list with the saved credential. {intake} {VERIFY}\n\nOn the hub Mac, run `999k pair offer {peer}` in your own terminal to generate the code and ready-to-paste offer. The code expires in 10 minutes."
-        );
-    }
-    let handoff = format!(
-        "Paste in {app}'s own chat:\n\nConnect your existing {app} agent to my P-999K mailbox `{peer}` at the MCP route `{route}`. Use the reachable hub address and the mailbox credential from your private connector settings. If either is missing, tell me which setting you need. Keep credentials out of chat. {intake} List the available mailbox tools. {VERIFY}"
-    );
-    if crate::pairing::route(peer).is_none() {
-        return handoff;
-    }
-    let bearer_env = format!(
-        "P999K_{}_BEARER",
-        peer.replace('-', "_").to_ascii_uppercase()
-    );
     format!(
-        r#"{handoff}
-
-Pairing is an optional owner action. It uses the exact HTTPS hub origin that serves this mailbox. Once that origin is reachable, run this in your own terminal to create one code:
-  999k pair offer {peer}
-
-Send the offer text to the selected peer's private chat. Its single-use code expires in 10 minutes. The receiving client stores the resulting credential privately.
-
-On the receiving computer, install the 999k release binary for its OS and architecture. Open a private Bash terminal. Set HUB_ORIGIN to the same owner-confirmed HTTPS origin and turn off shell tracing. Then run:
-  (umask 077 && mkdir -p "$HOME/.p-999k-{peer}")
-  IFS= read -rs -p 'Pairing code: ' code
-  printf '%s\n' "$code" | 999k pair redeem {peer} --origin "$HUB_ORIGIN" --code-stdin --output "$HOME/.p-999k-{peer}/bearer"
-  unset code
-
-Stop if the command does not confirm that the bearer was saved. Set the remote MCP URL to "$HUB_ORIGIN{route}". Store the saved bearer in the existing connector's private credential settings. If the hosted client has no secure import, ask the owner to configure its private connector. A separate terminal client can verify the mailbox route. The hosted client still needs its own connector.
-
-For a terminal Codex client, close its old session. Configure it and start a fresh one from the same private Bash terminal:
-  codex mcp add p-999k-{peer} --url "$HUB_ORIGIN{route}" --bearer-token-env-var {bearer_env}
-  {bearer_env}="$(cat "$HOME/.p-999k-{peer}/bearer")" codex
-
-For other clients, restart the client after changing its connector. List the mailbox tools, then verify a linked reply separately."#
+        "On the hub Mac: if the peer needs enrollment, configure its HTTPS routes and run `999k pair offer {peer}` in your private terminal. Use the peer's secure form for the code when available.\n\nMessage for {app}:\nConnect your existing {app} runtime to the P-999K mailbox `{peer}` at `{mcp}`. If you already have a saved credential, reuse it. Otherwise redeem the owner's single-use code over HTTPS at `{pair}` and save the returned credential privately. Initialize MCP and list its tools. {intake} {VERIFY}"
     )
 }
 
@@ -87,6 +50,7 @@ mod tests {
     #[test]
     fn handoff_uses_each_existing_apps_intake_instructions() {
         for (peer, app, intake_detail) in [
+            ("muse", "Muse", MUSE_POLLING),
             ("grok-bot", "GrokBot", "dedicated wake routine"),
             ("cue", "Cue", "arrival email as a notification"),
             (
@@ -100,10 +64,10 @@ mod tests {
             assert!(text.contains(app) && text.contains(mcp) && text.contains(pair));
             assert!(text.contains(intake(peer)) && text.contains(intake_detail));
             assert!(text.contains(VERIFY));
-            assert!(!text.contains("install the 999k release binary"));
+            let (owner, message) = text.split_once(&format!("Message for {app}:")).unwrap();
+            assert!(owner.contains(&format!("999k pair offer {peer}")));
+            assert!(!message.contains("pair offer") && !message.contains("codex mcp"));
         }
-        let muse = instructions("muse");
-        assert!(muse.contains(MUSE_POLLING) && muse.contains("install the 999k release binary"));
         let dot = instructions("dot");
         assert!(dot.contains(intake("dot")) && dot.contains("Secure MCP Tunnel"));
         assert!(dot.contains(VERIFY) && !dot.contains("pair offer"));
