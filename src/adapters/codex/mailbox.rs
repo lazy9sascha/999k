@@ -1315,10 +1315,12 @@ mod tests {
             wait(json!({"timeout_ms":0,"in_reply_to":outgoing}))["message"]["id"],
             oldest
         );
-        assert_eq!(
-            wait(json!({"timeout_ms":0,"in_reply_to":second_parent}))["message"]["id"],
-            second_reply
-        );
+        for timeout in [json!(0), json!(10000.0)] {
+            assert_eq!(
+                wait(json!({"timeout_ms":timeout,"in_reply_to":second_parent}))["message"]["id"],
+                second_reply
+            );
+        }
         assert_eq!(
             p.call(&headers(), "p-999k_read", json!({"message_id":oldest}))
                 .unwrap()["id"],
@@ -1335,6 +1337,26 @@ mod tests {
         let newer = q.send(envelope("dot", "codex-cloud")).unwrap().message.id;
         assert_eq!(wait(json!({"timeout_ms":0}))["message"]["id"], newer);
         assert_eq!(count(&p).2, 1);
+    }
+
+    #[test]
+    fn wait_rejects_fractional_out_of_range_and_nonnumeric_timeouts() {
+        let (_d, p) = fixture();
+        for timeout in [
+            json!(1.5),
+            json!(-1),
+            json!(10001),
+            json!(10000.5),
+            json!("10000"),
+            json!(true),
+            Value::Null,
+        ] {
+            assert_eq!(
+                p.call(&headers(), "p-999k_wait", json!({"timeout_ms":timeout})),
+                Err((400, "invalid_fields")),
+                "{timeout}"
+            );
+        }
     }
 }
 
