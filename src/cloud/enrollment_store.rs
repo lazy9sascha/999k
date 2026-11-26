@@ -9,7 +9,7 @@ use std::{
     fs::OpenOptions,
     io::{ErrorKind, Read},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use subtle::ConstantTimeEq;
@@ -17,9 +17,9 @@ use uuid::Uuid;
 
 const APPLICATION_ID: i64 = 0x504D_5145; // PMQE
 const SCHEMA_VERSION: i64 = 3;
-const PENDING_SECONDS: i64 = 15 * 60;
+pub(crate) const PENDING_SECONDS: i64 = 15 * 60;
 const BROWSER_SECONDS: i64 = 5 * 60;
-const UNOPENED_SECONDS: i64 = 12 * 60 * 60;
+pub(crate) const UNOPENED_SECONDS: i64 = 12 * 60 * 60;
 const MAX_PENDING: i64 = 32;
 const MAX_GUESSES: i64 = 5;
 const MAX_RESOURCES: usize = 16 * 1024;
@@ -102,6 +102,20 @@ pub(crate) enum LifecyclePhase {
     Revoked,
 }
 
+impl LifecyclePhase {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Ready => "ready",
+            Self::Expiring => "expiring",
+            Self::Revoking => "revoking",
+            Self::Expired => "expired",
+            Self::Revoked => "revoked",
+        }
+    }
+}
+
 pub(crate) struct LifecycleRecord {
     pub id: Uuid,
     pub phase: LifecyclePhase,
@@ -115,7 +129,7 @@ pub(crate) struct Enrollment {
     pub expires_at: i64,
     pub issued_at: Option<i64>,
     pub resources: Option<Vec<u8>>,
-    expiry_pending: bool,
+    pub phase: LifecyclePhase,
 }
 
 pub(crate) struct LoginRecord {
@@ -135,8 +149,7 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    /// Create only an absent file in an existing owner-private, trusted directory.
-    pub(crate) fn open(path: &Path) -> Result<Self> {
+    fn private_path(path: &Path) -> Result<PathBuf> {
         let parent = path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -154,10 +167,49 @@ impl Registry {
             return Err(RegistryError::Unavailable);
         }
         // Resolve system directory aliases such as macOS /var before using SQLite NOFOLLOW.
-        let path = parent
+        Ok(parent
             .canonicalize()
             .map_err(|_| RegistryError::Unavailable)?
-            .join(path.file_name().ok_or(RegistryError::Unavailable)?);
+            .join(path.file_name().ok_or(RegistryError::Unavailable)?))
+    }
+
+    fn verify_header(path: &Path) -> Result<()> {
+        let mut file = radio999k::private_file::open_private_file(path)
+            .map_err(|_| RegistryError::Unavailable)?;
+        let mut header = [0; 72];
+        file.read_exact(&mut header)
+            .map_err(|_| RegistryError::Unavailable)?;
+        if &header[..16] != b"SQLite format 3\0"
+            || (header[60..64] != 1_u32.to_be_bytes()
+                && header[60..64] != 2_u32.to_be_bytes()
+                && header[60..64] != (SCHEMA_VERSION as u32).to_be_bytes())
+            || header[68..72] != (APPLICATION_ID as u32).to_be_bytes()
+        {
+            return Err(RegistryError::Unavailable);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn open_for_inspection(path: &Path) -> Result<Self> {
+        let path = Self::private_path(path)?;
+        Self::verify_header(&path)?;
+        let connection = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        let application: i64 =
+            connection.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if application != APPLICATION_ID || !matches!(version, 2 | SCHEMA_VERSION) {
+            return Err(RegistryError::Unavailable);
+        }
+        Ok(Self { connection })
+    }
+
+    /// Create only an absent file in an existing owner-private, trusted directory.
+    pub(crate) fn open(path: &Path) -> Result<Self> {
+        let path = Self::private_path(path)?;
         let created = match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -169,24 +221,14 @@ impl Registry {
             Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
             Err(_) => return Err(RegistryError::Unavailable),
         };
-        let mut file = radio999k::private_file::open_private_file(&path)
-            .map_err(|_| RegistryError::Unavailable)?;
-        if !created {
-            // Check the SQLite file header before SQLite can open or recover another database.
-            let mut header = [0; 72];
-            file.read_exact(&mut header)
+        if created {
+            radio999k::private_file::open_private_file(&path)
                 .map_err(|_| RegistryError::Unavailable)?;
-            if &header[..16] != b"SQLite format 3\0"
-                || (header[60..64] != 1_u32.to_be_bytes()
-                    && header[60..64] != 2_u32.to_be_bytes()
-                    && header[60..64] != (SCHEMA_VERSION as u32).to_be_bytes())
-                || header[68..72] != (APPLICATION_ID as u32).to_be_bytes()
-            {
-                return Err(RegistryError::Unavailable);
-            }
+        } else {
+            // Check the SQLite file header before SQLite can open or recover another database.
+            Self::verify_header(&path)?;
         }
 
-        drop(file);
         let mut connection = Connection::open_with_flags(
             &path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -278,7 +320,7 @@ impl Registry {
             expires_at,
             issued_at: None,
             resources: None,
-            expiry_pending: false,
+            phase: LifecyclePhase::Pending,
         })
     }
 
@@ -767,6 +809,18 @@ impl Registry {
         load_lifecycle(&self.connection, &id.to_string())
     }
 
+    pub(crate) fn list_lifecycle(&self) -> Result<Vec<LifecycleRecord>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, state, removal, resources, ever_connected FROM enrollments ORDER BY id",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next()? {
+            records.push(lifecycle_row(row)?);
+        }
+        Ok(records)
+    }
+
     pub(crate) fn lifecycle_candidates(&self, now: i64) -> Result<Vec<LifecycleRecord>> {
         let mut candidates = self.connection.prepare(
             "SELECT id, state, removal, resources, ever_connected FROM enrollments
@@ -917,7 +971,16 @@ fn lifecycle_row(row: &rusqlite::Row<'_>) -> Result<LifecycleRecord> {
     let id: String = row.get(0)?;
     let state: String = row.get(1)?;
     let removal: Option<String> = row.get(2)?;
-    let phase = match (state.as_str(), removal.as_deref()) {
+    Ok(LifecycleRecord {
+        id: Uuid::parse_str(&id).map_err(|_| RegistryError::Unavailable)?,
+        phase: lifecycle_phase(&state, removal.as_deref())?,
+        resources: row.get(3)?,
+        ever_connected: row.get(4)?,
+    })
+}
+
+fn lifecycle_phase(state: &str, removal: Option<&str>) -> Result<LifecyclePhase> {
+    let phase = match (state, removal) {
         ("pending", None) => LifecyclePhase::Pending,
         ("approved", None) => LifecyclePhase::Approved,
         ("ready", None) => LifecyclePhase::Ready,
@@ -927,12 +990,7 @@ fn lifecycle_row(row: &rusqlite::Row<'_>) -> Result<LifecycleRecord> {
         ("revoked", Some("revoked")) => LifecyclePhase::Revoked,
         _ => return Err(RegistryError::Unavailable),
     };
-    Ok(LifecycleRecord {
-        id: Uuid::parse_str(&id).map_err(|_| RegistryError::Unavailable)?,
-        phase,
-        resources: row.get(3)?,
-        ever_connected: row.get(4)?,
-    })
+    Ok(phase)
 }
 
 fn valid_code(code: &str) -> bool {
@@ -971,15 +1029,15 @@ fn code_digest(id: Uuid, code: &str) -> [u8; 32] {
 }
 
 fn load(connection: &Connection, id: &str) -> Result<Enrollment> {
-    let (state, expires_at, issued_at, resources, expiry_pending): (
+    let (state, expires_at, issued_at, resources, removal): (
         String,
         i64,
         Option<i64>,
         Option<Vec<u8>>,
-        bool,
+        Option<String>,
     ) = connection
         .query_row(
-            "SELECT state, expires_at, issued_at, resources, removal IS 'expiring'
+            "SELECT state, expires_at, issued_at, resources, removal
              FROM enrollments WHERE id = ?1",
             [id],
             |row| {
@@ -994,12 +1052,14 @@ fn load(connection: &Connection, id: &str) -> Result<Enrollment> {
         )
         .optional()?
         .ok_or(RegistryError::NotFound)?;
-    let state = match state.as_str() {
-        "pending" => EnrollmentState::Pending,
-        "approved" => EnrollmentState::Approved,
-        "ready" => EnrollmentState::Ready,
-        "revoked" => EnrollmentState::Revoked,
-        _ => return Err(RegistryError::Unavailable),
+    let phase = lifecycle_phase(&state, removal.as_deref())?;
+    let state = match phase {
+        LifecyclePhase::Pending => EnrollmentState::Pending,
+        LifecyclePhase::Approved => EnrollmentState::Approved,
+        LifecyclePhase::Ready | LifecyclePhase::Expiring => EnrollmentState::Ready,
+        LifecyclePhase::Expired | LifecyclePhase::Revoking | LifecyclePhase::Revoked => {
+            EnrollmentState::Revoked
+        }
     };
     Ok(Enrollment {
         id: Uuid::parse_str(id).map_err(|_| RegistryError::Unavailable)?,
@@ -1007,7 +1067,7 @@ fn load(connection: &Connection, id: &str) -> Result<Enrollment> {
         expires_at,
         issued_at,
         resources,
-        expiry_pending,
+        phase,
     })
 }
 
@@ -1028,7 +1088,7 @@ fn pending(enrollment: Enrollment, now: i64) -> Result<Enrollment> {
 
 fn provisionable(enrollment: Enrollment, now: i64) -> Result<Enrollment> {
     let enrollment = unexpired(enrollment, now)?;
-    if enrollment.expiry_pending {
+    if enrollment.phase == LifecyclePhase::Expiring {
         return Err(RegistryError::Unavailable);
     }
     match enrollment.state {
@@ -1064,6 +1124,25 @@ mod tests {
             .approve(enrollment.id, account, &HashSet::from([account]), 1)
             .unwrap();
         enrollment.id
+    }
+
+    #[test]
+    fn inspection_lists_existing_records_without_creating_or_changing_the_database() {
+        let home = private_home();
+        let path = home.path().join("registry.db");
+        assert!(Registry::open_for_inspection(&path).is_err());
+        assert!(!path.exists());
+        let mut registry = Registry::open(&path).unwrap();
+        let id = approved(&mut registry);
+        let before = fs::read(&path).unwrap();
+        let mut inspection = Registry::open_for_inspection(&path).unwrap();
+        assert_eq!(inspection.list_lifecycle().unwrap()[0].id, id);
+        assert_eq!(
+            inspection.lifecycle(id).unwrap().phase,
+            LifecyclePhase::Approved
+        );
+        assert!(inspection.request_revoke(id).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 
     #[test]

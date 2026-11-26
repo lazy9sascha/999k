@@ -70,10 +70,27 @@ test('shows the optional management bot purpose without opening a terminal', asy
   assert.ok(purpose)
   assert.match(purpose.props.code, /list peers, run "\$HOME\/\.local\/bin\/999k" init --orca\./)
   assert.match(purpose.props.code, /--orca-peer <id>.*dot, instinct, cue, muse, grok-bot\./)
+  assert.match(purpose.props.code, /“Use my own domain”.*orca-ingress\.json/)
   assert.match(purpose.props.code, /owner approval needed, and any remote handoff.*Home Chat/)
 
   await view.select({ label: 'Setup target' }, 'muse')
   assert.equal(view.find({ label: 'Bot purpose' }), null)
+  assert.equal(launches, 0)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('shows own-domain steps without starting hosted setup', async () => {
+  let launches = 0
+  const host = mockHost({ requests: { 'setup.open': () => {
+    launches++
+    return { opened: true }
+  } } })
+  const view = await mount(panel, { host })
+  assert.ok(view.find({ text: /P-999K is experimental/ }))
+  await view.press({ text: 'Use my own domain' })
+  assert.ok(view.find({ text: /owner-private orca-ingress\.json/ }))
+  assert.ok(view.find({ text: /before retiring the previous address/ }))
   assert.equal(launches, 0)
   assert.deepEqual(view.errors, [])
   await view.unmount()

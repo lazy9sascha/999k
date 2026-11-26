@@ -277,6 +277,10 @@ fn enroll(
             if status.public_url != binding.public_url {
                 return Err("hosted enrollment binding changed".into());
             }
+            if let Some(phase @ ("expiring" | "revoking" | "expired")) = status.lifecycle.as_deref()
+            {
+                return Err(lifecycle_notice(phase).into());
+            }
             match status.state.as_str() {
                 "approved" | "ready" => break,
                 "pending" => {
@@ -479,6 +483,51 @@ pub(crate) fn has_selectable_reservation(home: &Path) -> Result<bool, String> {
     Ok(load(&home.join(FILE))?.is_some_and(|saved| saved.requested_routes.is_some()))
 }
 
+fn lifecycle_notice(phase: &str) -> &'static str {
+    match phase {
+        "pending" => "Approve the registration in your browser.",
+        "approval_expired" => {
+            "The approval expired. Run the same setup command to request a new address."
+        }
+        "approved" => "Run hosted setup again to finish reserving the address.",
+        "ready" => "The registration is ready. Check each peer's connection in its app.",
+        "expiring" => "The unused hosted connection is being removed.",
+        "revoking" => "The operator has started removing public access.",
+        "expired" => {
+            "The unused hosted connection expired. Contact your operator to restore the address."
+        }
+        "revoked" => "Public access was revoked. Contact your operator to restore the address.",
+        _ => "Hosted registration status is unavailable.",
+    }
+}
+
+pub(crate) fn print_status(home: &Path) -> Result<(), String> {
+    let home =
+        cloud_setup::require_home(home).map_err(|_| "hosted hub home must be owner-private")?;
+    let Some(saved) = load(&home.join(FILE))? else {
+        println!("No hosted registration is saved in this hub home.");
+        return Ok(());
+    };
+    let Some(binding) = saved.binding else {
+        println!("Hosted setup has started. Run the same setup command to continue.");
+        return Ok(());
+    };
+    let origin = https_origin(&saved.origin)?;
+    let status =
+        hosted_registration::status(origin.as_str(), &binding.installation_id, &saved.proof);
+    let phase = match status {
+        Ok(status) if status.public_url == binding.public_url => {
+            status.lifecycle.unwrap_or(status.state)
+        }
+        Ok(_) => return Err("hosted enrollment binding changed".into()),
+        Err(reason) if reason == "registration_expired" => "approval_expired".into(),
+        Err(reason) if reason == "registration_revoked" => "revoked".into(),
+        Err(reason) => return Err(reason),
+    };
+    println!("{}", lifecycle_notice(&phase));
+    Ok(())
+}
+
 pub(crate) fn saved_route_provider(home: &Path, route: &str) -> Result<Option<Url>, String> {
     let Some(saved) = load(&home.join(FILE))? else {
         return Ok(None);
@@ -520,6 +569,7 @@ fn reserve(
     }
     let home =
         cloud_setup::require_home(home).map_err(|_| "hosted hub home must be owner-private")?;
+    let selectable = intent == OriginIntent::SelectableUnix;
     let schedule = intent == OriginIntent::UnixV1 || selected_mcp_path.is_some();
     let public_url = enroll(
         &home,
@@ -534,6 +584,10 @@ fn reserve(
     )?;
     if selected_mcp_path.is_none() {
         println!("reserved_address={public_url}");
+        if selectable && staged_unix(&home)?.is_some_and(|(_, scope, _)| scope.mcp_paths.is_empty())
+        {
+            eprintln!("Address reserved. Select a peer to publish its route.");
+        }
     } else {
         println!("Hosted address reserved.");
     }

@@ -141,6 +141,11 @@ enum Command {
         #[arg(long)]
         probe_public: bool,
     },
+    /// Show the current lifecycle state of your hosted registration.
+    HostedStatus {
+        #[arg(long)]
+        home: Option<PathBuf>,
+    },
     /// Stage a local-only quickstart home and print next steps.
     Quickstart {
         #[arg(long, default_value = ".local-quickstart")]
@@ -621,6 +626,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &cloud_setup::resolve_home(home.clone()),
             *probe_public,
         )),
+        Command::HostedStatus { home } => {
+            hosted_enrollment::print_status(&cloud_setup::resolve_home(home.clone()))
+                .map_err(Into::into)
+        }
         Command::Quickstart { home } => cloud_setup::quickstart(home),
         Command::NotifyArrivals {
             queue,

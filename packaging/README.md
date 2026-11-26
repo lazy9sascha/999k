@@ -5,7 +5,7 @@ To build for hosted setup, set `RADIO999K_RELEASE_REGISTRATION_URL` to the appro
 Build and smoke-test each native archive before rendering its installers.
 
 ```sh
-python3 packaging/render.py 0.2.1 target/artifacts target/distribution
+python3 packaging/render.py 0.2.2 target/artifacts target/distribution
 ```
 
 The archive directory must contain `SHA256SUMS` and the archives it lists.
@@ -57,27 +57,27 @@ The release workflow builds a separate Orca plugin archive once, with its own
 checksum. Build it locally with Python 3:
 
 ```sh
-python3 packaging/package_orca.py 0.2.1 target/orca-plugin
+python3 packaging/package_orca.py 0.2.2 target/orca-plugin
 python3 tests/orca_release_package.py
-(cd target/orca-plugin && shasum -a 256 p-999k-0.2.1.tar.gz > SHA256SUMS-orca)
+(cd target/orca-plugin && shasum -a 256 p-999k-0.2.2.tar.gz > SHA256SUMS-orca)
 ```
 
 The plugin version comes from its manifest and can differ from the CLI version. The archive contains a single
-installable folder, `p-999k-0.2.1`. Keep the Orca checksum with the Orca
+installable folder, `p-999k-0.2.2`. Keep the Orca checksum with the Orca
 archive in its own directory. The native installer checksum file lists platform
 archives only.
 
-Install the [0.2.1 CLI](../docs/quickstart.md#connect-orca-to-your-existing-peers) first. The plugin runs `$HOME/.local/bin/999k`. The 0.2.0 release archive lacks the required `--orca-peer` and `pair` commands. Use Orca 1.4.268 or newer
+Install the [0.2.2 CLI](../docs/quickstart.md#connect-orca-to-your-existing-peers) first. The plugin runs `$HOME/.local/bin/999k`. The 0.2.0 release archive lacks the required `--orca-peer` and `pair` commands. Use Orca 1.4.268 or newer
 and run these commands from the directory containing the Orca archive and its release checksum file.
 
 ```sh
 shasum -a 256 --check SHA256SUMS-orca
-tar -xzf p-999k-0.2.1.tar.gz
-orca plugin validate ./p-999k-0.2.1
-orca plugin install ./p-999k-0.2.1
+tar -xzf p-999k-0.2.2.tar.gz
+orca plugin validate ./p-999k-0.2.2
+orca plugin install ./p-999k-0.2.2
 ```
 
 The catalog ID is `lazy9sascha.p-999k`. Existing local installations of 0.2.0 use `local.radio999k`. The trusted worker uses `workspace:read` to find the active local workspace and `terminal:send` to run the setup command in a terminal there. To remove the installed plugin and its approval, run `orca plugin uninstall lazy9sascha.p-999k`. The first install can stop to request approval. Review the access and use the approval command Orca prints for that exact archive. After installation, open **P-999K** in your local workspace. For a custom 999K
 executable path, run that executable's `init --orca` in a local Orca terminal.
 
-For a catalog release, copy the extracted files and the plugin README to the root of the public plugin repository. Add the `orca-plugin` topic and tag the commit with the plugin version, such as `v0.2.1`.
+For a catalog release, copy the extracted files and the plugin README to the root of the public plugin repository. Add the `orca-plugin` topic and tag the commit with the plugin version, such as `v0.2.2`.

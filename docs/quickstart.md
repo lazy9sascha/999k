@@ -2,29 +2,31 @@
 
 Use the [Orca plugin](#connect-orca-to-your-existing-peers) to ask an existing agent for help from your project chat. For a standalone hub, start with [the CLI](#1-install).
 
+P-999K is experimental. Use a hosted address or [connect through your own HTTPS domain](#switch-to-your-own-domain). You can keep the same hub and queue when you switch.
+
 ## Connect Orca to your existing peers
 
-Use an Apple Silicon Mac with Orca 1.4.268 or later. Open a terminal in an empty download directory. This example installs [0.2.1](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1). If this Mac already runs a managed hub, follow the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
+Use an Apple Silicon Mac with Orca 1.4.268 or later. Open a terminal in an empty download directory. This example installs [0.2.2](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.2). If this Mac already runs a managed hub, follow the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
 
 ```sh
 (
   set -e
-  release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.1
-  for file in install.sh 999k-0.2.1-aarch64-apple-darwin.tar.gz p-999k-0.2.1.tar.gz SHA256SUMS-orca; do
+  release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.2
+  for file in install.sh 999k-0.2.2-aarch64-apple-darwin.tar.gz p-999k-0.2.2.tar.gz SHA256SUMS-orca; do
     curl -q --proto '=https' --proto-redir '=https' -fLsS -o "$file" "$release/$file"
   done
   sh ./install.sh
   "$HOME/.local/bin/999k" --version
   shasum -a 256 --check SHA256SUMS-orca
-  tar -xzf p-999k-0.2.1.tar.gz
-  orca plugin validate ./p-999k-0.2.1
-  orca plugin install ./p-999k-0.2.1
+  tar -xzf p-999k-0.2.2.tar.gz
+  orca plugin validate ./p-999k-0.2.2
+  orca plugin install ./p-999k-0.2.2
 )
 ```
 
 If your shell cannot find `orca`, use the executable inside your installed Orca app for the last two commands. For an app in Applications, its path is `/Applications/Orca.app/Contents/Resources/bin/orca`.
 
-Expect `999k 0.2.1`. Orca will show the permissions for the exact package. The trusted worker finds the active local workspace and opens a terminal there to run the setup command. Review the permissions and use the approval command Orca prints. To revoke the plugin’s approval later, run `orca plugin uninstall lazy9sascha.p-999k`. The [plugin packaging guide](../packaging/README.md#orca-plugin-archive) also covers building from source.
+Expect `999k 0.2.2`. Orca will show the permissions for the exact package. The trusted worker finds the active local workspace and opens a terminal there to run the setup command. Review the permissions and use the approval command Orca prints. To revoke the plugin’s approval later, run `orca plugin uninstall lazy9sascha.p-999k`. The [plugin packaging guide](../packaging/README.md#orca-plugin-archive) also covers building from source.
 
 1. In a local workspace, open **P-999K** in the right sidebar. Choose **Initial setup** and open its terminal. On a fresh home, setup starts the local hub with its private stdio socket, creates one sender and lists zero external peers.
 2. For a hosted connection, follow the [transport steps for your selected peer](#prepare-the-selected-peers-transport). To manage other connections in chat, select **Set up a management bot**. In **Bots → New bot**, create **P-999K** with the purpose shown in the panel. Open its Home Chat and ask **“Connect Muse.”** You can also select Muse in the plugin panel. Choose **I’ll do it myself** for the manual steps, or **Ask my assistant to do it** to copy a request to an assistant that already has that capability. Both paths run the same command on the Mac:
@@ -80,17 +82,39 @@ For a custom installation, pass absolute paths. Orca relay tool commands require
 
 When a project agent calls a bot, keep the Orca question ID with the 999K original ID. After retrieving the matching answer, the bot can use `orca orchestration reply --id <original-orca-question-id> --body-file -` and pass the answer on standard input.
 
+### Switch to your own domain
+
+Choose **Initial setup → Use my own domain** in the panel, or ask your P-999K
+management bot **“Use my own domain.”** If you created the bot before it offered
+this guide, update its purpose from **Set up a management bot**.
+
+1. Point an [HTTPS proxy or tunnel you control](tunnels.md#use-your-own-https-origin)
+   at the hub you already use. Keep the same hub home. Publish the selected
+   peer’s MCP and pairing routes. For Dot, configure its
+   [protected OAuth endpoint](hosted-registration.md#connect-dot-and-codex-cloud-through-cloudflare).
+2. In the hub home's owner-private `orca-ingress.json`, add the peer ID and
+   exact MCP URL. Keep the other entries and file mode `0600`.
+   For example, use `{"muse":"https://radio.example.com/muse/mcp"}`.
+   Setup uses that URL for the peer even if you already reserved a hosted address.
+3. Run `999k init --orca --orca-peer <id>` in the same home. Update the
+   connector in the peer's private settings. Use **Get a setup code** where
+   supported, or authorize Dot at its new OAuth endpoint.
+4. Ask the peer one question in the original Orca project. Keep the previous
+   connection until the new connector returns the matching reply. To roll
+   back, restore the previous endpoint in the app and remove or restore that
+   peer's entry in `orca-ingress.json`.
+
 <a id="1-build"></a>
 
 ## 1. Install
 
-Open the [0.2.1 downloads](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1). Download `install.sh` and the native archive for your computer into the same empty directory.
+Open the [0.2.2 downloads](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.2). Download `install.sh` and the native archive for your computer into the same empty directory.
 
 | Computer | Native archive |
 | --- | --- |
-| Apple Silicon Mac | `999k-0.2.1-aarch64-apple-darwin.tar.gz` |
-| Linux x86-64 | `999k-0.2.1-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux ARM64 | `999k-0.2.1-aarch64-unknown-linux-gnu.tar.gz` |
+| Apple Silicon Mac | `999k-0.2.2-aarch64-apple-darwin.tar.gz` |
+| Linux x86-64 | `999k-0.2.2-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 | `999k-0.2.2-aarch64-unknown-linux-gnu.tar.gz` |
 
 From that directory, run:
 
@@ -103,7 +127,7 @@ The installer verifies the archive and installs `999k` and `999k-dot-resolve` in
 If an archive is not available for your machine, build this checkout with stable Rust and 2024 edition support. Use a new directory so the source build does not replace an existing installation.
 
 ```sh
-source_bin="$HOME/.local/libexec/999k/0.2.1/bin"
+source_bin="$HOME/.local/libexec/999k/0.2.2/bin"
 cargo build --locked --release --bin 999k --bin 999k-dot-resolve &&
 mkdir -p "$(dirname "$source_bin")" &&
 mkdir -m 700 "$source_bin" &&
@@ -200,9 +224,9 @@ You need Python 3 for this optional test. It does not require Rust or a source c
 Use the smoke script from the tag you installed.
 
 ```sh
-version=0.2.1
+version=0.2.2
 curl -q --proto '=https' -fLsS -o 999k-smoke.sh \
-  "https://raw.githubusercontent.com/lazy9sascha/p-999k/0.2.1/scripts/smoke-release.sh" &&
+  "https://raw.githubusercontent.com/lazy9sascha/p-999k/0.2.2/scripts/smoke-release.sh" &&
 sh ./999k-smoke.sh --installed "$(dirname "$RADIO999K_BIN")" "$version"
 ```
 

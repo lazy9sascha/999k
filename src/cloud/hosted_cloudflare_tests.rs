@@ -13,6 +13,7 @@ const HOST: &str = "pilot.example.test";
 const INSTALLATION: &str = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
 const API: &str = "synthetic-test-management-token";
 const CONNECTOR: &str = "synthetic-test-connector-token";
+const DOT_ACCESS_ID: &str = "dddddddd-dddd-4ddd-dddd-dddddddddddd";
 
 fn installation() -> Uuid {
     Uuid::parse_str(INSTALLATION).unwrap()
@@ -70,6 +71,19 @@ fn dns_path() -> String {
 
 fn tunnels_path() -> String {
     format!("/client/v4/accounts/{ACCOUNT}/cfd_tunnel")
+}
+
+fn dot_access_step(method: &'static str) -> Step {
+    let domain = format!("{HOST}/dot/mcp");
+    Step::result(
+        method,
+        format!("/client/v4/accounts/{ACCOUNT}/access/apps/{DOT_ACCESS_ID}"),
+        json!({
+            "id": DOT_ACCESS_ID, "type": "self_hosted", "domain": domain,
+            "self_hosted_domains": [domain], "destinations": [{"uri":domain}],
+            "oauth_configuration": {"enabled":true},
+        }),
+    )
 }
 
 fn lookup_dns(result: serde_json::Value) -> Step {
@@ -642,12 +656,14 @@ async fn operator_reopens_sqlite_and_reconciles_a_lost_tunnel_create_response() 
                 tunnel: ResourceState::Known(ID.into()),
                 dns_record: ResourceState::Known(DNS_ID.into()),
                 selected_routes: None,
+                dot_access_app: None,
             }
         } else {
             CloudflareResources {
                 tunnel: ResourceState::Attempted,
                 dns_record: ResourceState::New,
                 selected_routes: None,
+                dot_access_app: None,
             }
         };
         assert_eq!(checkpoint, expected);
@@ -728,20 +744,33 @@ async fn approved_reservation_attaches_peers_to_the_same_owned_tunnel() {
         create_dns(),
         get_token(),
     ];
+    let mut ready_tunnel = tunnel();
+    ready_tunnel["status"] = json!("healthy");
+    steps.extend([
+        Step::result("GET", format!("{}/{ID}", tunnels_path()), ready_tunnel),
+        Step::result("GET", format!("{}/{DNS_ID}", dns_path()), dns(&marker())),
+        dot_access_step("GET"),
+    ]);
     let mut published = Vec::new();
+    let dot = [
+        "/dot/mcp",
+        r"/\.well-known/oauth-protected-resource/dot/mcp",
+    ];
     for (mcp, pairing) in peers {
         published.extend([mcp, pairing]);
         steps.extend([
             lookup_dns(json!([dns(&marker())])),
+            dot_access_step("GET"),
             lookup_tunnel(json!([tunnel()])),
-            configure(&published),
+            configure(&[published.as_slice(), &dot].concat()),
             get_token(),
         ]);
     }
     steps.extend([
         lookup_dns(json!([dns(&marker())])),
+        dot_access_step("GET"),
         lookup_tunnel(json!([tunnel()])),
-        configure(&published),
+        configure(&[published.as_slice(), &dot].concat()),
         get_token(),
     ]);
     let replace = |s: &str| {
@@ -805,7 +834,7 @@ async fn approved_reservation_attaches_peers_to_the_same_owned_tunnel() {
         .into_iter()
         .chain(peers.iter().map(|(mcp, _)| Some(*mcp)))
         .chain([None]);
-    for requested in requested_routes {
+    for (index, requested) in requested_routes.enumerate() {
         let requested: Vec<_> = requested.into_iter().collect();
         expected.extend_from_slice(&requested);
         let (status, result) = call(
@@ -822,6 +851,10 @@ async fn approved_reservation_attaches_peers_to_the_same_owned_tunnel() {
         assert_eq!(result["origin"]["nonce"], nonce);
         assert_eq!(result["origin"]["mcp_paths"], json!(expected));
         operator = open();
+        if index == 0 {
+            operator.track_dot_access(id, DOT_ACCESS_ID).await.unwrap();
+            operator = open();
+        }
     }
     let legacy = format!("/v1/enrollments/{id}/finish");
     assert_eq!(

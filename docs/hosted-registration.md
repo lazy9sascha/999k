@@ -163,13 +163,52 @@ with an older copy. Quiesce the service and reconcile the affected installations
 Run these commands on the operator Mac with the same private home:
 
 ```sh
+999k-registration --home /path/to/private-registration-home --list
+999k-registration --home /path/to/private-registration-home --status <installation-id>
+999k-registration --home /path/to/private-registration-home --status <installation-id> --check-cloudflare
 999k-registration --home /path/to/private-registration-home --revoke <installation-id>
 999k-registration --home /path/to/private-registration-home --reissue <installation-id>
 ```
 
-Revoke removes the installation's Cloudflare route and tunnel. The command reports completion only after a Cloudflare read shows removal. If the operation stays pending, retry with the same installation ID. Reissue prepares the same address for a new tunnel. The original installer uses its existing installation proof to finish setup.
+List and status read the private registry. The Cloudflare check reads the recorded
+tunnel, DNS record, and any tracked Dot Access app. Provider results describe resources.
+Use a linked reply in the original chat to verify the peer connection.
+
+After you prepare the dedicated Dot Access app, track it against its ready
+address-first installation:
+
+```sh
+999k-registration --home /path/to/private-registration-home \
+  --track-dot-access <installation-id> --access-app <access-app-id>
+```
+
+Track an app dedicated to this installation's exact `/dot/mcp` path with
+Managed OAuth enabled. Later route changes preserve that protected Dot path.
+The hub still needs the private Access binding described above. The command
+uses the operator's Cloudflare credential to verify the app and the saved
+tunnel and DNS record. Grant that credential permission to read and remove the
+tracked Access app. [Cloudflare Access application API](https://developers.cloudflare.com/api/resources/zero_trust/subresources/access/subresources/applications/)
+
+Revoke removes the installation's public route and tunnel, then removes its
+tracked Dot Access app. The command reports completion only after Cloudflare
+confirms removal. If the operation stays pending, retry with the same
+installation ID. Reissue prepares the same address for a new tunnel. The
+original installer uses its existing installation proof to finish setup.
+Prepare and track a new Dot Access app if the user wants Dot on the restored address.
 
 The serving process checks for expired tunnels every 15 minutes. It starts removal at 12 hours after issue only if Cloudflare reports that the tunnel never connected. The service keeps installations with a recorded connection and skips unknown states. Cloudflare does not offer an atomic check for prior connection at deletion. The expiry path never forces a disconnect.
+
+### What users see
+
+Before users request an email code, the registration page explains the role of
+Supabase Auth and Cloudflare, what the operator stores, and when an unused
+hosted address may expire. The approval page directs users back to the Mac to
+finish setup and connect their peers.
+
+On the hub Mac, run `999k hosted-status` with the same `--home` used for setup.
+The command reads the registration with the saved installation proof and
+explains pending approval, expiry, and revocation. Contact the operator to
+restore revoked public access. Revocation leaves the user's local mailbox in place.
 
 Before enabling automated provisioning, use a manually provisioned pilot
 installation with a real off-host Dot client. Use its own public HTTPS URL and

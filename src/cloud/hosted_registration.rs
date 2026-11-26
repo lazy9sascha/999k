@@ -32,6 +32,7 @@ struct BeginResponse {
 #[derive(Deserialize)]
 pub(crate) struct StatusResponse {
     pub(crate) state: String,
+    pub(crate) lifecycle: Option<String>,
     pub(crate) public_url: String,
 }
 

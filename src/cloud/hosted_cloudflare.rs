@@ -25,6 +25,8 @@ pub(crate) struct CloudflareResources {
     pub(crate) dns_record: ResourceState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) selected_routes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) dot_access_app: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -407,6 +409,9 @@ impl CloudflareProvisioner {
         if record.is_some() && !matches!(resources.tunnel, ResourceState::Known(_)) {
             return Err(ProvisionError::Conflict);
         }
+        if let Some(app_id) = resources.dot_access_app.as_deref() {
+            self.require_dot_access(hostname, app_id).await?;
+        }
         let tunnel = self
             .ensure_tunnel(&collection, &name, resources, &mut persist)
             .await?;
@@ -426,8 +431,15 @@ impl CloudflareProvisioner {
             json!({"hostname": hostname, "path": path, "service": service,
                    "originRequest": {"httpHostHeader": origin_host}})
         };
-        for path in approved_mcp_paths {
-            let path = path.as_ref();
+        let added_dot = resources.dot_access_app.is_some()
+            && !approved_mcp_paths
+                .iter()
+                .any(|path| path.as_ref() == "/dot/mcp");
+        let paths = approved_mcp_paths
+            .iter()
+            .map(AsRef::as_ref)
+            .chain(added_dot.then_some("/dot/mcp"));
+        for path in paths {
             ingress.push(route(format!("^{path}$")));
             if unix.is_some()
                 && let Some(pair) = radio999k::mailbox_catalog::pairing_sibling(path)

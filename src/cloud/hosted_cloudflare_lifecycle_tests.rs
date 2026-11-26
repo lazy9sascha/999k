@@ -7,6 +7,7 @@ fn saved_resources() -> CloudflareResources {
         tunnel: ResourceState::Known(ID.to_owned()),
         dns_record: ResourceState::Known(DNS_ID.to_owned()),
         selected_routes: None,
+        dot_access_app: None,
     }
 }
 
@@ -36,6 +37,46 @@ fn connector_list(method: &'static str, result: serde_json::Value) -> Step {
         format!("{}/{ID}/connections", tunnels_path()),
         result,
     )
+}
+
+#[tokio::test]
+async fn tracked_dot_access_removal_resumes_and_rejects_shared_apps() {
+    let mut shared = dot_access_step("GET");
+    shared.result["destinations"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"uri":"another.example.test/dot/mcp"}));
+    let (provider, server) = fixture(vec![
+        tunnel_exact("GET", "healthy").status(404),
+        dns_exact("GET").status(404),
+        shared,
+        tunnel_exact("GET", "healthy").status(404),
+        dns_exact("GET").status(404),
+        dot_access_step("GET"),
+        dot_access_step("DELETE"),
+        dot_access_step("GET"),
+        tunnel_exact("GET", "healthy").status(404),
+        dns_exact("GET").status(404),
+        dot_access_step("GET").status(404),
+    ])
+    .await;
+    let resources = CloudflareResources {
+        dot_access_app: Some(DOT_ACCESS_ID.to_owned()),
+        ..saved_resources()
+    };
+    assert!(matches!(
+        provider.revoke(&saved(&resources)).await,
+        Err(ProvisionError::Conflict)
+    ));
+    assert_eq!(
+        provider.revoke(&saved(&resources)).await.unwrap(),
+        ProviderLifecycleOutcome::Pending
+    );
+    assert_eq!(
+        provider.revoke(&saved(&resources)).await.unwrap(),
+        ProviderLifecycleOutcome::Complete
+    );
+    server.await.unwrap();
 }
 
 #[tokio::test]

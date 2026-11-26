@@ -9,10 +9,11 @@ mod hosted_registration_lifecycle;
 #[path = "../cloud/hosted_supabase.rs"]
 mod hosted_supabase;
 
-use clap::Parser;
-use enrollment_store::{Enrollment, EnrollmentState, Registry, RegistryError};
+use clap::{ArgGroup, Parser};
+use enrollment_store::{Enrollment, EnrollmentState, LifecycleRecord, Registry, RegistryError};
 #[path = "../cloud/hosted_origin.rs"]
 mod hosted_origin;
+use hosted_cloudflare::lifecycle::SavedCloudflareInstallation;
 use hosted_cloudflare::{CloudflareProvisioner, CloudflareResources, valid_public_mcp_path};
 use hosted_origin::UnixOrigin;
 use hosted_registration_http::{
@@ -41,15 +42,31 @@ use uuid::Uuid;
 #[derive(Parser)]
 #[command(
     name = "999k-registration",
-    about = "Serve hosted 999K registration on loopback"
+    about = "Serve and manage hosted 999K registration",
+    group(ArgGroup::new("operation").args(["list", "status", "revoke", "reissue", "track_dot_access"]))
 )]
 struct Options {
     #[arg(long)]
     home: PathBuf,
-    #[arg(long, value_parser = clap::value_parser!(u16).range(1..), required_unless_present_any = ["revoke", "reissue"], conflicts_with_all = ["revoke", "reissue"])]
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..), required_unless_present = "operation", conflicts_with = "operation")]
     port: Option<u16>,
+    /// List registrations and the recorded Cloudflare lifecycle state.
+    #[arg(long)]
+    list: bool,
+    /// Inspect the recorded lifecycle state of one installation.
+    #[arg(long)]
+    status: Option<Uuid>,
+    /// Read Cloudflare's current state for the installation selected by --status.
+    #[arg(long, requires = "status")]
+    check_cloudflare: bool,
+    /// Track an existing dedicated Dot Access application for one ready installation.
+    #[arg(long, requires = "access_app")]
+    track_dot_access: Option<Uuid>,
+    /// The exact Cloudflare Access application ID for --track-dot-access.
+    #[arg(long, requires = "track_dot_access")]
+    access_app: Option<String>,
     /// Revoke the public connection of one enrolled installation.
-    #[arg(long, conflicts_with = "reissue")]
+    #[arg(long)]
     revoke: Option<Uuid>,
     /// Let a revoked installation resume with a new tunnel at its assigned URL.
     #[arg(long)]
@@ -73,6 +90,31 @@ struct Config {
     #[serde(default)]
     mcp_paths: Vec<String>,
     selectable_mcp_paths: Option<Vec<String>>,
+}
+
+impl Config {
+    fn read(home: &Path) -> io::Result<Self> {
+        serde_json::from_slice(&read_private(&home.join("settings.json"))?)
+            .map_err(|_| unavailable())
+    }
+
+    fn cloudflare(&self, home: &Path) -> io::Result<CloudflareProvisioner> {
+        let token = read_private(&home.join("cloudflare.key"))?;
+        let token = std::str::from_utf8(&token)
+            .map_err(|_| unavailable())?
+            .trim();
+        CloudflareProvisioner::new(
+            &self.cloudflare_account_id,
+            &self.cloudflare_zone_id,
+            &self.cloudflare_zone_name,
+            token,
+        )
+        .map_err(|_| unavailable())
+    }
+}
+
+fn installation_hostname(id: Uuid, zone: &str) -> String {
+    format!("u-{}.{zone}", id.simple())
 }
 
 struct Operator {
@@ -144,10 +186,10 @@ fn registry_error(error: RegistryError) -> HttpError {
 
 impl Operator {
     fn from_home(home: &Path) -> io::Result<Self> {
-        let config: Config = serde_json::from_slice(&read_private(&home.join("settings.json"))?)
-            .map_err(|_| unavailable())?;
+        let config = Config::read(home)?;
         let origin = https_origin(&config.registration_origin)?;
         let auth_origin = https_origin(&config.supabase_url)?;
+        let cloudflare = config.cloudflare(home)?;
         if config.invited_accounts.is_some() {
             eprintln!("Warning: invited_accounts is obsolete and does not restrict registration.");
         }
@@ -168,20 +210,10 @@ impl Operator {
         {
             return Err(unavailable());
         }
-        let token = read_private(&home.join("cloudflare.key"))?;
-        let token = std::str::from_utf8(&token)
-            .map_err(|_| unavailable())?
-            .trim();
         Ok(Self {
             auth: SupabaseAuth::new(auth_origin.as_str(), &config.supabase_publishable_key)
                 .map_err(|_| unavailable())?,
-            cloudflare: CloudflareProvisioner::new(
-                &config.cloudflare_account_id,
-                &config.cloudflare_zone_id,
-                &config.cloudflare_zone_name,
-                token,
-            )
-            .map_err(|_| unavailable())?,
+            cloudflare,
             origin,
             zone: config.cloudflare_zone_name,
             hub_port: config.hub_port,
@@ -208,7 +240,7 @@ impl Operator {
     }
 
     fn hostname(&self, id: Uuid) -> String {
-        format!("u-{}.{}", id.simple(), self.zone)
+        installation_hostname(id, &self.zone)
     }
 
     fn public_url(&self, id: Uuid) -> String {
@@ -382,7 +414,8 @@ impl Operator {
                 Ok(json_response(
                     StatusCode::OK,
                     json!({
-                        "state": state, "public_url": self.public_url(record.id)
+                        "state": state, "lifecycle": record.phase.name(),
+                        "public_url": self.public_url(record.id)
                     }),
                 ))
             }
@@ -459,10 +492,78 @@ fn require_approved(record: &Enrollment) -> Result<(), HttpError> {
     }
 }
 
+fn lifecycle_view(record: &LifecycleRecord) -> serde_json::Value {
+    json!({
+        "installation_id": record.id.to_string(),
+        "lifecycle": record.phase.name(),
+        "provider_resources_recorded": record.resources.is_some(),
+        "cloudflare_connection_previously_seen": record.ever_connected,
+    })
+}
+
+async fn inspect_cloudflare(
+    home: &Path,
+    record: &LifecycleRecord,
+) -> io::Result<serde_json::Value> {
+    let config = Config::read(home)?;
+    let resources = hosted_registration_lifecycle::bound_resources(
+        &config.cloudflare_account_id,
+        &config.cloudflare_zone_id,
+        record.resources.as_deref(),
+    )?;
+    let hostname = installation_hostname(record.id, &config.cloudflare_zone_name);
+    let target = SavedCloudflareInstallation {
+        installation_id: record.id,
+        account_id: &config.cloudflare_account_id,
+        zone_id: &config.cloudflare_zone_id,
+        hostname: &hostname,
+        resources: &resources,
+    };
+    let cloudflare = config.cloudflare(home)?;
+    let view = cloudflare.inspect_owned(&target).await;
+    Ok(match view {
+        Ok(view) => view,
+        Err(error) => json!({"state": "unverified", "reason": error.to_string()}),
+    })
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
     let options = Options::parse();
     let home = options.home.canonicalize().map_err(|_| unavailable())?;
+    if options.list || options.status.is_some() {
+        let registry = Registry::open_for_inspection(&home.join("enrollments.sqlite3"))
+            .map_err(|_| unavailable())?;
+        if let Some(id) = options.status {
+            let record = registry.lifecycle(id).map_err(|_| unavailable())?;
+            let mut view = lifecycle_view(&record);
+            if options.check_cloudflare {
+                view["cloudflare"] = if record.resources.is_some() {
+                    inspect_cloudflare(&home, &record).await?
+                } else {
+                    json!({"state": "no_recorded_resources"})
+                };
+            }
+            println!("{view}");
+        } else {
+            let records = registry.list_lifecycle().map_err(|_| unavailable())?;
+            println!(
+                "{}",
+                json!({"installations": records.iter().map(lifecycle_view).collect::<Vec<_>>()})
+            );
+        }
+        return Ok(());
+    }
+    if let (Some(id), Some(app_id)) = (options.track_dot_access, options.access_app) {
+        if !home.join("enrollments.sqlite3").is_file() {
+            return Err(unavailable());
+        }
+        Operator::from_home(&home)?
+            .track_dot_access(id, &app_id)
+            .await?;
+        println!("dot_access_tracked");
+        return Ok(());
+    }
     if let Some(id) = options.revoke.or(options.reissue) {
         if !home.join("enrollments.sqlite3").is_file() {
             return Err(unavailable());
@@ -642,6 +743,7 @@ mod tests {
         let (status, pending) = call(&operator, Method::GET, &path, &proof, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(pending["state"], "pending");
+        assert_eq!(pending["lifecycle"], "pending");
         assert_eq!(pending["public_url"], first["public_url"]);
         let (status, _) = call(&operator, Method::GET, &path, &other_proof, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);

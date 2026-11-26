@@ -13,6 +13,21 @@ struct BoundResources {
     resources: CloudflareResources,
 }
 
+pub(super) fn bound_resources(
+    account_id: &str,
+    zone_id: &str,
+    raw: Option<&[u8]>,
+) -> io::Result<CloudflareResources> {
+    let Some(raw) = raw else {
+        return Ok(CloudflareResources::default());
+    };
+    let saved: BoundResources = serde_json::from_slice(raw).map_err(|_| unavailable())?;
+    if saved.account_id != account_id || saved.zone_id != zone_id {
+        return Err(unavailable());
+    }
+    Ok(saved.resources)
+}
+
 fn pending() -> io::Error {
     io::Error::other("registration lifecycle operation is pending; retry the same operation")
 }
@@ -25,14 +40,7 @@ impl Operator {
     }
 
     pub(super) fn bound_resources(&self, raw: Option<&[u8]>) -> io::Result<CloudflareResources> {
-        let Some(raw) = raw else {
-            return Ok(CloudflareResources::default());
-        };
-        let saved: BoundResources = serde_json::from_slice(raw).map_err(|_| unavailable())?;
-        if saved.account_id != self.account_id || saved.zone_id != self.zone_id {
-            return Err(unavailable());
-        }
-        Ok(saved.resources)
+        bound_resources(&self.account_id, &self.zone_id, raw)
     }
 
     pub(super) fn persist_resources(
@@ -89,6 +97,46 @@ impl Operator {
             hostname,
             resources,
         }
+    }
+
+    pub(super) async fn track_dot_access(&self, id: Uuid, app_id: &str) -> io::Result<()> {
+        let _guard = self.provider_guard()?;
+        let record = self
+            .record(|registry| registry.lifecycle(id))
+            .map_err(|_| unavailable())?;
+        let snapshot = record.resources.as_deref().ok_or_else(unavailable)?;
+        let mut resources = self.bound_resources(Some(snapshot))?;
+        if record.phase != LifecyclePhase::Ready || resources.selected_routes.is_none() {
+            return Err(io::Error::other(
+                "a ready address-first installation is required",
+            ));
+        }
+        if resources
+            .dot_access_app
+            .as_deref()
+            .is_some_and(|saved| saved != app_id)
+        {
+            return Err(io::Error::other(
+                "this installation already tracks another Dot Access app",
+            ));
+        }
+        let hostname = self.hostname(id);
+        let cloud = self
+            .cloudflare
+            .inspect_owned(&self.saved(id, &hostname, &resources))
+            .await
+            .map_err(io::Error::other)?;
+        if cloud["tunnel"] != "present" || cloud["dns_record"] != "present" {
+            return Err(io::Error::other(
+                "the saved tunnel and DNS record must both be present",
+            ));
+        }
+        self.cloudflare
+            .require_dot_access(&hostname, app_id)
+            .await
+            .map_err(io::Error::other)?;
+        resources.dot_access_app = Some(app_id.to_owned());
+        self.persist_route_resources(id, &resources, Some(snapshot))
     }
 
     pub(super) async fn revoke_installation(&self, id: Uuid) -> io::Result<()> {

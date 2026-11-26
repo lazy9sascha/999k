@@ -6,6 +6,16 @@ pub(crate) enum ConnectionHistory {
     Unknown,
 }
 
+impl ConnectionHistory {
+    fn name(self) -> &'static str {
+        match self {
+            Self::NeverConnected => "never_connected",
+            Self::PreviouslyConnected => "previously_connected",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 pub(crate) struct SavedCloudflareInstallation<'a> {
     pub(crate) installation_id: Uuid,
     pub(crate) account_id: &'a str,
@@ -54,7 +64,108 @@ struct ExactTargets<'a> {
     hostname: &'a str,
 }
 
+#[derive(Deserialize)]
+struct DotAccess {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    domain: String,
+    #[serde(default)]
+    self_hosted_domains: Vec<String>,
+    #[serde(default)]
+    destinations: Vec<AccessDestination>,
+    oauth_configuration: Option<ManagedOAuth>,
+}
+
+#[derive(Deserialize)]
+struct AccessDestination {
+    uri: String,
+}
+
+#[derive(Deserialize)]
+struct ManagedOAuth {
+    enabled: bool,
+}
+
+impl DotAccess {
+    fn oauth_enabled(&self) -> bool {
+        self.oauth_configuration
+            .as_ref()
+            .is_some_and(|oauth| oauth.enabled)
+    }
+}
+
 impl CloudflareProvisioner {
+    fn dot_access_path(&self, app_id: &str) -> Result<String, ProvisionError> {
+        if !Uuid::parse_str(app_id).is_ok_and(|id| {
+            !id.is_nil() && (app_id == id.to_string() || app_id == id.simple().to_string())
+        }) {
+            return Err(ProvisionError::Settings);
+        }
+        Ok(format!("accounts/{}/access/apps/{app_id}", self.account_id))
+    }
+
+    async fn read_dot_access(
+        &self,
+        hostname: &str,
+        app_id: &str,
+    ) -> Result<Option<DotAccess>, ProvisionError> {
+        let path = self.dot_access_path(app_id)?;
+        let Some(app) = self.get_exact::<DotAccess>(&path).await? else {
+            return Ok(None);
+        };
+        let domain = format!("{hostname}/dot/mcp");
+        if app.id != app_id
+            || app.kind != "self_hosted"
+            || app.domain != domain
+            || app.self_hosted_domains.iter().any(|entry| *entry != domain)
+            || app.destinations.iter().any(|entry| entry.uri != domain)
+        {
+            return Err(ProvisionError::Conflict);
+        }
+        Ok(Some(app))
+    }
+
+    pub(crate) async fn require_dot_access(
+        &self,
+        hostname: &str,
+        app_id: &str,
+    ) -> Result<(), ProvisionError> {
+        if !self
+            .read_dot_access(hostname, app_id)
+            .await?
+            .is_some_and(|app| app.oauth_enabled())
+        {
+            return Err(ProvisionError::Conflict);
+        }
+        Ok(())
+    }
+
+    async fn remove_dot_access(
+        &self,
+        saved: &SavedCloudflareInstallation<'_>,
+    ) -> Result<ProviderLifecycleOutcome, ProvisionError> {
+        use ProviderLifecycleOutcome::*;
+        let Some(app_id) = saved.resources.dot_access_app.as_deref() else {
+            return Ok(Complete);
+        };
+        if self
+            .read_dot_access(saved.hostname, app_id)
+            .await?
+            .is_some()
+        {
+            self.delete_exact(&self.dot_access_path(app_id)?).await?;
+            if self
+                .read_dot_access(saved.hostname, app_id)
+                .await?
+                .is_some()
+            {
+                return Ok(Pending);
+            }
+        }
+        Ok(Complete)
+    }
+
     fn exact_targets<'a>(
         &self,
         saved: &SavedCloudflareInstallation<'a>,
@@ -157,6 +268,30 @@ impl CloudflareProvisioner {
             .map_or(ConnectionHistory::Unknown, |tunnel| tunnel.history()))
     }
 
+    pub(crate) async fn inspect_owned(
+        &self,
+        saved: &SavedCloudflareInstallation<'_>,
+    ) -> Result<serde_json::Value, ProvisionError> {
+        let targets = self.exact_targets(saved)?;
+        let tunnel = self.read_tunnel(&targets).await?;
+        let dns_exists = self.dns_exists(&targets).await?;
+        let dot_access = match saved.resources.dot_access_app.as_deref() {
+            Some(app_id) => match self.read_dot_access(saved.hostname, app_id).await {
+                Ok(Some(app)) if app.oauth_enabled() => "present",
+                Ok(Some(_)) => "oauth_disabled",
+                Ok(None) => "absent",
+                Err(_) => "unverified",
+            },
+            None => "untracked",
+        };
+        Ok(json!({
+            "tunnel": if tunnel.is_some() { "present" } else { "absent" },
+            "dns_record": if dns_exists { "present" } else { "absent" },
+            "connection_history": tunnel.map_or(ConnectionHistory::Unknown, |t| t.history()).name(),
+            "dot_access": dot_access,
+        }))
+    }
+
     /// Hold the installation lock and keep its saved IDs while revocation is pending.
     pub(crate) async fn revoke(
         &self,
@@ -186,7 +321,7 @@ impl CloudflareProvisioner {
                 return Ok(Pending);
             }
         }
-        Ok(Complete)
+        self.remove_dot_access(saved).await
     }
 
     /// Call after the cutoff and sticky-history checks. Save the expiry attempt and
@@ -219,6 +354,6 @@ impl CloudflareProvisioner {
                 return Ok(Pending);
             }
         }
-        Ok(Complete)
+        self.remove_dot_access(saved).await
     }
 }

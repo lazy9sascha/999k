@@ -2,9 +2,11 @@
 
 Ask an existing 999K peer from your Orca project chat. The relay retrieves the linked answer for that chat. If its first check is empty, a new relay can schedule follow-up checks of the same request.
 
+P-999K is experimental. Choose a hosted address or use your own HTTPS domain. You can switch domains and keep your hub and queue.
+
 **Catalog summary.** Ask one existing peer from your project chat. The relay retrieves the linked answer. The first check can be empty.
 
-P-999K 0.2.1 needs Orca 1.4.268 or newer. Its catalog ID is `lazy9sascha.p-999k`. The panel runs `$HOME/.local/bin/999k`. Check that this executable lists `--orca-peer` in `init --help` and accepts `pair --help`. Use native CLI 0.2.1. [Install the CLI and plugin](../../docs/quickstart.md#connect-orca-to-your-existing-peers).
+P-999K 0.2.2 needs Orca 1.4.268 or newer. Its catalog ID is `lazy9sascha.p-999k`. The panel runs `$HOME/.local/bin/999k`. Check that this executable lists `--orca-peer` in `init --help` and accepts `pair --help`. Use native CLI 0.2.2. [Install the CLI and plugin](../../docs/quickstart.md#connect-orca-to-your-existing-peers).
 
 The release archive installs through Orca’s local plugin flow. Catalog availability is tracked separately.
 
@@ -19,6 +21,10 @@ For chat-based setup, choose **Set up a management bot**. Create **P-999K** once
 ```sh
 "$HOME/.local/bin/999k" init --orca --orca-peer muse
 ```
+
+Ask **“Use my own domain”** in the management bot's Home Chat or select
+**Use my own domain** in **Initial setup**. The guide covers switching each peer
+to an HTTPS endpoint you control. [Switch to your own domain](../../docs/quickstart.md#switch-to-your-own-domain)
 
 Choose **I’ll do it myself** for the steps in the terminal and the peer app. Where offered, **Ask my assistant to do it** copies a request for an assistant with Computer Use. Approve the relay in Orca when prompted. Run any resume command on the hub Mac.
 
