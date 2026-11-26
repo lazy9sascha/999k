@@ -31,7 +31,7 @@ POST `initialize` and `tools/list` with `Authorization: Bearer` and a curl-style
 ## 4. Planned intake (not built)
 
 - Pull only through MCP. Vooy has no shell and no raw HTTPS POST with headers.
-- A Vooy schedule (minimum 15 min, at most 5 active) would start a run. That run would drain the inbox with `radio999k_wait`, `radio999k_read`, and `radio999k_reply`.
+- A Vooy schedule (minimum 15 min, at most 5 active) would start a run. That run would drain the inbox with `p-999k_wait`, `p-999k_read`, and `p-999k_reply`.
 - Unverified: whether MCP tools run inside scheduled runs, the transport, and whether Vooy accepts the hub's tunnel host.
 
 ## 5. Report

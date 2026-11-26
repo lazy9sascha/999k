@@ -154,6 +154,31 @@ pub fn valid_mcp_route(route: &str) -> bool {
         && slug != "mailbox"
 }
 
+const PAIRING_ROUTES: [(&str, &str, &str); 4] = [
+    ("muse", "/muse/mcp", "/muse/pair"),
+    ("grok-bot", "/grok/mcp", "/grok/pair"),
+    ("cue", "/cue/mcp", "/cue/pair"),
+    ("instinct", "/instinct/mcp", "/instinct/pair"),
+];
+
+pub fn pairing_paths(peer: &str) -> Option<(&'static str, &'static str)> {
+    PAIRING_ROUTES
+        .iter()
+        .find_map(|&(id, mcp, pair)| (id == peer).then_some((mcp, pair)))
+}
+
+pub fn pairing_sibling(mcp: &str) -> Option<&'static str> {
+    PAIRING_ROUTES
+        .iter()
+        .find_map(|&(_, path, pair)| (mcp == path).then_some(pair))
+}
+
+pub fn pairing_peer(path: &str) -> Option<(&'static str, &'static str)> {
+    PAIRING_ROUTES
+        .iter()
+        .find_map(|&(id, mcp, pair)| (pair == path).then_some((id, mcp)))
+}
+
 pub fn http_profiles() -> &'static [HttpProfile] {
     &HTTP_PROFILES
 }

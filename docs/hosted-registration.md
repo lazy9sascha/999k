@@ -1,5 +1,15 @@
 # Hosted registration operator preview
 
+On the user’s Mac, reserve an address before selecting a peer:
+
+```sh
+"$HOME/.local/bin/999k" init --reserve-address
+```
+
+The CLI opens the operator’s registration page. After email verification,
+select a peer to attach its route to the saved address.
+[Install the CLI, Orca plugin, and cloudflared](quickstart.md#connect-orca-to-your-existing-peers).
+
 The registration service manages the address and Cloudflare Tunnel for each approved installation. It listens on loopback. User Macs serve their own MCP endpoints and store their own queues.
 
 ## Responsibilities and installer handoff
@@ -16,15 +26,14 @@ Keep the same request ID, proof, and code on a begin retry. Use the same
 installation ID and proof to retry status or finish. Do not request a new address
 after a temporary error.
 
-The operator preview uses `999k init --reserve-address` for browser approval
-and retry. Verify the tunnel and an authenticated MCP exchange after finish.
+Verify the assigned route and an authenticated MCP exchange after finish.
 
 ## Prepare a private pilot
 
 1. Create an owner-only directory with mode 0700 on the operator Mac.
 2. Save the settings below in `settings.json` with mode 0600. Replace example values with the approved pilot settings.
 3. Save the Cloudflare management token in `cloudflare.key` with mode 0600. Grant tunnel management for the operator account and DNS access for the selected zone.
-4. In a dedicated test Auth project, enable email sign-in and account creation. Configure the email template to include the numeric code. Do not enable signups on a shared or live project as part of this preview. Direct requests to the public Auth API can create accounts when signups are enabled. 999K's installation and attempt checks apply only to its own registration endpoints.
+4. In a dedicated test Auth project, enable email sign-in and account creation. Include the numeric code (`{{ .Token }}`) in both the **Confirm signup** and **Magic Link** email templates. Test one new email address and one returning address through the installer. A link-only email cannot complete this flow. Do not enable signups on a shared or live project as part of this preview. Direct requests to the public Auth API can create accounts when signups are enabled. 999K's installation and attempt checks apply only to its own registration endpoints.
 5. Route the registration origin to the loopback service over HTTPS. Preserve the public registration Host header. Disable caching. Keep credentials and form bodies out of logs.
 
 ```json
@@ -36,11 +45,13 @@ and retry. Verify the tunnel and an authenticated MCP exchange after finish.
   "cloudflare_zone_id": "<zone-id>",
   "cloudflare_zone_name": "example.com",
   "hub_port": 54843,
-  "mcp_path": "/muse/mcp"
+  "mcp_path": "/cue/mcp"
 }
 ```
 
-Use the loopback port and MCP paths that the pilot installs on user Macs. Set
+The public pilot supports Cue. Set `hub_port` to 54843, the managed user hub port, and publish only `/cue/mcp`. Unix connector setup also publishes its exact sibling `/cue/pair`. Use loopback port 54900 for the registration service on the operator Mac. The user hub accepts its assigned public Host on the managed Unix socket. It also accepts the loopback Host used by its local readiness probe.
+
+For a separately configured operator, set
 `"mcp_paths": ["/dot/mcp", "/codex/mcp"]` to publish both paths on the same
 hostname. Use `mcp_path` for one path or include it alongside `mcp_paths` to
 retain an existing path. Dot and Codex also get their exact path-scoped OAuth
@@ -64,12 +75,18 @@ Supabase issues the numeric OTP for an email address, not an installation.
 The request page does not show whether it sent an email. Response times can differ.
 If an attempt fails, wait up to five minutes, then reopen registration from 999K. Use the same pending installation until its reservation expires.
 
-## Reserve an address on your Mac
+## Reserve an address without starting a connector
 
-Use the HTTPS registration origin from your pilot operator. Keep the same private hub home on each run.
+For new reservations, set `selectable_mcp_paths` to the routes owners can
+attach. Set it to `[]` to issue addresses with no attachable routes. If omitted,
+it defaults to `mcp_paths` and `mcp_path`. Legacy registrations continue to
+use their original settings. The plain reservation command binds the installation to a
+private Unix socket and configures only a 404 default rule. The address is
+reserved while the connector is staged.
+
+An operator-configured CLI includes the HTTPS registration origin. For a source build without an operator, set `RADIO999K_REGISTRATION_URL` to your operator’s HTTPS origin. This setting also overrides a bundled origin. Keep the same private hub home on each run.
 
 ```sh
-export RADIO999K_REGISTRATION_URL=https://init.example.com
 999k init --reserve-address --home "$HOME/path/to/private-hub"
 ```
 
@@ -79,23 +96,19 @@ different machine.
 
 999K reports `hosted_connector=staged` and `hosted_public_route=unverified`.
 It saves the address and private connector credential in the owner-private hub home.
-It does not create a mailbox, change a local hub, or start a connector. The registration
-service can assign a loopback port and MCP paths, but those settings do not prove local
-origin identity across restarts.
+It does not create a mailbox, change a local hub, or start a connector.
 
-For a new pilot enrollment, \`--hosted-unix\` selects a private Unix socket and requires
-an operator build that supports this mode. It has no TCP fallback. Do not switch an
-existing enrollment to this mode.
+In the Orca panel, choose **Initial setup**, then **Reserve hosted address**.
+Use the same home and select a peer with `999k init --orca --orca-peer <id>`.
+999K uses the saved registration origin and adds the selected path if the
+operator allows it. The address, installation, and previously attached paths
+are preserved. The connector starts after the matching managed profiles answer
+on the private socket. `hosted_connector=scheduled` reports local setup.
 
-Use the same \`--home\` and flags on each retry. If the home lacks the managed profiles
-the operator selected, the credential stays staged. Apply the required profiles, then
-run the same reserve command. The installer creates an owned LaunchAgent only if the
-running managed hub answers on the private socket. The connector checks that socket
-each time launchd starts it. An unrelated TCP listener cannot receive hosted requests.
-
-\`hosted_connector=scheduled\` reports local setup. It does not prove the public route.
-Retiring a managed profile that supplies a required path removes the hosted job.
-It keeps the registration credential and does not revoke the public address.
+For older pilot registrations, keep the original flags and setup procedure.
+A receipt bound to TCP cannot be promoted to a Unix installation. Retiring a
+managed profile that supplies a required path removes the hosted job and keeps
+the registration credential.
 
 ### Connect Dot and Codex Cloud through Cloudflare
 
@@ -121,6 +134,18 @@ private and contains that mailbox token, with an optional `Bearer ` prefix. The
 hub checks the signed assertion before applying the existing mailbox policy. Test each direct
 connection and its Events subscription on the target OpenAI surface before
 switching users. Cloudflare Access serves the discovery URLs from its challenge.
+
+For Orca Dot setup, add the already protected HTTPS `/dot/mcp` URL under
+`dot` in the owner-private `orca-ingress.json`. When attached to a managed
+hosted address, use that exact origin and restart the managed hub after adding
+the binding. The hosted socket requires a valid Cloudflare Access assertion for
+this Dot route. Run
+`999k init --orca --orca-peer dot` to bind the relay and check discovery.
+The check requires an anonymous 401 with the exact resource metadata URL,
+and metadata for the configured resource and Access issuer. Then approve
+the connection in ChatGPT. Verify an authenticated tool call and an original
+ACK with its linked reply in the originating Orca chat.
+
 
 ## Back up the operator registry before an upgrade
 

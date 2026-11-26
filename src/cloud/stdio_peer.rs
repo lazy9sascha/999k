@@ -2,9 +2,9 @@ use super::{error, fail, named_route, strict_json};
 use serde_json::{Value, json};
 use std::io;
 
-const RECIPIENTS: &str = "radio999k_recipients";
-const SEND: &str = "radio999k_send";
-const WAIT: &str = "radio999k_wait";
+const RECIPIENTS: &str = "p-999k_recipients";
+const SEND: &str = "p-999k_send";
+const WAIT: &str = "p-999k_wait";
 const CONTINUE: &str = "continue_from_message_id";
 
 #[derive(Clone, Copy)]
@@ -172,7 +172,7 @@ mod tests {
             {"name":RECIPIENTS},
             {"name":SEND,"inputSchema":{"properties":{"recipient":{},(CONTINUE):{}}}},
             {"name":WAIT,"inputSchema":{"properties":{},"required":["timeout_ms"]}},
-            {"name":"radio999k_read_thread"},
+            {"name":"p-999k_read_thread"},
         ]);
         let list = scope
             .exchange("tools/list", &json!({"id":7}), |_| {
@@ -221,7 +221,7 @@ mod tests {
             ),
             (WAIT, json!({"timeout_ms":0}), -32602),
             (WAIT, json!({"in_reply_to":" "}), -32602),
-            ("radio999k_read_thread", json!({}), -32601),
+            ("p-999k_read_thread", json!({}), -32601),
         ] {
             let denied = scope
                 .exchange("tools/call", &request(tool, args), |_| {

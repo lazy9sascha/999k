@@ -187,7 +187,7 @@ impl Profile {
         }
         auth::require_private_file(&self.db)?;
         match name {
-            "radio999k_inbox" => {
+            "p-999k_inbox" => {
                 self.mailbox_authority(headers, Operation::Read)?;
                 let queue = Queue::open_existing(&self.db).map_err(mapped)?;
                 inbox_page::list_with(
@@ -220,7 +220,7 @@ impl Profile {
                     },
                 )
             }
-            "radio999k_recipients" => {
+            "p-999k_recipients" => {
                 if !args.as_object().is_some_and(|args| args.is_empty()) {
                     return Err((400, "invalid_fields"));
                 }
@@ -239,12 +239,11 @@ impl Profile {
                     self.read_peers(headers)
                 })
             }
-            "radio999k_wait" => {
+            "p-999k_wait" => {
                 let b: Wait = serde_json::from_value(args).map_err(|_| (400, "invalid_fields"))?;
-                if b.timeout_ms > 10000
-                    || b.in_reply_to
-                        .as_ref()
-                        .is_some_and(|s| s.is_empty() || s.len() > 128)
+                if b.in_reply_to
+                    .as_ref()
+                    .is_some_and(|s| s.is_empty() || s.len() > 128)
                 {
                     return Err((400, "invalid_fields"));
                 }
@@ -288,7 +287,7 @@ impl Profile {
                     std::thread::sleep(Duration::from_millis(100));
                 }
             }
-            "radio999k_confirm_terminal" => {
+            "p-999k_confirm_terminal" => {
                 let b: Read = serde_json::from_value(args).map_err(|_| (400, "invalid_fields"))?;
                 if b.message_id.trim().is_empty() || b.message_id.len() > 128 {
                     return Err((400, "invalid_fields"));
@@ -324,7 +323,7 @@ impl Profile {
                     .map_err(|e| fault.unwrap_or_else(|| terminal_confirmation_fault(e, mapped)))?;
                 Ok(json!({"state":"acknowledged","message_id":b.message_id,"duplicate":duplicate}))
             }
-            "radio999k_reply" => {
+            "p-999k_reply" => {
                 let b: Reply = serde_json::from_value(args).map_err(|_| (400, "invalid_fields"))?;
                 if b.message_id.is_empty()
                     || b.message_id.len() > 128
@@ -379,7 +378,7 @@ impl Profile {
                 let reply = result.map_err(|e| fault.unwrap_or_else(|| mapped(e)))?;
                 Ok(json!({"state":"replied","reply_id":reply.id}))
             }
-            "radio999k_send" => {
+            "p-999k_send" => {
                 let b: Send = serde_json::from_value(args).map_err(|_| (400, "invalid_fields"))?;
                 if !send_recipient(&b.recipient)
                     || b.correlation_id.as_ref().is_some_and(|v| {
@@ -445,7 +444,7 @@ impl Profile {
                 serde_json::to_value(result.map_err(|e| fault.unwrap_or_else(|| mapped(e)))?)
                     .map_err(|_| (500, "internal_error"))
             }
-            "radio999k_read" => {
+            "p-999k_read" => {
                 let b: Read = serde_json::from_value(args).map_err(|_| (400, "invalid_fields"))?;
                 if b.message_id.trim().is_empty() || b.message_id.len() > 128 {
                     return Err((400, "invalid_fields"));
@@ -625,9 +624,16 @@ struct Read {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Wait {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wait_timeout_ms")]
     timeout_ms: u64,
     in_reply_to: Option<String>,
+}
+fn wait_timeout_ms<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let ms = f64::deserialize(d)?;
+    if !(0.0..=10000.0).contains(&ms) || ms.fract() != 0.0 {
+        return Err(serde::de::Error::custom("invalid wait timeout"));
+    }
+    Ok(ms as u64)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -662,12 +668,12 @@ fn validate_terminal(reply: &Message, parent: &Message, mailbox: &str) -> Result
 fn tools() -> Value {
     radio999k::mailbox_tools::with_thread_tools(json!([
         inbox_tool(),
-        {"name":"radio999k_recipients","description":"List current registered recipients this authenticated sender may send to. Connection status is unknown, not offline. Read-only: no enqueue, claim or ACK. Send revalidates authority.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"radio999k_confirm_terminal","description":"Confirm that this exact terminal answer body reached the authenticated mailbox consumer. Call only after receiving the answer. ACKs only that terminal, never an ordinary request or model processing; creates no reply. Identical retries are safe.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string","maxLength":128}},"required":["message_id"],"additionalProperties":false}},
-        {"name":"radio999k_wait","description":"Observe an ordinary request without claiming or acknowledging. With in_reply_to, observe only answers to that original request. Terminal answers never block request discovery. Bounded to 10 seconds.","inputSchema":{"type":"object","properties":{"timeout_ms":{"type":"integer","minimum":0,"maximum":10000},"in_reply_to":{"type":"string","maxLength":128}},"additionalProperties":false}},
-        {"name":"radio999k_reply","description":"Submit the final answer to an ordinary request, storing reply and original ACK atomically. Cannot answer a terminal reply or take over a native receiver claim.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string","maxLength":128},"body":{"type":"string","maxLength":16384}},"required":["message_id","body"],"additionalProperties":false}},
-        {"name":"radio999k_send","description":"Send an ordinary mailbox request. Keep the same idempotency key on retries. Does not claim, reply, or acknowledge. Recipient accepts a comma-separated explicit subset; preserve the idempotency key on retry. Subset results describe each submission, not agent completion.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string","maxLength":128},"body":{"type":"string","maxLength":8192},"correlation_id":{"type":"string","maxLength":128},"idempotency_key":{"type":"string","maxLength":128}},"required":["recipient","body","idempotency_key"],"additionalProperties":false}},
-        {"name":"radio999k_read","description":"Observe a known inbound message ID for this mailbox. Does not discover replies, claim, acknowledge, or prove native consumption.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string","maxLength":128}},"required":["message_id"],"additionalProperties":false}}
+        {"name":"p-999k_recipients","description":"List current registered recipients this authenticated sender may send to. Connection status is unknown, not offline. Read-only: no enqueue, claim or ACK. Send revalidates authority.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+        {"name":"p-999k_confirm_terminal","description":"Confirm that this exact terminal answer body reached the authenticated mailbox consumer. Call only after receiving the answer. ACKs only that terminal, never an ordinary request or model processing; creates no reply. Identical retries are safe.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string","maxLength":128}},"required":["message_id"],"additionalProperties":false}},
+        {"name":"p-999k_wait","description":"Observe an ordinary request without claiming or acknowledging. With in_reply_to, observe only answers to that original request. Terminal answers never block request discovery. Bounded to 10 seconds.","inputSchema":{"type":"object","properties":{"timeout_ms":{"type":"integer","minimum":0,"maximum":10000},"in_reply_to":{"type":"string","maxLength":128}},"additionalProperties":false}},
+        {"name":"p-999k_reply","description":"Submit the final answer to an ordinary request, storing reply and original ACK atomically. Cannot answer a terminal reply or take over a native receiver claim.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string","maxLength":128},"body":{"type":"string","maxLength":16384}},"required":["message_id","body"],"additionalProperties":false}},
+        {"name":"p-999k_send","description":"Send an ordinary mailbox request. Keep the same idempotency key on retries. Does not claim, reply, or acknowledge. Recipient accepts a comma-separated explicit subset; preserve the idempotency key on retry. Subset results describe each submission, not agent completion.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string","maxLength":128},"body":{"type":"string","maxLength":8192},"correlation_id":{"type":"string","maxLength":128},"idempotency_key":{"type":"string","maxLength":128}},"required":["recipient","body","idempotency_key"],"additionalProperties":false}},
+        {"name":"p-999k_read","description":"Observe a known inbound message ID for this mailbox. Does not discover replies, claim, acknowledge, or prove native consumption.","inputSchema":{"type":"object","properties":{"message_id":{"type":"string","maxLength":128}},"required":["message_id"],"additionalProperties":false}}
     ]))
 }
 
@@ -756,7 +762,7 @@ mod tests {
     #[test]
     fn mcp_subset_preserves_central_authority_and_replay() {
         let (_d, p) = fixture();
-        let request = json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"radio999k_send","arguments":{"recipient":"dot,unknown,dot","body":"fixture","idempotency_key":"subset"}}});
+        let request = json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"p-999k_send","arguments":{"recipient":"dot,unknown,dot","body":"fixture","idempotency_key":"subset"}}});
         let rejected = p
             .dispatch(&headers(), &serde_json::to_vec(&request).unwrap())
             .unwrap()
@@ -767,9 +773,7 @@ mod tests {
             r#"{"error":"subset_recipient_not_authorized"}"#
         );
         assert_eq!(count(&p), (0, 0, 0));
-        let discovery = p
-            .call(&headers(), "radio999k_recipients", json!({}))
-            .unwrap();
+        let discovery = p.call(&headers(), "p-999k_recipients", json!({})).unwrap();
         assert_eq!(discovery["connection_status"], "unknown");
         assert!(
             discovery["recipients"]
@@ -800,21 +804,21 @@ mod tests {
     fn send_is_fixed_identity_idempotent_and_never_completes() {
         let (_d, p) = fixture();
         p.validate().unwrap();
-        let a = p.call(&headers(), "radio999k_send", args()).unwrap();
-        let b = p.call(&headers(), "radio999k_send", args()).unwrap();
+        let a = p.call(&headers(), "p-999k_send", args()).unwrap();
+        let b = p.call(&headers(), "p-999k_send", args()).unwrap();
         assert_eq!(a["message"]["id"], b["message"]["id"]);
         assert_eq!(b["duplicate"], true);
         assert_eq!(a["message"]["envelope"]["sender"], "codex-cloud");
         let mut changed = args();
         changed["body"] = json!("changed");
         assert_eq!(
-            p.call(&headers(), "radio999k_send", changed).unwrap_err().0,
+            p.call(&headers(), "p-999k_send", changed).unwrap_err().0,
             409
         );
         for field in ["sender", "in_reply_to", "receipt"] {
             let mut bad = args();
             bad[field] = json!("unexpected");
-            assert!(p.call(&headers(), "radio999k_send", bad).is_err());
+            assert!(p.call(&headers(), "p-999k_send", bad).is_err());
         }
         assert_eq!(count(&p), (1, 0, 0));
     }
@@ -830,13 +834,13 @@ mod tests {
             .message
             .id;
         let result = p
-            .call(&headers(), "radio999k_read", json!({"message_id":good}))
+            .call(&headers(), "p-999k_read", json!({"message_id":good}))
             .unwrap();
         assert_eq!(result["envelope"]["body"], "fixture");
         assert!(result.get("receipt").is_none());
         for id in [other, rpc] {
             assert_eq!(
-                p.call(&headers(), "radio999k_read", json!({"message_id":id}))
+                p.call(&headers(), "p-999k_read", json!({"message_id":id}))
                     .unwrap_err()
                     .0,
                 404
@@ -874,7 +878,7 @@ mod tests {
             .unwrap();
         let before = count(&p);
 
-        let page = |args| p.call(&headers(), "radio999k_inbox", args);
+        let page = |args| p.call(&headers(), "p-999k_inbox", args);
         let first_page = page(json!({"limit":1,"order":"oldest"})).unwrap();
         assert_eq!(first_page["messages"][0]["id"], first);
         assert_eq!(first_page["messages"][0]["state"], "pending");
@@ -897,7 +901,7 @@ mod tests {
             Err((400, "invalid_fields"))
         );
         assert_eq!(
-            p.call(&[], "radio999k_inbox", json!({})),
+            p.call(&[], "p-999k_inbox", json!({})),
             Err((401, "unauthorized"))
         );
 
@@ -953,7 +957,7 @@ mod tests {
                 original
             });
             let id = q.send(reply).unwrap().message.id;
-            let result = p.call(&headers(), "radio999k_read", json!({"message_id":id}));
+            let result = p.call(&headers(), "p-999k_read", json!({"message_id":id}));
             assert_eq!(result.is_ok(), variant == "valid", "{variant}");
             assert_eq!(count(&p), (2, 0, 0));
         }
@@ -978,8 +982,8 @@ mod tests {
                     put(&p.policy, policy);
                 }
             }
-            assert!(p.call(&headers(), "radio999k_send", args()).is_err());
-            let discovery = p.call(&headers(), "radio999k_recipients", json!({}));
+            assert!(p.call(&headers(), "p-999k_send", args()).is_err());
+            let discovery = p.call(&headers(), "p-999k_recipients", json!({}));
             if mode == "peer" {
                 assert_eq!(discovery.unwrap()["recipients"], json!([]));
             } else {
@@ -995,7 +999,7 @@ mod tests {
         let db = p.db.clone();
         let c = rusqlite::Connection::open(&db).unwrap();
         c.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let worker = std::thread::spawn(move || p.call(&headers(), "radio999k_send", args()));
+        let worker = std::thread::spawn(move || p.call(&headers(), "p-999k_send", args()));
         std::thread::sleep(Duration::from_millis(100));
         put(
             &registration,
@@ -1017,7 +1021,7 @@ mod tests {
         );
         let mut input = args();
         input["recipient"] = json!("hermes");
-        assert!(p.call(&headers(), "radio999k_send", input).is_ok());
+        assert!(p.call(&headers(), "p-999k_send", input).is_ok());
         assert_eq!(count(&p), (1, 0, 0));
     }
     #[test]
@@ -1031,12 +1035,10 @@ mod tests {
         registry["revoked"] = json!({"mailbox":"revoked","revoked":true});
         registry["alias"] = json!({"mailbox":"other","revoked":false});
         put(&p.registration, registry);
-        let discovery = p
-            .call(&headers(), "radio999k_recipients", json!({}))
-            .unwrap();
+        let discovery = p.call(&headers(), "p-999k_recipients", json!({})).unwrap();
         assert_eq!(discovery["recipients"], json!(["dot", "é-peer"]));
         let request = json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{
-            "name":"radio999k_send","arguments":{"recipient":"dot,é-peer","body":"fixture","idempotency_key":"subset"}}});
+            "name":"p-999k_send","arguments":{"recipient":"dot,é-peer","body":"fixture","idempotency_key":"subset"}}});
         let reply = p
             .dispatch(&headers(), &serde_json::to_vec(&request).unwrap())
             .unwrap()
@@ -1057,13 +1059,13 @@ mod tests {
                 &p.registration,
                 json!({"codex-cloud":{"mailbox":"codex-cloud","revoked":false},recipient.clone():{"mailbox":recipient,"revoked":false}}),
             );
-            let result=p.call(&headers(),"radio999k_send",json!({"recipient":recipient,"body":"q","correlation_id":correlation,"idempotency_key":"key"}));
+            let result=p.call(&headers(),"p-999k_send",json!({"recipient":recipient,"body":"q","correlation_id":correlation,"idempotency_key":"key"}));
             assert_eq!(result.is_ok(), length == 128);
         }
         let (_d, p) = fixture();
         let mut input = args();
         input["correlation_id"] = json!("é".repeat(64) + "x");
-        assert!(p.call(&headers(), "radio999k_send", input).is_err());
+        assert!(p.call(&headers(), "p-999k_send", input).is_err());
         assert_eq!(count(&p), (0, 0, 0));
     }
     #[test]
@@ -1072,13 +1074,13 @@ mod tests {
         for raw in [
             r#"["2.0",1,"tools/list",{}]"#,
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":[]}"#,
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_send","arguments":["dot","body","key",null]}}"#,
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_read","arguments":["id"]}}"#,
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_send","arguments":{"recipient":"dot","recipient":"hermes","body":"b","idempotency_key":"k"}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"p-999k_send","arguments":["dot","body","key",null]}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"p-999k_read","arguments":["id"]}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"p-999k_send","arguments":{"recipient":"dot","recipient":"hermes","body":"b","idempotency_key":"k"}}}"#,
         ] {
             assert!(p.dispatch(&headers(), raw.as_bytes()).is_err(), "{raw}");
         }
-        assert!(p.call(&headers(), "radio999k_read", json!(["id"])).is_err());
+        assert!(p.call(&headers(), "p-999k_read", json!(["id"])).is_err());
         assert_eq!(count(&p), (0, 0, 0));
     }
     #[test]
@@ -1091,7 +1093,7 @@ mod tests {
             e.in_reply_to = terminal.then(|| "parent".into());
             let id = q.send(e).unwrap().message.id;
             assert!(
-                p.call(&headers(), "radio999k_read", json!({"message_id":id}))
+                p.call(&headers(), "p-999k_read", json!({"message_id":id}))
                     .is_err()
             );
             assert_eq!(count(&p), (1, 0, 0));
@@ -1102,7 +1104,7 @@ mod tests {
         e.correlation_id = Some("x".repeat(129));
         let id = q.send(e).unwrap().message.id;
         assert!(
-            p.call(&headers(), "radio999k_read", json!({"message_id":id}))
+            p.call(&headers(), "p-999k_read", json!({"message_id":id}))
                 .is_err()
         );
     }
@@ -1121,17 +1123,17 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "radio999k_inbox",
-                "radio999k_recipients",
-                "radio999k_confirm_terminal",
-                "radio999k_wait",
-                "radio999k_reply",
-                "radio999k_send",
-                "radio999k_read",
-                "radio999k_read_thread"
+                "p-999k_inbox",
+                "p-999k_recipients",
+                "p-999k_confirm_terminal",
+                "p-999k_wait",
+                "p-999k_reply",
+                "p-999k_send",
+                "p-999k_read",
+                "p-999k_read_thread"
             ]
         );
-        for name in ["radio999k_receive", "radio999k_ack"] {
+        for name in ["p-999k_receive", "p-999k_ack"] {
             assert!(p.call(&headers(), name, json!({})).is_err());
         }
     }
@@ -1151,7 +1153,7 @@ mod tests {
         assert_eq!(
             p.call_while_open(
                 &headers(),
-                "radio999k_wait",
+                "p-999k_wait",
                 json!({"timeout_ms":0}),
                 Instant::now() + Duration::from_secs(2),
                 &check_open,
@@ -1171,7 +1173,7 @@ mod tests {
         let wait = |parent: &str| {
             p.call(
                 &headers(),
-                "radio999k_wait",
+                "p-999k_wait",
                 json!({"timeout_ms":0,"in_reply_to":parent}),
             )
         };
@@ -1198,13 +1200,7 @@ mod tests {
         let mut unreadable = envelope("dot", "codex-cloud");
         unreadable.body = "x".repeat(8193);
         q.send(unreadable).unwrap();
-        let wait = |timeout_ms| {
-            p.call(
-                &headers(),
-                "radio999k_wait",
-                json!({"timeout_ms":timeout_ms}),
-            )
-        };
+        let wait = |timeout_ms| p.call(&headers(), "p-999k_wait", json!({"timeout_ms":timeout_ms}));
         assert_eq!(wait(0).unwrap(), json!({"message":null}));
 
         for _ in 1..Queue::ORDINARY_SCAN_PAGE_SIZE {
@@ -1221,7 +1217,7 @@ mod tests {
         let mut q = Queue::open_existing(&p.db).unwrap();
         let incoming = q.send(envelope("dot", "codex-cloud")).unwrap().message;
         let waiting = p
-            .call(&headers(), "radio999k_wait", json!({"timeout_ms":0}))
+            .call(&headers(), "p-999k_wait", json!({"timeout_ms":0}))
             .unwrap();
         assert_eq!(waiting["message"]["id"], incoming.id);
         assert_eq!(count(&p), (1, 0, 0));
@@ -1229,23 +1225,23 @@ mod tests {
         db.execute_batch("CREATE TRIGGER fail_reply BEFORE INSERT ON messages WHEN NEW.in_reply_to IS NOT NULL BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
         let reply_args = json!({"message_id":incoming.id,"body":"actual final answer"});
         assert!(
-            p.call(&headers(), "radio999k_reply", reply_args.clone())
+            p.call(&headers(), "p-999k_reply", reply_args.clone())
                 .is_err()
         );
         assert_eq!(count(&p), (1, 0, 0));
         db.execute_batch("DROP TRIGGER fail_reply").unwrap();
         let final_reply = p
-            .call(&headers(), "radio999k_reply", reply_args.clone())
+            .call(&headers(), "p-999k_reply", reply_args.clone())
             .unwrap();
         assert_eq!(
             final_reply,
-            p.call(&headers(), "radio999k_reply", reply_args).unwrap()
+            p.call(&headers(), "p-999k_reply", reply_args).unwrap()
         );
         assert_eq!(count(&p), (2, 1, 1));
         assert!(
             p.call(
                 &headers(),
-                "radio999k_reply",
+                "p-999k_reply",
                 json!({"message_id":incoming.id,"body":"changed answer"})
             )
             .is_err()
@@ -1259,29 +1255,28 @@ mod tests {
         assert!(
             p.call(
                 &headers(),
-                "radio999k_reply",
+                "p-999k_reply",
                 json!({"message_id":next.id,"body":"must not steal native work"})
             )
             .is_err()
         );
         assert_eq!(count(&p), (3, 2, 1));
         let outgoing = q.send(envelope("codex-cloud", "dot")).unwrap().message;
+        let wait_args = json!({"timeout_ms":0,"in_reply_to":outgoing.id});
+        let pending = p
+            .call(&headers(), "p-999k_wait", wait_args.clone())
+            .unwrap();
+        assert!(pending["message"].is_null());
         let mut terminal = envelope("dot", "codex-cloud");
         terminal.in_reply_to = Some(outgoing.id.clone());
         terminal.correlation_id = Some(outgoing.id.clone());
         let terminal = q.send(terminal).unwrap().message;
-        let observed = p
-            .call(
-                &headers(),
-                "radio999k_wait",
-                json!({"timeout_ms":0,"in_reply_to":outgoing.id}),
-            )
-            .unwrap();
+        let observed = p.call(&headers(), "p-999k_wait", wait_args).unwrap();
         assert_eq!(observed["message"]["id"], terminal.id);
         assert!(
             p.call(
                 &headers(),
-                "radio999k_reply",
+                "p-999k_reply",
                 json!({"message_id":terminal.id,"body":"no reply loop"})
             )
             .is_err()
@@ -1310,7 +1305,7 @@ mod tests {
         e.correlation_id = Some(second_parent.clone());
         let second_reply = q.send(e).unwrap().message.id;
         let wait = |args: Value| {
-            let raw=json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_wait","arguments":args}}).to_string();
+            let raw=json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"p-999k_wait","arguments":args}}).to_string();
             let response = p.dispatch(&headers(), raw.as_bytes()).unwrap().unwrap();
             serde_json::from_str::<Value>(
                 response["result"]["content"][0]["text"].as_str().unwrap(),
@@ -1325,19 +1320,21 @@ mod tests {
             wait(json!({"timeout_ms":0,"in_reply_to":outgoing}))["message"]["id"],
             oldest
         );
+        for timeout in [json!(0), json!(10000.0)] {
+            assert_eq!(
+                wait(json!({"timeout_ms":timeout,"in_reply_to":second_parent}))["message"]["id"],
+                second_reply
+            );
+        }
         assert_eq!(
-            wait(json!({"timeout_ms":0,"in_reply_to":second_parent}))["message"]["id"],
-            second_reply
-        );
-        assert_eq!(
-            p.call(&headers(), "radio999k_read", json!({"message_id":oldest}))
+            p.call(&headers(), "p-999k_read", json!({"message_id":oldest}))
                 .unwrap()["id"],
             oldest
         );
         assert_eq!(std::fs::read(&p.db).unwrap(), before);
         p.call(
             &headers(),
-            "radio999k_reply",
+            "p-999k_reply",
             json!({"message_id":incoming,"body":"completed once"}),
         )
         .unwrap();
@@ -1345,6 +1342,26 @@ mod tests {
         let newer = q.send(envelope("dot", "codex-cloud")).unwrap().message.id;
         assert_eq!(wait(json!({"timeout_ms":0}))["message"]["id"], newer);
         assert_eq!(count(&p).2, 1);
+    }
+
+    #[test]
+    fn wait_rejects_fractional_out_of_range_and_nonnumeric_timeouts() {
+        let (_d, p) = fixture();
+        for timeout in [
+            json!(1.5),
+            json!(-1),
+            json!(10001),
+            json!(10000.5),
+            json!("10000"),
+            json!(true),
+            Value::Null,
+        ] {
+            assert_eq!(
+                p.call(&headers(), "p-999k_wait", json!({"timeout_ms":timeout})),
+                Err((400, "invalid_fields")),
+                "{timeout}"
+            );
+        }
     }
 }
 

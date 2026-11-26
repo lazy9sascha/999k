@@ -225,7 +225,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
     visible.sort_unstable();
     assert_eq!(
         visible,
-        ["radio999k_inbox", "radio999k_read", "radio999k_read_thread"]
+        ["p-999k_inbox", "p-999k_read", "p-999k_read_thread"]
     );
     let mut queue =
         radio999k::Queue::open_existing(home.join("local-mailboxes/mailboxes.sqlite3")).unwrap();
@@ -246,7 +246,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         &read_route,
         &read_token,
         "tools/call",
-        json!({"name":"radio999k_read","arguments":{"message_id":message.id}}),
+        json!({"name":"p-999k_read","arguments":{"message_id":message.id}}),
     );
     assert_eq!(status, 200);
     let content: Value =
@@ -259,7 +259,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         &read_route,
         &read_token,
         "tools/call",
-        json!({"name":"radio999k_read_thread","arguments":{"conversation_id":message.id}}),
+        json!({"name":"p-999k_read_thread","arguments":{"conversation_id":message.id}}),
     );
     let result: Value =
         serde_json::from_str(thread["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -269,7 +269,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         &read_route,
         &read_token,
         "tools/call",
-        json!({"name":"radio999k_wait","arguments":{"timeout_ms":0}}),
+        json!({"name":"p-999k_wait","arguments":{"timeout_ms":0}}),
     );
     assert!(forbidden.get("error").is_some() || forbidden["result"]["isError"] == true);
     for (route, token) in [
@@ -295,13 +295,13 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
             "/synthetic-pull/mcp",
             &synthetic_token,
             &[
-                "radio999k_inbox",
-                "radio999k_read",
-                "radio999k_read_thread",
-                "radio999k_wait",
+                "p-999k_inbox",
+                "p-999k_read",
+                "p-999k_read_thread",
+                "p-999k_wait",
             ][..],
         ),
-        ("/vooy/mcp", &vooy_token, &["radio999k_wait"][..]),
+        ("/vooy/mcp", &vooy_token, &["p-999k_wait"][..]),
     ] {
         let (status, response) = request(port, route, token, "tools/list", json!({}));
         assert_eq!(status, 200, "{route}: {response}");
@@ -318,7 +318,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
             route,
             token,
             "tools/call",
-            json!({"name":"radio999k_wait","arguments":{"timeout_ms":0}}),
+            json!({"name":"p-999k_wait","arguments":{"timeout_ms":0}}),
         );
         assert_eq!(status, 200, "{route}: {response}");
         let result: Value =
@@ -331,7 +331,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         "/vooy/mcp",
         &vooy_token,
         "tools/call",
-        json!({"name":"radio999k_inbox","arguments":{"scope":"all","query":"synthetic"}}),
+        json!({"name":"p-999k_inbox","arguments":{"scope":"all","query":"synthetic"}}),
     );
     assert!(forbidden.get("error").is_some() || forbidden["result"]["isError"] == true);
     assert_eq!(
@@ -365,7 +365,7 @@ fn multiple_runtime_names_share_rmcp_and_keep_credentials_and_peers_separate() {
         &vooy_token,
         "tools/call",
         json!({
-            "name":"radio999k_send",
+            "name":"p-999k_send",
             "arguments":{"recipient":"synthetic-pull","body":"synthetic marker","idempotency_key":"one"}
         }),
     );
@@ -642,7 +642,7 @@ fn cli_remove_stages_a_fresh_bearer_and_apply_preserves_its_bytes() {
         route,
         &new_token,
         "tools/call",
-        json!({"name":"radio999k_read","arguments":{"message_id":old.id}}),
+        json!({"name":"p-999k_read","arguments":{"message_id":old.id}}),
     );
     assert_eq!(denied["result"]["isError"], true, "{denied}");
     assert!(!denied.to_string().contains(&old.envelope.body));
@@ -651,7 +651,7 @@ fn cli_remove_stages_a_fresh_bearer_and_apply_preserves_its_bytes() {
         route,
         &new_token,
         "tools/call",
-        json!({"name":"radio999k_read","arguments":{"message_id":fresh.message.id}}),
+        json!({"name":"p-999k_read","arguments":{"message_id":fresh.message.id}}),
     );
     assert_eq!(current["result"]["isError"], false);
     assert_eq!(

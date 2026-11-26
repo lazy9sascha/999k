@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "plugins" / "orca-999k"
+SOURCE = ROOT / "plugins" / "p-999k"
 
 
 class OrcaReleasePackage(unittest.TestCase):
@@ -24,7 +24,7 @@ class OrcaReleasePackage(unittest.TestCase):
                 result = subprocess.run(command, capture_output=True, text=True, check=True)
                 archives.append(Path(result.stdout.strip()))
             self.assertEqual(archives[0].read_bytes(), archives[1].read_bytes())
-            folder = f"999k-orca-{version}"
+            folder = f"p-999k-{version}"
             self.assertEqual(archives[0].name, f"{folder}.tar.gz")
             files = {
                 f"{folder}/orca-plugin.json": SOURCE / "orca-plugin.json",

@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "radio999k": {
+    "p-999k": {
       "type": "stdio",
       "command": "/bin/sh",
       "cwd": ".",

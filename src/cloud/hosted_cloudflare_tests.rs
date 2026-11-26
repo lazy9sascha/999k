@@ -433,6 +433,32 @@ async fn completes_fresh_provisioning_and_persists_resource_ids_before_token_fet
 mod lifecycle_tests;
 
 #[tokio::test]
+async fn reserves_a_hostname_without_publishing_a_peer_route() {
+    let (provider, server) = fixture(vec![
+        lookup_dns(json!([])),
+        lookup_tunnel(json!([])),
+        create_tunnel(),
+        configure().body(json!({"config":{"ingress":[{"service":"http_status:404"}]}})),
+        create_dns(),
+        get_token(),
+    ])
+    .await;
+    let reserved = provider
+        .provision(
+            installation(),
+            HOST,
+            54843,
+            &[] as &[&str],
+            &mut CloudflareResources::default(),
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reserved.origin, format!("https://{HOST}"));
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn publishes_explicit_paths_on_one_tunnel_and_keeps_default_denial() {
     let route = |path| {
         json!({"hostname":HOST,"path":path,"service":"http://127.0.0.1:54843",
@@ -485,6 +511,12 @@ async fn unix_ingress_uses_only_opaque_socket_and_deny_default() {
         {"hostname":HOST,"path":r"^/\.well-known/oauth-protected-resource/dot/mcp$",
          "service":"unix:/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock",
          "originRequest":{"httpHostHeader":"127.0.0.1:54843"}},
+        {"hostname":HOST,"path":"^/muse/mcp$",
+         "service":"unix:/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock",
+         "originRequest":{"httpHostHeader":"127.0.0.1:54843"}},
+        {"hostname":HOST,"path":"^/muse/pair$",
+         "service":"unix:/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock",
+         "originRequest":{"httpHostHeader":"127.0.0.1:54843"}},
         {"service":"http_status:404"}
     ]}}));
     let (provider, server) = fixture(vec![
@@ -503,7 +535,7 @@ async fn unix_ingress_uses_only_opaque_socket_and_deny_default() {
             HOST,
             54843,
             Some(&origin),
-            &["/dot/mcp"],
+            &["/dot/mcp", "/muse/mcp"],
             &mut resources,
             |_| Ok(()),
         )
@@ -609,11 +641,13 @@ async fn operator_reopens_sqlite_and_reconciles_a_lost_tunnel_create_response() 
             CloudflareResources {
                 tunnel: ResourceState::Known(ID.into()),
                 dns_record: ResourceState::Known(DNS_ID.into()),
+                selected_routes: None,
             }
         } else {
             CloudflareResources {
                 tunnel: ResourceState::Attempted,
                 dns_record: ResourceState::New,
+                selected_routes: None,
             }
         };
         assert_eq!(checkpoint, expected);
@@ -624,5 +658,175 @@ async fn operator_reopens_sqlite_and_reconciles_a_lost_tunnel_create_response() 
         assert_eq!(result["public_url"], initial["public_url"]);
         assert_eq!(result["connector_token"], CONNECTOR);
     }
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn approved_reservation_attaches_peers_to_the_same_owned_tunnel() {
+    use crate::tests::{call, fixture as operator_fixture};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use http::StatusCode;
+
+    let (home, mut operator) = operator_fixture();
+    let proof = URL_SAFE_NO_PAD.encode([7; 32]);
+    let (status, enrollment) = call(
+        &operator,
+        Method::POST,
+        "/v1/enrollments",
+        &proof,
+        Some(json!({"request_id": Uuid::new_v4().to_string(), "user_code": "A1B2C3D4"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = Uuid::parse_str(enrollment["installation_id"].as_str().unwrap()).unwrap();
+    let now = crate::epoch_seconds().unwrap();
+    let account = Uuid::from_u128(1);
+    operator
+        .record(|registry| {
+            let attempt = registry.start_browser(id, "A1B2C3D4", now)?;
+            registry.take_browser(attempt.id, now)?;
+            registry.approve(
+                id,
+                account,
+                &std::collections::HashSet::from([account]),
+                now,
+            )
+        })
+        .unwrap();
+    let nonce = "0123456789abcdef0123456789abcdef";
+    let configure = |paths: &[&str]| {
+        let mut ingress: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                json!({
+                    "hostname": HOST, "path": format!("^{path}$"),
+                    "service": format!("unix:/private/tmp/pmq-{nonce}/hub.sock"),
+                    "originRequest": {"httpHostHeader": "127.0.0.1:54843"}
+                })
+            })
+            .collect();
+        ingress.push(json!({"service":"http_status:404"}));
+        Step::result(
+            "PUT",
+            format!("{}/{ID}/configurations", tunnels_path()),
+            json!({}),
+        )
+        .body(json!({"config":{"ingress": ingress}}))
+    };
+    let hostname = operator.hostname(id);
+    let peers = [
+        ("/cue/mcp", "/cue/pair"),
+        ("/muse/mcp", "/muse/pair"),
+        ("/grok/mcp", "/grok/pair"),
+        ("/instinct/mcp", "/instinct/pair"),
+    ];
+    let mut steps = vec![
+        lookup_dns(json!([])),
+        lookup_tunnel(json!([])),
+        create_tunnel(),
+        configure(&[]),
+        create_dns(),
+        get_token(),
+    ];
+    let mut published = Vec::new();
+    for (mcp, pairing) in peers {
+        published.extend([mcp, pairing]);
+        steps.extend([
+            lookup_dns(json!([dns(&marker())])),
+            lookup_tunnel(json!([tunnel()])),
+            configure(&published),
+            get_token(),
+        ]);
+    }
+    steps.extend([
+        lookup_dns(json!([dns(&marker())])),
+        lookup_tunnel(json!([tunnel()])),
+        configure(&published),
+        get_token(),
+    ]);
+    let replace = |s: &str| {
+        s.replace(ACCOUNT, &operator.account_id)
+            .replace(ZONE, &operator.zone_id)
+            .replace(INSTALLATION, &id.to_string())
+            .replace(HOST, &hostname)
+    };
+    let replace_json =
+        |value: serde_json::Value| serde_json::from_str(&replace(&value.to_string())).unwrap();
+    let (provider, server) = fixture(
+        steps
+            .into_iter()
+            .map(|step| Step {
+                path: replace(&step.path),
+                result: replace_json(step.result),
+                payload: step.payload.map(replace_json),
+                ..step
+            })
+            .collect(),
+    )
+    .await;
+    radio999k::private_file::replace_private(&home.path().join("cloudflare.key"), API.as_bytes())
+        .unwrap();
+    let open = || {
+        let mut instance = crate::Operator::from_home(home.path()).unwrap();
+        instance.cloudflare.api = provider.api.clone();
+        instance.selectable_mcp_paths = peers.iter().map(|(mcp, _)| (*mcp).into()).collect();
+        instance
+    };
+    operator = open();
+    let endpoint = format!("/v1/enrollments/{id}/finish-unix");
+    let payload = |routes: &[&str]| Some(json!({"kind":"unix_v1", "nonce":nonce, "routes":routes}));
+    let wrong_proof = URL_SAFE_NO_PAD.encode([8; 32]);
+    assert_eq!(
+        call(
+            &operator,
+            Method::POST,
+            &endpoint,
+            &wrong_proof,
+            payload(&[])
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &operator,
+            Method::POST,
+            &endpoint,
+            &proof,
+            payload(&["/admin/mcp"])
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut expected = Vec::new();
+    let requested_routes = [None]
+        .into_iter()
+        .chain(peers.iter().map(|(mcp, _)| Some(*mcp)))
+        .chain([None]);
+    for requested in requested_routes {
+        let requested: Vec<_> = requested.into_iter().collect();
+        expected.extend_from_slice(&requested);
+        let (status, result) = call(
+            &operator,
+            Method::POST,
+            &endpoint,
+            &proof,
+            payload(&requested),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(result["public_url"], enrollment["public_url"]);
+        assert_eq!(result["connector_token"], CONNECTOR);
+        assert_eq!(result["origin"]["nonce"], nonce);
+        assert_eq!(result["origin"]["mcp_paths"], json!(expected));
+        operator = open();
+    }
+    let legacy = format!("/v1/enrollments/{id}/finish");
+    assert_eq!(
+        call(&operator, Method::POST, &legacy, &proof, None).await.0,
+        StatusCode::BAD_REQUEST
+    );
     server.await.unwrap();
 }

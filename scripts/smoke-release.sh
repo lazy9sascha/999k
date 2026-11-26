@@ -171,6 +171,40 @@ def run_demo(bins, version, root):
 
     home = root / "hub"
     cli(executable, "init", "--home", home, check=True)
+    check(not (home / "hosted-enrollment.json").exists(),
+          "ordinary init unexpectedly began hosted enrollment")
+    # An unsafe home stops explicit enrollment before any network call.
+    if sys.platform == "darwin" and "RADIO999K_RELEASE_REGISTRATION_URL" in os.environ:
+        blocked = root / "invalid-hosted-home"
+        blocked.mkdir()
+        blocked.chmod(0o755)
+        result = cli(executable, "init", "--reserve-address", "--home", blocked)
+        expected = ("hosted hub home must be owner-private" if os.environ["RADIO999K_RELEASE_REGISTRATION_URL"]
+                    else "no hosted registration provider")
+        check(result.returncode and expected in result.stderr, "unexpected packaged registration default")
+        env["RADIO999K_REGISTRATION_URL"] = "http://invalid.example.test"
+        result = cli(executable, "init", "--reserve-address", "--home", blocked)
+        check(result.returncode and "must be an HTTPS origin" in result.stderr,
+              "runtime registration override did not take precedence")
+        del env["RADIO999K_REGISTRATION_URL"]
+        if os.environ["RADIO999K_RELEASE_REGISTRATION_URL"]:
+            fresh = root / "selected-peer"
+            # An invalid explicit sender stops allowed selections before managed services or I/O.
+            def select(peer):
+                return cli(executable, "init", "--orca", "--orca-peer", peer, "--orca-reserve-address",
+                           "--home", fresh, "--orca-sender", "invalid sender", "--orca-bearer-file", blocked)
+            result = select("dot")
+            check(result.returncode and "does not support hosted HTTPS enrollment" in result.stderr
+                  and not fresh.exists(), "Dot entered the pairing-code registration flow")
+            for peer in ("muse", "grok-bot", "instinct", "cue"):
+                result = select(peer)
+                check(result.returncode and "Invalid sender mailbox" in result.stderr
+                      and not fresh.exists(), f"{peer} could not reach local sender validation")
+            env["RADIO999K_REGISTRATION_URL"] = "https://self-hosted.example.test"
+            result = select("muse")
+            check(result.returncode and "Invalid sender mailbox" in result.stderr,
+                  "custom registration provider unexpectedly restricted Muse")
+            del env["RADIO999K_REGISTRATION_URL"]
     sender, muse, sender_policy, muse_policy = fixture(home)
     cli(executable, "muse-prepare", "--queue", home / "pigeonmq-cloud-queue.sqlite3",
         "--auth-policy", muse_policy, check=True)
@@ -186,14 +220,14 @@ def run_demo(bins, version, root):
                     {"sender": "a", "recipient": "muse", "body": REQUEST}, sender)["message"]
         message_id = sent["id"]
         args = {"message_id": message_id}
-        read = tool("radio999k_read", **args)
+        read = tool("p-999k_read", **args)
         check((read["message_id"], read["state"], read["body"]) == (message_id, "pending", REQUEST),
               "the expected pending message was not read")
-        reply = tool("radio999k_reply", **args, body=REPLY)
+        reply = tool("p-999k_reply", **args, body=REPLY)
         reply_id = reply["reply_id"]
         check(reply_id and reply_id != message_id and not reply["duplicate"],
               "no new linked reply was created")
-        read = tool("radio999k_read", **args)
+        read = tool("p-999k_read", **args)
         check((read["state"], read["reply_id"]) == ("replied", reply_id),
               "the original did not reference the reply")
         legacy = tool("pigeonmq_read", **args)
@@ -204,11 +238,11 @@ def run_demo(bins, version, root):
 
     with running_hub(command, env, home, port):
         tool = mcp_client(port, muse)
-        read = tool("radio999k_read", **args)
+        read = tool("p-999k_read", **args)
         check((read["message_id"], read["state"], read["reply_id"]) == (
             message_id, "replied", reply_id
         ), "the original linked reply ID changed after restart")
-        thread = tool("radio999k_read_thread", conversation_id=sent["conversation_id"])
+        thread = tool("p-999k_read_thread", conversation_id=sent["conversation_id"])
         check(any((msg["message_id"], msg["in_reply_to"], msg["body"], msg["sender"],
                    msg["recipient"]) == (reply_id, message_id, REPLY, "muse", "a")
                   for msg in thread["messages"]), "the linked reply was not present after restart")

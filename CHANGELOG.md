@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.2.1
+
+The native CLI and the P-999K Orca plugin both use version 0.2.1.
+
+- Add the P-999K Orca plugin at version 0.2.1. The catalog ID is `lazy9sascha.p-999k`. The repository is `lazy9sascha/p-999k`.
+- The plugin requires Orca 1.4.268 or newer and a native `999k` build with `--orca-peer` and `pair`. It opens setup for one relay bot per existing peer.
+- The CLI can check a linked reply by original ID. Pending and invalid IDs return an unsuccessful status.
+- A project agent can ask a bound peer. **Queued** means the hub accepted the request. The relay returns only the reply linked to that request, and that reply can arrive later.
+- The plugin does not open the peer’s existing mailbox route. Muse still polls `/muse/mcp` over HTTPS through the hub’s tunnel.
+
+- Updated native builds advertise MCP tools with the `p-999k_` prefix. Calls using `radio999k_` or `pigeonmq_` still work. Installing the Orca plugin alone keeps the tool names of the installed native hub and CLI.
+
 ## 0.2.0 - 2026-11-24
 
 - PigeonMQ is now **999K**. New examples use the `999k` executable and the `radio999k_*` mailbox tools.

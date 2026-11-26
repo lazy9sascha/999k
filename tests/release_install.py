@@ -68,7 +68,7 @@ while [ "$#" -gt 1 ]; do
     shift
 done
 case $1 in
-    https://github.com/lazy9sascha/999k/releases/download/0.1.6/999k-0.1.6-*.tar.gz) ;;
+    https://github.com/lazy9sascha/p-999k/releases/download/0.1.6/999k-0.1.6-*.tar.gz) ;;
     *) exit 99 ;;
 esac
 printf '%s\\n' "${1##*/}" >> "$FIXTURE_DOWNLOADS"
@@ -108,6 +108,17 @@ fi
     fetched = downloads.read_bytes()
     run("sh", installer, "--bin-dir", custom, env=env)
     assert downloads.read_bytes() == fetched
+    # A pre-fetched archive uses the same pinned digest without another network request.
+    sibling = installer.parent / name
+    sibling.write_bytes(good_archive)
+    local = home / "offline"
+    run("sh", installer, "--bin-dir", local, env=env)
+    assert (local / "999k").read_bytes() == (custom / "999k").read_bytes()
+    sibling.write_bytes(good_archive + b"corrupt")
+    failed = run("sh", installer, "--bin-dir", home / "bad local", env=env, code=1)
+    assert "SHA-256 mismatch" in failed.stderr
+    assert downloads.read_bytes() == fetched
+    sibling.unlink()
     old = home / "old"
     old.mkdir()
     write_command(old / "999k", "exit 91\n")

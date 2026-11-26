@@ -115,10 +115,28 @@ pub(super) struct Input {
     pub(super) access_assertions: Vec<Vec<u8>>,
     pub(super) sdk_headers: Vec<(String, Vec<u8>)>,
 }
+pub(super) fn mcp_probe_input(authority: &str, path: &str, bearer: &str) -> Input {
+    Input {
+        path: path.into(),
+        length: 0,
+        authorization: vec![format!("Bearer {bearer}").into_bytes()],
+        access_assertions: Vec::new(),
+        sdk_headers: [
+            ("Host", authority),
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json, text/event-stream"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value.as_bytes().to_vec()))
+        .collect(),
+    }
+}
+
 // FIXME(lib: hyper): hand-rolled HTTP/1.1 server on httparse+TcpStream; hyper is already in the lockfile via reqwest.
 pub(super) fn parse_head(
     bytes: &[u8],
     authority: &str,
+    hosted_authority: Option<&str>,
     route_body_limit: impl Fn(&str) -> Result<usize, Fault>,
 ) -> Result<Input, Fault> {
     let mut headers = [httparse::EMPTY_HEADER; 32];
@@ -140,7 +158,9 @@ pub(super) fn parse_head(
             .collect()
     };
     let hosts = values("host");
-    if hosts != vec![authority.as_bytes()] {
+    if !matches!(hosts.as_slice(), [host] if *host == authority.as_bytes()
+        || hosted_authority.is_some_and(|public| *host == public.as_bytes()))
+    {
         return Err((403, "loopback_host_required"));
     }
     // No browser origin is trusted, including same-origin/null. No CORS headers.
@@ -198,7 +218,15 @@ pub(super) fn parse_head(
                 "host" | "accept" | "content-type" | "last-event-id"
             ) || name.starts_with("mcp-")
         })
-        .map(|h| (h.name.to_owned(), h.value.to_vec()))
+        .map(|h| {
+            // SDK profiles receive the same authority as the local dispatch after Host validation.
+            let value = if h.name.eq_ignore_ascii_case("host") {
+                authority.as_bytes()
+            } else {
+                h.value
+            };
+            (h.name.to_owned(), value.to_vec())
+        })
         .collect();
     Ok(Input {
         sdk_headers,
@@ -243,6 +271,7 @@ fn read_part(
 fn read_input(
     stream: &mut ProfileStream,
     authority: &str,
+    hosted_authority: Option<&str>,
     route_body_limit: impl Fn(&str) -> Result<usize, Fault>,
 ) -> Result<(Input, Vec<u8>), Fault> {
     let deadline = Instant::now() + IO_BUDGET;
@@ -259,7 +288,12 @@ fn read_input(
         let size = read_part(stream, &mut chunk[..capacity], deadline)?;
         bytes.extend_from_slice(&chunk[..size]);
     };
-    let input = parse_head(&bytes[..offset], authority, route_body_limit)?;
+    let input = parse_head(
+        &bytes[..offset],
+        authority,
+        hosted_authority,
+        route_body_limit,
+    )?;
     if bytes.len() > offset + input.length {
         return Err((400, "extra_request_bytes"));
     }
@@ -384,10 +418,12 @@ pub(super) fn serve_profile_listeners(
 pub(super) fn handle_connection(
     mut stream: ProfileStream,
     authority: &str,
+    hosted_authority: Option<&str>,
     route_body_limit: impl Fn(&str) -> Result<usize, Fault>,
     dispatch: impl FnOnce(&Input, &[u8], &(dyn Fn() -> bool + Sync)) -> WireResponse,
 ) {
-    let (input, body) = match read_input(&mut stream, authority, route_body_limit) {
+    let (input, body) = match read_input(&mut stream, authority, hosted_authority, route_body_limit)
+    {
         Ok(request) => request,
         Err(error) => return finish_profile_connection_with_status(stream, Err(error), 200),
     };

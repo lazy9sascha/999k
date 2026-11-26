@@ -166,7 +166,7 @@ fn dot_inbox_pages_exact_read_metadata_without_claiming_or_acknowledging() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|tool| tool["name"] == "radio999k_inbox")
+            .any(|tool| tool["name"] == "p-999k_inbox")
     );
 
     let list = |token, args| {
@@ -174,7 +174,7 @@ fn dot_inbox_pages_exact_read_metadata_without_claiming_or_acknowledging() {
             &host,
             token,
             "tools/call",
-            json!({"name":"radio999k_inbox","arguments":args}),
+            json!({"name":"p-999k_inbox","arguments":args}),
         )
     };
     let data = |response: Value| {
@@ -406,7 +406,7 @@ fn ordinary_and_terminal_wakes_keep_signed_metadata_and_the_existing_subscriptio
         &host,
         TOKEN,
         "tools/call",
-        json!({"name":"radio999k_reply","arguments":{"message_id":reply,"body":"must not auto reply"}}),
+        json!({"name":"p-999k_reply","arguments":{"message_id":reply,"body":"must not auto reply"}}),
     );
     assert_eq!(status, 200);
     assert_eq!(result["error"]["data"]["reason"], "reply_is_terminal");

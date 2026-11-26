@@ -609,11 +609,20 @@ pub(crate) fn provision(policy: &Path, app: App) -> io::Result<()> {
     }
 }
 
-#[cfg(target_os = "macos")]
-// NOTE: canonical Dot/OpenAI tunnel design; not wired yet, do not remove.
 pub(crate) fn read_keychain_bearer(home: &Path, app: App) -> io::Result<Vec<u8>> {
-    keychain::get(&account(home, app)?)?
-        .ok_or_else(|| io::Error::other("No Cloud bearer in Keychain"))
+    #[cfg(target_os = "macos")]
+    {
+        keychain::get(&account(home, app)?)?
+            .ok_or_else(|| io::Error::other("No Cloud bearer in Keychain"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (home, app);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Keychain requires macOS",
+        ))
+    }
 }
 
 /// Read only the paired webhook item for this queue home.
@@ -733,7 +742,7 @@ pub(crate) fn setup_grok_wake(
 }
 
 #[cfg(target_os = "macos")]
-fn hidden_tty(prompt: &std::ffi::CStr) -> io::Result<String> {
+pub(crate) fn hidden_tty(prompt: &std::ffi::CStr) -> io::Result<String> {
     use std::ffi::{c_char, c_int};
     unsafe extern "C" {
         fn readpassphrase(
@@ -763,7 +772,7 @@ fn hidden_tty(prompt: &std::ffi::CStr) -> io::Result<String> {
             .filter(|text| text.to_bytes().len() < buf.len() - 1)
             .and_then(|text| text.to_str().ok())
             .map(str::to_owned)
-            .ok_or_else(|| io::Error::other("Invalid or too-long webhook input"))
+            .ok_or_else(|| io::Error::other("Invalid or too-long hidden input"))
     };
     buf.fill(0);
     value

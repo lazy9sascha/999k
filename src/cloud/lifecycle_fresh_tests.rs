@@ -216,7 +216,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let original = tool(
         &instinct_profile,
         &instinct_token,
-        "radio999k_send",
+        "p-999k_send",
         send.clone(),
     )
     .unwrap();
@@ -224,7 +224,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let observed = tool(
         &cue_profile,
         &cue_token,
-        "radio999k_read",
+        "p-999k_read",
         json!({"message_id":original_id}),
     )
     .unwrap();
@@ -232,7 +232,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let answer = tool(
         &cue_profile,
         &cue_token,
-        "radio999k_reply",
+        "p-999k_reply",
         json!({"message_id":original_id,"body":"synthetic terminal"}),
     )
     .unwrap();
@@ -240,7 +240,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
     let terminal = tool(
         &instinct_profile,
         &instinct_token,
-        "radio999k_read",
+        "p-999k_read",
         json!({"message_id":answer_id}),
     )
     .unwrap();
@@ -249,7 +249,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &instinct_profile,
             &instinct_token,
-            "radio999k_confirm_terminal",
+            "p-999k_confirm_terminal",
             json!({"message_id":answer_id}),
         )
         .unwrap()["state"],
@@ -277,7 +277,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &cue_profile,
             &cue_token,
-            "radio999k_read",
+            "p-999k_read",
             json!({"message_id":original_id}),
         )
         .is_err()
@@ -297,17 +297,13 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &current_cue,
             &cue_token,
-            "radio999k_read",
+            "p-999k_read",
             json!({"message_id":original_id}),
         ),
         Err(401)
     );
-    for name in [
-        "radio999k_read",
-        "radio999k_reply",
-        "radio999k_confirm_terminal",
-    ] {
-        let args = if name == "radio999k_reply" {
+    for name in ["p-999k_read", "p-999k_reply", "p-999k_confirm_terminal"] {
+        let args = if name == "p-999k_reply" {
             json!({"message_id":original_id,"body":"must be rejected"})
         } else {
             json!({"message_id":original_id})
@@ -318,7 +314,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &current_cue,
             &new_cue_token,
-            "radio999k_inbox",
+            "p-999k_inbox",
             json!({"scope":"all","query":"synthetic"}),
         )
         .unwrap()["messages"],
@@ -328,7 +324,7 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &current_cue,
             &new_cue_token,
-            "radio999k_read_thread",
+            "p-999k_read_thread",
             json!({"conversation_id":original_id}),
         )
         .unwrap()["messages"],
@@ -338,20 +334,20 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
         tool(
             &current_cue,
             &new_cue_token,
-            "radio999k_wait",
+            "p-999k_wait",
             json!({"timeout_ms":0})
         )
         .unwrap()["message"],
         Value::Null
     );
-    let next = tool(&instinct_profile, &instinct_token, "radio999k_send", send).unwrap();
+    let next = tool(&instinct_profile, &instinct_token, "p-999k_send", send).unwrap();
     let next_id = next["message"]["id"].as_str().unwrap();
     assert_ne!(next_id, original_id);
     assert_eq!(
         tool(
             &current_cue,
             &new_cue_token,
-            "radio999k_read",
+            "p-999k_read",
             json!({"message_id":next_id})
         )
         .unwrap()["id"],
@@ -380,4 +376,237 @@ fn fresh_install_keeps_one_relay_and_reinit_fences_old_mail_in_real_mcp_handlers
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn orca_fresh_home_resumes_after_partial_activation_with_sender_only() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("hub");
+    let launch = FakeLaunchctl::default();
+    let directory = root.path().join("LaunchAgents");
+    let binary = std::env::current_exe().unwrap();
+    let jobs = Jobs {
+        service: &launch,
+        directory: &directory,
+        executable: &binary,
+        installation: None,
+    };
+    mkdir_private(&home).unwrap();
+    write_json(&home.join(".orca-first-install-pending"), &1u8).unwrap();
+    File::create(home.join(QUEUE)).unwrap();
+    fs::set_permissions(home.join(QUEUE), fs::Permissions::from_mode(0o600)).unwrap();
+    let result = orca_sender_file_with(&home, |home, name, options| {
+        assert_eq!(name, "codex-cloud");
+        init_with(home, name, options, Some(&jobs))?;
+        Err(error("simulated interruption"))
+    });
+    assert_eq!(result.unwrap_err().to_string(), "simulated interruption");
+    let token = fs::read(home.join("pigeonmq-cloud-codex-cloud-token")).unwrap();
+    let file = orca_sender_file_with(&home, |home, name, options| {
+        init_with(home, name, options, Some(&jobs))
+    })
+    .unwrap();
+    assert!(fs::read(&file).unwrap() == token);
+    let owner = mailbox(&home, "codex-cloud");
+    let catalog = tool(
+        &owner,
+        std::str::from_utf8(&token).unwrap(),
+        "p-999k_recipients",
+        json!({}),
+    )
+    .unwrap();
+    assert_eq!(catalog["recipients"], json!([]));
+    let registry = state(&home);
+    assert_eq!(registry.profiles.len(), 1);
+    assert_eq!(registry.profiles["codex-cloud"].phase, Phase::Active);
+    assert!(registry.local_stdio);
+    assert_eq!(
+        file,
+        orca_sender_file_with(&home, |_, _, _| panic!("repeated activation")).unwrap()
+    );
+    let existing = root.path().join("existing");
+    mkdir_private(&existing).unwrap();
+    fs::write(existing.join("operator-file"), b"keep").unwrap();
+    assert!(orca_sender_file_with(&existing, |_, _, _| panic!("adopted unknown home")).is_err());
+    assert_eq!(fs::read_dir(existing).unwrap().count(), 1);
+}
+
+#[test]
+fn orca_bootstraps_after_address_only_reservation() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("hub");
+    mkdir_private(&home).unwrap();
+    let id = uuid::Uuid::new_v4();
+    crate::hosted_enrollment::stage_unix_fixture(&home, id, 54843, &[]);
+    let launch = FakeLaunchctl::default();
+    let directory = root.path().join("LaunchAgents");
+    let binary = std::env::current_exe().unwrap();
+    let jobs = Jobs {
+        service: &launch,
+        directory: &directory,
+        executable: &binary,
+        installation: None,
+    };
+    orca_sender_file_with(&home, |home, name, options| {
+        init_with(home, name, options, Some(&jobs))
+    })
+    .unwrap();
+    assert_eq!(state(&home).profiles.len(), 1);
+    let (id_after, scope, _) = crate::hosted_enrollment::staged_unix(&home)
+        .unwrap()
+        .unwrap();
+    assert_eq!(id_after, id);
+    assert!(scope.mcp_paths.is_empty());
+}
+
+#[test]
+fn orca_adds_only_selected_peers_and_reuses_credentials_on_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("hub");
+    let launch = FakeLaunchctl::default();
+    let directory = root.path().join("LaunchAgents");
+    let binary = std::env::current_exe().unwrap();
+    let jobs = Jobs {
+        service: &launch,
+        directory: &directory,
+        executable: &binary,
+        installation: None,
+    };
+    mkdir_private(&home).unwrap();
+    let select = |name| init_selected(&home, name, &orca_options(), Some(&jobs), true);
+    assert!(select("cue").is_err());
+    assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+
+    let sender_file = orca_sender_file_with(&home, |home, name, options| {
+        init_with(home, name, options, Some(&jobs))
+    })
+    .unwrap();
+    let sender = fs::read_to_string(&sender_file).unwrap();
+    let mut peers = BTreeSet::new();
+    assert!(select("codex-cloud").is_err());
+    for name in ["dot", "instinct", "cue", "muse", "grok-bot"] {
+        let selected = select(name).unwrap();
+        assert_eq!(selected["state"], "active");
+        let (file, token) = staged_token(&selected);
+        assert_ne!(token, sender);
+        let added = state(&home);
+        peers.insert(name);
+        assert_eq!(added.profiles.len(), peers.len() + 1);
+        assert_eq!(added.profiles[name].phase, Phase::Active);
+        assert_eq!(
+            tool(
+                &mailbox(&home, "codex-cloud"),
+                &sender,
+                "p-999k_recipients",
+                json!({}),
+            )
+            .unwrap()["recipients"],
+            json!(peers)
+        );
+
+        let change_count = launch.changes.borrow().len();
+        let repeated = select(name).unwrap();
+        assert_eq!(staged_token(&repeated), (file, token));
+        assert_eq!(launch.changes.borrow().len(), change_count);
+    }
+}
+
+#[test]
+fn orca_preserves_preexisting_and_revoked_peer_settings() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("hub");
+    let launch = FakeLaunchctl::default();
+    let directory = root.path().join("LaunchAgents");
+    let binary = std::env::current_exe().unwrap();
+    let jobs = Jobs {
+        service: &launch,
+        directory: &directory,
+        executable: &binary,
+        installation: None,
+    };
+    orca_sender_file_with(&home, |home, name, options| {
+        init_with(home, name, options, Some(&jobs))
+    })
+    .unwrap();
+    let select = |name| init_selected(&home, name, &orca_options(), Some(&jobs), true);
+    let muse_policy = home.join(catalog::http_by_id("muse").unwrap().policy_file);
+    write_json(&muse_policy, &json!({"operator_owned":true})).unwrap();
+    let previous_policy = fs::read(&muse_policy).unwrap();
+    let active = state(&home);
+    let mut registration = registration_data(&active.registration).unwrap();
+    registration["dot"] = json!({"mailbox":"dot","revoked":true});
+    registration["instinct"] = json!({"mailbox":"instinct","revoked":false});
+    write_json(&active.registration, &registration).unwrap();
+    let previous_registration = fs::read(&active.registration).unwrap();
+    let change_count = launch.changes.borrow().len();
+
+    for name in ["muse", "dot", "instinct"] {
+        assert!(select(name).is_err());
+        assert!(!state(&home).profiles.contains_key(name));
+    }
+    assert_eq!(fs::read(muse_policy).unwrap(), previous_policy);
+    assert_eq!(
+        fs::read(active.registration).unwrap(),
+        previous_registration
+    );
+    assert_eq!(launch.changes.borrow().len(), change_count);
+}
+
+#[test]
+fn orca_adds_email_to_an_active_peer_without_restarting_the_hub_or_backfilling() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("hub");
+    let launch = FakeLaunchctl::default();
+    let directory = root.path().join("LaunchAgents");
+    let binary = std::env::current_exe().unwrap();
+    let jobs = Jobs {
+        service: &launch,
+        directory: &directory,
+        executable: &binary,
+        installation: None,
+    };
+    let sender_file = orca_sender_file_with(&home, |home, name, options| {
+        init_with(home, name, options, Some(&jobs))
+    })
+    .unwrap();
+    let sender = fs::read_to_string(sender_file).unwrap();
+    let active = init_selected(&home, "cue", &orca_options(), Some(&jobs), true).unwrap();
+    let original_credential = staged_token(&active);
+    let prior = state(&home);
+    let registry = fs::read(&prior.registration).unwrap();
+    let policy = fs::read(&prior.profiles["cue"].policy).unwrap();
+    tool(&mailbox(&home, "codex-cloud"), &sender, "p-999k_send",
+        json!({"recipient":"cue","body":"synthetic pre-opt-in message","idempotency_key":"before-relay"})).unwrap();
+    let boundary = high_water(&home.join(QUEUE)).unwrap();
+
+    let relay = home.join("fixture-relay");
+    fs::write(&relay, b"#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&relay, fs::Permissions::from_mode(0o700)).unwrap();
+    let options = Options {
+        email_recipient: Some("cue-fixture@example.test"),
+        relay_command: Some(&relay),
+        ..orca_options()
+    };
+    launch.changes.borrow_mut().clear();
+    let applied = init_selected(&home, "cue", &options, Some(&jobs), true).unwrap();
+    assert_eq!(staged_token(&applied), original_credential);
+    assert_eq!(fs::read(&prior.registration).unwrap(), registry);
+    assert_eq!(fs::read(&prior.profiles["cue"].policy).unwrap(), policy);
+    let config_path = home.join(DIRECTORY).join(RELAY_CONFIG);
+    let mut targets: RelayConfig = read_json(&config_path).unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets["cue"].after, boundary);
+    assert_eq!(*launch.changes.borrow(), [(RELAY_LABEL.into(), true)]);
+    tool(&mailbox(&home, "codex-cloud"), &sender, "p-999k_send",
+        json!({"recipient":"cue","body":"synthetic post-opt-in message","idempotency_key":"after-relay"})).unwrap();
+    init_selected(&home, "cue", &options, Some(&jobs), true).unwrap();
+    targets = read_json(&config_path).unwrap();
+    assert_eq!(targets["cue"].after, boundary);
+    assert_eq!(*launch.changes.borrow(), [(RELAY_LABEL.into(), true)]);
+    let conflicting = Options {
+        email_recipient: Some("another-fixture@example.test"),
+        ..options
+    };
+    assert!(init_selected(&home, "cue", &conflicting, Some(&jobs), true).is_err());
+    assert_eq!(read_json::<RelayConfig>(&config_path).unwrap(), targets);
 }

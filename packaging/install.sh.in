@@ -3,7 +3,7 @@
 set -eu
 
 version='@VERSION@'
-release='https://github.com/lazy9sascha/999k/releases/download'
+release='https://github.com/lazy9sascha/p-999k/releases/download'
 tmp=
 lock=
 
@@ -53,9 +53,14 @@ install_pair() {
     check_destinations
     tmp=$(mktemp -d "$bin_dir/.999k.XXXXXXXX")
     archive=999k-$version-$target.tar.gz
-    curl -q -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 \
-        --retry 2 -o "$tmp/archive" "$release/$version/$archive" ||
-        fail "Could not download $archive."
+    sibling=$(dirname -- "$0")/$archive
+    if [ -f "$sibling" ]; then
+        cp -- "$sibling" "$tmp/archive" || fail "Could not read $archive."
+    else
+        curl -q -fLsS --proto '=https' --proto-redir '=https' --connect-timeout 20 \
+            --retry 2 -o "$tmp/archive" "$release/$version/$archive" ||
+            fail "Could not download $archive."
+    fi
     matches "$tmp/archive" "$archive_sha" || fail "SHA-256 mismatch for $archive."
     tar -xzf "$tmp/archive" -C "$tmp" 999k 999k-dot-resolve ||
         fail "Could not extract $archive."

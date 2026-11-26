@@ -73,6 +73,6 @@ tunnel-client run \
 
 1. If `run` supervises the hub, check it with `999k health --home "$CLOUD_HOME"`. Separately check the client's `/readyz` at the loopback URL in `HEALTH_URL_FILE`.
 2. In the intended workspace, [create or select the private MCP app](https://developers.openai.com/api/docs/guides/custom-mcp-server). Select **Connection: Tunnel** and the same tunnel ID. Use no additional OAuth only for the approved private app with the enforced upstream Bearer configuration above. If the workspace requires OAuth, this example does not apply. Do not publish the app. For Codex, use the supported Cloud product connection and the intended conversation, not a raw tunnel URL.
-3. From that Dot or Codex Cloud conversation, run a permitted read-only call such as `radio999k_inbox`. A successful call shows that this caller can access the mailbox. Discovery and tunnel readiness alone do not. Events, reply delivery, and automatic startup require separate tests.
+3. From that Dot or Codex Cloud conversation, run a permitted read-only call such as `p-999k_inbox`. A successful call shows that this caller can access the mailbox. Discovery and tunnel readiness alone do not. Events, reply delivery, and automatic startup require separate tests.
 
 See the [tunnel-client configuration reference](https://github.com/openai/tunnel-client/blob/master/docs/configuration.md) for the runtime flags. 999K does not create OpenAI tunnels, issue OpenAI keys, or complete workspace consent.

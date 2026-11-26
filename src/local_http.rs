@@ -115,7 +115,7 @@ fn route_body_limit(path: &str) -> Result<usize, Fault> {
 }
 #[cfg(test)]
 fn parse_head(bytes: &[u8], authority: &str) -> Result<Input, Fault> {
-    transport::parse_head(bytes, authority, route_body_limit)
+    transport::parse_head(bytes, authority, None, route_body_limit)
 }
 fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, Fault> {
     serde_json::from_slice(body).map_err(|_| (400, "invalid_json_or_fields"))
@@ -153,11 +153,11 @@ pub(crate) fn terminal_observation_fault(error: Fault) -> Fault {
 
 fn mcp_tools() -> Value {
     json!([
-        {"name":"radio999k_send","description":"Enqueue an ordinary message. Requires authenticated send authority; does not run an agent or acknowledge a message. Single recipient only: central registration-backed subset preflight is unavailable in this generic profile.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
-        {"name":"radio999k_request","description":"Enqueue an RPC request. Returns message ID as request ID.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
-        {"name":"radio999k_receive","description":"Claim one RPC request for a recipient with a lease.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"lease_seconds":{"type":"integer"}},"required":["recipient"],"additionalProperties":false}},
-        {"name":"radio999k_respond","description":"Store a result and atomically end the claim.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"id":{"type":"string"},"receipt":{"type":"string"},"result":{"type":"object"}},"required":["recipient","id","receipt","result"],"additionalProperties":false}},
-        {"name":"radio999k_status","description":"Check request state and result.","inputSchema":{"type":"object","properties":{"requester":{"type":"string"},"id":{"type":"string"}},"required":["requester","id"],"additionalProperties":false}}
+        {"name":"p-999k_send","description":"Enqueue an ordinary message. Requires authenticated send authority; does not run an agent or acknowledge a message. Single recipient only: central registration-backed subset preflight is unavailable in this generic profile.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
+        {"name":"p-999k_request","description":"Enqueue an RPC request. Returns message ID as request ID.","inputSchema":{"type":"object","properties":{"sender":{"type":"string"},"recipient":{"type":"string"},"body":{"type":"string"},"correlation_id":{"type":"string"},"in_reply_to":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["sender","recipient","body"],"additionalProperties":false}},
+        {"name":"p-999k_receive","description":"Claim one RPC request for a recipient with a lease.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"lease_seconds":{"type":"integer"}},"required":["recipient"],"additionalProperties":false}},
+        {"name":"p-999k_respond","description":"Store a result and atomically end the claim.","inputSchema":{"type":"object","properties":{"recipient":{"type":"string"},"id":{"type":"string"},"receipt":{"type":"string"},"result":{"type":"object"}},"required":["recipient","id","receipt","result"],"additionalProperties":false}},
+        {"name":"p-999k_status","description":"Check request state and result.","inputSchema":{"type":"object","properties":{"requester":{"type":"string"},"id":{"type":"string"}},"required":["requester","id"],"additionalProperties":false}}
     ])
 }
 
@@ -168,12 +168,12 @@ fn call_mcp_tool(
     args: Value,
 ) -> Result<Value, Fault> {
     Ok(match name {
-        "radio999k_send" => {
+        "p-999k_send" => {
             let b: RequestBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             send_message(queue, b, principal)?
         }
-        "radio999k_request" => {
+        "p-999k_request" => {
             let b: RequestBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             principal.operation(Operation::Request)?;
@@ -193,7 +193,7 @@ fn call_mcp_tool(
             )
             .map_err(|_| (500, "internal_error"))?
         }
-        "radio999k_receive" => {
+        "p-999k_receive" => {
             let b: ReceiveBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             principal.operation(Operation::Receive)?;
@@ -205,7 +205,7 @@ fn call_mcp_tool(
             )
             .map_err(|_| (500, "internal_error"))?
         }
-        "radio999k_respond" => {
+        "p-999k_respond" => {
             let b: RespondBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             principal.operation(Operation::Respond)?;
@@ -217,7 +217,7 @@ fn call_mcp_tool(
             )
             .map_err(|_| (500, "internal_error"))?
         }
-        "radio999k_status" => {
+        "p-999k_status" => {
             let b: StatusBody =
                 serde_json::from_value(args).map_err(|_| (400, "invalid_params"))?;
             principal.operation(Operation::Status)?;
@@ -562,7 +562,7 @@ mod tests {
                 "POST /messages/dlq HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 body.len()
             );
-            let input = transport::parse_head(head.as_bytes(), authority, |p| {
+            let input = transport::parse_head(head.as_bytes(), authority, None, |p| {
                 state.routes.get(p).map(|route| route.body_limit)
             })?;
             match dispatch_hub_request(state, authority, &input, body.as_bytes(), &|| false, None) {
@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(radio999k::grok_mailbox::MAX_TEXT, 16384);
         assert_eq!(radio999k::muse_mailbox::MAX_REQUEST_BYTES, 16384);
         let body = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"radio999k_send","arguments":{{"recipient":"muse","body":"{}","idempotency_key":"framing-fixture"}}}}}}"#,
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"p-999k_send","arguments":{{"recipient":"muse","body":"{}","idempotency_key":"framing-fixture"}}}}}}"#,
             "\\u0061".repeat(radio999k::grok_mailbox::MAX_TEXT)
         );
         let decoded: Value = serde_json::from_str(&body).unwrap();
@@ -911,13 +911,13 @@ mod tests {
         let (status, listed) = f.rpc("sender-fixture", "tools/list", json!({}));
         assert_eq!(status, 200);
         let tools = listed["result"]["tools"].as_array().unwrap();
-        assert!(tools.iter().any(|tool| tool["name"] == "radio999k_request"));
+        assert!(tools.iter().any(|tool| tool["name"] == "p-999k_request"));
         let find = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap();
-        let schema = &find("radio999k_send")["inputSchema"];
+        let schema = &find("p-999k_send")["inputSchema"];
         assert_eq!(schema["required"], json!(["sender", "recipient", "body"]));
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(
-            find("radio999k_receive")["inputSchema"]["required"],
+            find("p-999k_receive")["inputSchema"]["required"],
             json!(["recipient"])
         );
         for method in ["resources/list", "events/list"] {
@@ -937,7 +937,7 @@ mod tests {
             400
         );
         for arguments in [json!(["sender", "worker"]), json!(false), json!("bad")] {
-            let (status, response) = f.tool("sender-fixture", "radio999k_request", arguments);
+            let (status, response) = f.tool("sender-fixture", "p-999k_request", arguments);
             assert!(
                 matches!(status, 400 | 415) || response.get("error").is_some(),
                 "invalid arguments accepted: {status} {response}"
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(unknown["error"]["code"], -32602);
         let (status, invalid) = f.tool(
             "worker-fixture",
-            "radio999k_receive",
+            "p-999k_receive",
             json!({"lease_seconds":30}),
         );
         assert_eq!(status, 200);
@@ -961,31 +961,28 @@ mod tests {
         let request = json!({"sender":"sender","recipient":"worker","body":"synthetic RPC"});
         let forbidden = (403, json!({"error":{"code":"forbidden"}}));
         assert_eq!(
-            f.tool("observer-fixture", "radio999k_request", request.clone()),
+            f.tool("observer-fixture", "p-999k_request", request.clone()),
             forbidden
         );
         for args in [
             json!({"sender":"observer","recipient":"worker","body":"spoof"}),
             json!({"sender":"sender","recipient":"outside","body":"outside target"}),
         ] {
-            assert_eq!(
-                f.tool("sender-fixture", "radio999k_request", args),
-                forbidden
-            );
+            assert_eq!(f.tool("sender-fixture", "p-999k_request", args), forbidden);
         }
-        let queued = unpack(f.tool("sender-fixture", "radio999k_request", request));
+        let queued = unpack(f.tool("sender-fixture", "p-999k_request", request));
         let id = &queued["message"]["id"];
         assert_eq!(
             f.tool(
                 "worker-fixture",
-                "radio999k_receive",
+                "p-999k_receive",
                 json!({"recipient":"outside"})
             ),
             forbidden
         );
         let receive = unpack(f.tool(
             "worker-fixture",
-            "radio999k_receive",
+            "p-999k_receive",
             json!({"recipient":"worker"}),
         ));
         assert_eq!(&receive["message"]["id"], id);
@@ -993,28 +990,28 @@ mod tests {
         assert_eq!(
             f.tool(
                 "worker-fixture",
-                "radio999k_respond",
+                "p-999k_respond",
                 json!({"recipient":"worker","id":id,"receipt":"wrong","result":answer})
             ),
             (409, json!({"error":{"code":"stale_receipt"}})),
         );
         let completed = unpack(f.tool(
             "worker-fixture",
-            "radio999k_respond",
+            "p-999k_respond",
             json!({"recipient":"worker","id":id,"receipt":receive["receipt"],"result":answer}),
         ));
         assert_eq!(completed, answer);
         assert_eq!(
             f.tool(
                 "sender-fixture",
-                "radio999k_status",
+                "p-999k_status",
                 json!({"requester":"worker","id":id})
             ),
             forbidden
         );
         let status = unpack(f.tool(
             "sender-fixture",
-            "radio999k_status",
+            "p-999k_status",
             json!({"requester":"sender","id":id}),
         ));
         assert_eq!(status["state"], "answered");
@@ -1030,7 +1027,7 @@ mod tests {
         );
         assert_eq!(f.http("/messages/send", "observer-fixture", send).0, 403);
         assert_eq!(
-            f.tool("sender-fixture", "radio999k_send", json!({"sender":"sender","recipient":"worker,observer","body":"synthetic","idempotency_key":"subset"})),
+            f.tool("sender-fixture", "p-999k_send", json!({"sender":"sender","recipient":"worker,observer","body":"synthetic","idempotency_key":"subset"})),
             (503, json!({"error":{"code":"recipient_preflight_unavailable"}})),
         );
         let rows: i64 = rusqlite::Connection::open(&f.state.db)
@@ -1052,7 +1049,7 @@ mod tests {
                 f.http("/rpc/receive", "worker-fixture", args.clone()).0,
                 400
             );
-            let (status, response) = f.tool("worker-fixture", "radio999k_receive", args);
+            let (status, response) = f.tool("worker-fixture", "p-999k_receive", args);
             assert!(status == 400 || response["error"]["code"] == -32602);
         }
         for (mcp, args, seconds) in [
@@ -1075,7 +1072,7 @@ mod tests {
             };
             let before = now();
             let delivery = if mcp {
-                unpack(f.tool("worker-fixture", "radio999k_receive", args))
+                unpack(f.tool("worker-fixture", "p-999k_receive", args))
             } else {
                 let (status, result) = f.http("/rpc/receive", "worker-fixture", args);
                 assert_eq!(status, 200);
@@ -1298,17 +1295,17 @@ fn call_muse_tool(
     arguments: &Value,
 ) -> Result<Value, Fault> {
     Ok(match name {
-        "radio999k_inbox" => inbox_page::list_muse(&state.db, "muse", arguments, deadline, || {
+        "p-999k_inbox" => inbox_page::list_muse(&state.db, "muse", arguments, deadline, || {
             state
                 .scope(authorization, auth::MuseOperation::Read, active, deadline)
                 .map(|scope| scope.allowed_senders)
         })?,
-        "radio999k_recipients" => {
+        "p-999k_recipients" => {
             registered_mailbox_fields(arguments, &[], &[])?;
             let scope = state.scope(authorization, auth::MuseOperation::Send, active, deadline)?;
             json!({"recipients":scope.allowed_senders,"connection_status":"unknown"})
         }
-        "radio999k_confirm_terminal" => {
+        "p-999k_confirm_terminal" => {
             let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             if message_id.trim().is_empty() || message_id.len() > 128 {
@@ -1356,7 +1353,7 @@ fn call_muse_tool(
                     .map(|s| s.allowed_senders)
             },
         )?,
-        "radio999k_read" => {
+        "p-999k_read" => {
             let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             let scope = state.scope(authorization, auth::MuseOperation::Read, active, deadline)?;
@@ -1368,7 +1365,7 @@ fn call_muse_tool(
             }
             serde_json::to_value(observed).map_err(|_| (500, "serialization_failed"))?
         }
-        "radio999k_wait" => {
+        "p-999k_wait" => {
             let args = registered_mailbox_fields(arguments, &["timeout_ms"], &[])?;
             let timeout = args["timeout_ms"]
                 .as_u64()
@@ -1432,7 +1429,7 @@ fn call_muse_tool(
                 thread::sleep((until - now).min(Duration::from_millis(100)));
             }
         }
-        "radio999k_reply" => {
+        "p-999k_reply" => {
             let args = registered_mailbox_fields(arguments, &["message_id", "body"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             let body = args["body"].as_str().ok_or((400, "invalid_fields"))?;
@@ -1444,7 +1441,7 @@ fn call_muse_tool(
             .map_err(muse_fault)?;
             serde_json::to_value(result).map_err(|_| (500, "serialization_failed"))?
         }
-        "radio999k_send" => send_registered(
+        "p-999k_send" => send_registered(
             &state.db,
             "muse",
             muse_mailbox::MAX_REQUEST_BYTES as i64,
@@ -1610,6 +1607,19 @@ impl BoundGeneration {
         self.check(db)?;
         Ok(lock)
     }
+}
+
+pub(crate) fn protect_pairing_generation(
+    db: &Path,
+    mailbox: &'static str,
+    storage: &str,
+) -> io::Result<Option<std::fs::File>> {
+    BoundGeneration {
+        mailbox,
+        storage: storage.to_owned(),
+    }
+    .enter(db)
+    .map_err(|(_, reason)| io::Error::other(reason))
 }
 
 struct HubRoute {
@@ -1781,6 +1791,70 @@ fn dispatch_receiver(
         })
     })
 }
+fn dispatch_pairing(
+    state: &HubState,
+    authority: &str,
+    input: &Input,
+    body: &[u8],
+    peer_closed: &(dyn Fn() -> bool + Sync),
+    hosted: Option<uuid::Uuid>,
+) -> transport::WireResponse {
+    let Some((peer, mcp)) = crate::pairing::by_path(&input.path) else {
+        return (Err((404, "route_not_found")), 200).into();
+    };
+    let Ok(route) = state.routes.get(mcp) else {
+        return (Err((404, "route_not_found")), 200).into();
+    };
+    if !input.authorization.is_empty()
+        || !input.access_assertions.is_empty()
+        || state
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        || peer_closed()
+    {
+        return (Err((401, "pairing_denied")), 200).into();
+    }
+    // Fence retirement across authentication and single-use consumption.
+    let _generation = match &route.generation {
+        Some(generation) => match generation.enter(&state.db) {
+            Ok(guard) => guard,
+            Err(_) => return (Err((401, "pairing_denied")), 200).into(),
+        },
+        None => None,
+    };
+    let result = crate::pairing::redeem(&state.db, peer, mcp, body, |bearer| {
+        let initialize = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"p-999k-pairing","version":"1"}}}"#;
+        let probe = transport::mcp_probe_input(authority, mcp, bearer);
+        let registered = match &route.handler {
+            RouteHandler::Muse(muse) if peer == "muse" => {
+                auth::authenticate_muse(&muse.policy, &probe.authorization)
+                    .and_then(|principal| principal.validate_pairing_registration())
+            }
+            RouteHandler::Grok(grok) if peer == "grok-bot" => {
+                grok.validate_pairing_registration(&probe.authorization)
+            }
+            RouteHandler::Mailbox(profile, _) if profile.mailbox() == peer => {
+                radio999k::registration::validate_registration(&profile.registration, peer, peer)
+            }
+            _ => return false,
+        };
+        if registered.is_err() {
+            return false;
+        }
+        match dispatch_hub_request(state, authority, &probe, initialize, peer_closed, hosted) {
+            transport::WireResponse::Sdk(response) if response.status().is_success() => {
+                radio999k::mcp_request::strict_json(response.body()).is_ok_and(|reply| {
+                    reply["id"] == 1
+                        && reply["result"]["protocolVersion"] == "2025-03-26"
+                        && reply.get("error").is_none()
+                })
+            }
+            _ => false,
+        }
+    });
+    (result.map(Some), 200).into()
+}
+
 fn dispatch_hub_request(
     state: &HubState,
     authority: &str,
@@ -1939,24 +2013,51 @@ fn handle_hub_connection(stream: impl Into<ProfileStream>, authority: &str, stat
     handle_hub_routes(stream.into(), authority, state, None, None, false)
 }
 
+const DOT_MCP_PATH: &str = "/dot/mcp";
+
+#[derive(Clone, Copy)]
+struct HostedIngress<'a> {
+    installation: uuid::Uuid,
+    authority: &'a str,
+    dot_oauth_only: bool,
+}
+
 fn handle_hub_routes(
     stream: ProfileStream,
     authority: &str,
     state: &HubState,
     allowed: Option<&[String]>,
-    hosted: Option<uuid::Uuid>,
+    hosted: Option<HostedIngress<'_>>,
     legacy_tool_listing: bool,
 ) {
+    let dot_oauth_only =
+        |path: &str| path == DOT_MCP_PATH && hosted.is_some_and(|ingress| ingress.dot_oauth_only);
     transport::handle_connection(
         stream,
         authority,
+        hosted.map(|ingress| ingress.authority),
         |path| {
-            if allowed.is_some_and(|allowed| !allowed.iter().any(|route| route == path)) {
+            let pairing = crate::pairing::by_path(path);
+            let mcp = pairing.map_or(path, |(_, mcp)| mcp);
+            if (legacy_tool_listing && pairing.is_some())
+                || (allowed.is_some_and(|allowed| !allowed.iter().any(|route| route == mcp))
+                    && !dot_oauth_only(mcp))
+            {
                 return Err((404, "route_not_found"));
             }
-            state.routes.get(path).map(|route| route.body_limit)
+            state
+                .routes
+                .get(mcp)
+                .map(|route| pairing.map_or(route.body_limit, |_| crate::pairing::BODY_LIMIT))
         },
         |input, body, peer_closed| {
+            let hosted = hosted.map(|ingress| ingress.installation);
+            if dot_oauth_only(&input.path) && input.access_assertions.is_empty() {
+                return (Err((401, "unauthorized")), 200).into();
+            }
+            if crate::pairing::by_path(&input.path).is_some() {
+                return dispatch_pairing(state, authority, input, body, peer_closed, hosted);
+            }
             let mut response =
                 dispatch_hub_request(state, authority, input, body, peer_closed, hosted);
             if legacy_tool_listing
@@ -2103,6 +2204,7 @@ pub(crate) fn lock_hub_queue(db: &Path) -> io::Result<(File, PathBuf)> {
 struct HostedSocket<'a> {
     installation: uuid::Uuid,
     scope: &'a crate::hosted_registration::OriginDescriptor,
+    public_authority: &'a str,
     #[cfg(test)]
     fixture_root: Option<&'a Path>,
 }
@@ -2125,6 +2227,7 @@ pub(crate) fn serve_managed_hosted_hub(
     port: u16,
     installation: uuid::Uuid,
     scope: &crate::hosted_registration::OriginDescriptor,
+    public_authority: &str,
     local_stdio: bool,
 ) -> io::Result<()> {
     serve_hub_on(
@@ -2139,6 +2242,7 @@ pub(crate) fn serve_managed_hosted_hub(
         Some(HostedSocket {
             installation,
             scope,
+            public_authority,
             #[cfg(test)]
             fixture_root: None,
         }),
@@ -2427,7 +2531,19 @@ fn serve_hub_on(
     if let (Some(holder), Some(socket)) = (&hosted_listener, &hosted) {
         let allowed = socket.scope.mcp_paths.clone();
         let installation = socket.installation;
+        let public_authority = socket.public_authority.to_owned();
         let hosted_state = state.clone();
+        let dot_oauth_only = hosted_state
+            .routes
+            .get(DOT_MCP_PATH)
+            .is_ok_and(|route| route.access.is_some())
+            && hosted_state.db.parent().is_some_and(|home| {
+                crate::orca_onboard::dot_oauth_endpoint(home, DOT_MCP_PATH).is_ok_and(|endpoint| {
+                    endpoint.is_some_and(|url| {
+                        url.origin().ascii_serialization() == format!("https://{public_authority}")
+                    })
+                })
+            });
         listeners.push((
             ProfileListener::Unix(holder.listener.try_clone()?, format!("127.0.0.1:{port}")),
             Arc::new(move |stream, authority| {
@@ -2436,7 +2552,11 @@ fn serve_hub_on(
                     authority,
                     &hosted_state,
                     Some(&allowed),
-                    Some(installation),
+                    Some(HostedIngress {
+                        installation,
+                        authority: &public_authority,
+                        dot_oauth_only,
+                    }),
                     false,
                 );
             }),
@@ -2600,7 +2720,7 @@ mod dot_wire {
             .tempdir_in("/tmp")
             .unwrap();
         fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let db = home.path().join("queue.sqlite3");
+        let db = home.path().join(crate::mailbox_startup::QUEUE);
         drop(Queue::open(&db).unwrap());
         fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
         let local = "test-local-cue";
@@ -2665,6 +2785,7 @@ mod dot_wire {
                 Some(HostedSocket {
                     installation,
                     scope: &descriptor,
+                    public_authority: "u-fixture.example.test",
                     fixture_root: Some(&root_path),
                 }),
             )
@@ -2673,22 +2794,77 @@ mod dot_wire {
         while !(socket.exists() && stdio.exists()) && Instant::now() < ready {
             std::thread::sleep(Duration::from_millis(10));
         }
-        let post = |socket: &Path, host: &str, route: &str, bearer: &str| -> u16 {
+        let request = |socket: &Path, host: &str, route: &str, extra: &str, body: &str| {
             let mut client = UnixStream::connect(socket).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
-            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
-            write!(client,"POST {route} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {bearer}\r\nContent-Length: {}\r\n\r\n{body}",body.len()).unwrap();
+            write!(client, "POST {route} HTTP/1.1\r\nHost: {host}\r\n{extra}Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
             let mut response = String::new();
             client.read_to_string(&mut response).unwrap();
-            response.split_whitespace().nth(1).unwrap().parse().unwrap()
+            let (head, body) = response.split_once("\r\n\r\n").unwrap();
+            (
+                head.split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .parse::<u16>()
+                    .unwrap(),
+                serde_json::from_str::<Value>(body).unwrap(),
+            )
         };
+        let post = |socket: &Path, host: &str, route: &str, bearer: &str| {
+            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+            request(
+                socket,
+                host,
+                route,
+                &format!("Authorization: Bearer {bearer}\r\n"),
+                body,
+            )
+            .0
+        };
+        let public = "u-fixture.example.test";
         let authority = format!("127.0.0.1:{port}");
-        let hosted = |token| post(&socket, &authority, "/cue/mcp", token);
+        let hosted = |token| post(&socket, public, "/cue/mcp", token);
         let local_post = |token| post(&stdio, crate::stdio_mcp::AUTHORITY, "/cue/mcp", token);
         assert_eq!(hosted(local), 200); // Legacy installations have not enabled C22.
+        assert_eq!(post(&socket, &authority, "/cue/mcp", local), 200);
+        assert_eq!(post(&stdio, public, "/cue/mcp", local), 403);
         assert_eq!(local_post(local), 200);
+        let mut tcp = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        write!(tcp, "POST /cue/pair HTTP/1.1\r\nHost: {public}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}").unwrap();
+        let mut response = String::new();
+        tcp.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 403 "));
+        let bearer_file = home.path().join("synthetic-cue.key");
+        radio999k::private_file::replace_private(&bearer_file, local.as_bytes()).unwrap();
+        let code = crate::pairing::issue(home.path(), "cue", &bearer_file).unwrap();
+        let body = json!({"code": code}).to_string();
+        let pair = |host, route, extra| request(&socket, host, route, extra, &body);
+        assert_eq!(pair("another.example.test", "/cue/pair", "").0, 403);
+        assert_eq!(
+            pair(public, "/cue/pair", "Host: u-fixture.example.test\r\n").0,
+            403
+        );
+        assert_eq!(
+            pair(
+                public,
+                "/cue/pair",
+                "Origin: https://u-fixture.example.test\r\n"
+            )
+            .0,
+            403
+        );
+        assert_eq!(
+            pair(public, "/cue/pair", "Sec-Fetch-Site: same-origin\r\n").0,
+            403
+        );
+        assert_eq!(pair(public, "/muse/pair", "").0, 404);
+        let (status, redeemed) = pair(public, "/cue/pair", "");
+        assert_eq!(status, 200);
+        assert!(redeemed["access_token"] == local);
+        assert_eq!(pair(public, "/cue/pair", "").0, 401);
         let scope = crate::hosted_mailbox_bearer::Scope::new(home.path(), installation);
         let transfer = tempfile::tempdir().unwrap();
         fs::set_permissions(transfer.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -2769,24 +2945,35 @@ mod dot_wire {
                 Some(HostedSocket {
                     installation,
                     scope: &scope,
+                    public_authority: "u-fixture.example.test",
                     fixture_root: Some(&root_path),
                 }),
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !socket.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
         let authority = format!("127.0.0.1:{port}");
         let post = |route: &str, host: &str, bearer: &str| {
-            let mut client = UnixStream::connect(&socket).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let mut client = loop {
+                match UnixStream::connect(&socket) {
+                    Ok(client) => break client,
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                        ) && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("test hub did not accept a connection: {err}"),
+                }
+            };
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
-            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_recipients","arguments":{}}}"#;
+            let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"p-999k_recipients","arguments":{}}}"#;
             write!(
                 client,
-                "POST {route} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {bearer}\r\nMcp-Method: tools/call\r\nMcp-Name: radio999k_recipients\r\nContent-Length: {}\r\n\r\n{body}",
+                "POST {route} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {bearer}\r\nMcp-Method: tools/call\r\nMcp-Name: p-999k_recipients\r\nContent-Length: {}\r\n\r\n{body}",
                 body.len()
             )
             .unwrap();
@@ -2848,7 +3035,7 @@ mod dot_wire {
             verifier,
             bearer_file,
         });
-        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"radio999k_recipients","arguments":{}}}"#;
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"p-999k_recipients","arguments":{}}}"#;
         let authority = "127.0.0.1:1234";
         let call = |token: &str, assertions: &[Vec<u8>]| {
             let mut head = format!(
@@ -2862,7 +3049,7 @@ mod dot_wire {
                 ));
             }
             head.push_str("\r\n");
-            let input = transport::parse_head(head.as_bytes(), authority, |path| {
+            let input = transport::parse_head(head.as_bytes(), authority, None, |path| {
                 state.routes.get(path).map(|route| route.body_limit)
             })
             .unwrap();
@@ -2881,7 +3068,7 @@ mod dot_wire {
             json!(["test-peer"])
         );
         assert!(matches!(
-            call(TOKEN, &[valid.clone(), valid]),
+            call(TOKEN, &[valid.clone(), valid.clone()]),
             WireResponse::Json((Err((403, _)), _))
         ));
         claims["aud"] = json!(["unrelated-mailbox-fixture"]);
@@ -2892,6 +3079,61 @@ mod dot_wire {
         assert!(
             matches!(call(TOKEN, &[]), WireResponse::Sdk(response) if response.status() == 200)
         );
+
+        use std::os::unix::net::UnixStream;
+        let public = "u-fixture.example.test";
+        let installation = uuid::Uuid::new_v4();
+        let call_hosted = |path: &str, host: &str, assertion: Option<&[u8]>, dot_oauth_only| {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            write!(
+                client,
+                "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {}\r\n",
+                body.len(),
+            )
+            .unwrap();
+            if let Some(assertion) = assertion {
+                client.write_all(b"Cf-Access-Jwt-Assertion: ").unwrap();
+                client.write_all(assertion).unwrap();
+                client.write_all(b"\r\n").unwrap();
+            }
+            client.write_all(b"\r\n").unwrap();
+            client.write_all(body).unwrap();
+            handle_hub_routes(
+                ProfileStream::Unix(server),
+                authority,
+                &state,
+                Some(&[]),
+                Some(HostedIngress {
+                    installation,
+                    authority: public,
+                    dot_oauth_only,
+                }),
+                false,
+            );
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            response
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse::<u16>()
+                .unwrap()
+        };
+        assert_eq!(call_hosted(DOT_MCP_PATH, public, Some(&valid), false), 404);
+        assert_eq!(call_hosted(DOT_MCP_PATH, public, None, true), 401);
+        assert_eq!(
+            call_hosted(DOT_MCP_PATH, public, Some(&signed(&claims)), true),
+            403
+        );
+        assert_eq!(
+            call_hosted(DOT_MCP_PATH, "wrong.example.test", Some(&valid), true),
+            403
+        );
+        assert_eq!(call_hosted("/muse/mcp", public, Some(&valid), true), 404);
+        assert_eq!(call_hosted(DOT_MCP_PATH, public, Some(&valid), true), 200);
     }
 
     #[test]
@@ -2909,18 +3151,18 @@ mod dot_wire {
             }),
         );
         let call = |tool, args| success(post(&state, TOKEN, json!(1), tool, args));
-        let listed = call("radio999k_recipients", json!({}));
+        let listed = call("p-999k_recipients", json!({}));
         assert_eq!(
             listed["recipients"],
             json!(["codex-local-abcdef012345", "codex-local1", "test-peer"])
         );
         assert_eq!(listed["connection_status"], "unknown");
         call(
-            "radio999k_send",
+            "p-999k_send",
             json!({"recipient":"codex-local1","body":"first","idempotency_key":"session-one"}),
         );
         call(
-            "radio999k_send",
+            "p-999k_send",
             json!({"recipient":"codex-local-abcdef012345","body":"second","idempotency_key":"session-two"}),
         );
         for (recipient, body) in [
@@ -2941,7 +3183,7 @@ mod dot_wire {
         let db = &state.db;
         let call = |name: &str, args: Value| success(post(&state, TOKEN, json!(1), name, args));
         let outbound = call(
-            "radio999k_send",
+            "p-999k_send",
             json!({"recipient":"test-peer","body":"hello","idempotency_key":"wire-send"}),
         );
         let outbound_id = outbound["message_id"].as_str().unwrap();
@@ -2964,15 +3206,15 @@ mod dot_wire {
             })
             .unwrap()
             .message;
-        let read = call("radio999k_read", json!({"message_id":request.id}));
+        let read = call("p-999k_read", json!({"message_id":request.id}));
         assert_eq!(read["body"], "request");
         assert_eq!(read["state"], "pending");
         let answer = call(
-            "radio999k_reply",
+            "p-999k_reply",
             json!({"message_id":request.id,"body":"answer"}),
         );
         let replay = call(
-            "radio999k_reply",
+            "p-999k_reply",
             json!({"message_id":request.id,"body":"answer"}),
         );
         assert_eq!(answer["reply_id"], replay["reply_id"]);
@@ -3001,17 +3243,11 @@ mod dot_wire {
                 || Ok(()),
             )
             .unwrap();
-        let observed = call("radio999k_read", json!({"message_id":terminal.id}));
+        let observed = call("p-999k_read", json!({"message_id":terminal.id}));
         assert_eq!(observed["state"], "reply_received");
-        let confirmed = call(
-            "radio999k_confirm_terminal",
-            json!({"message_id":terminal.id}),
-        );
+        let confirmed = call("p-999k_confirm_terminal", json!({"message_id":terminal.id}));
         assert_eq!(confirmed["state"], "acknowledged");
-        let repeated = call(
-            "radio999k_confirm_terminal",
-            json!({"message_id":terminal.id}),
-        );
+        let repeated = call("p-999k_confirm_terminal", json!({"message_id":terminal.id}));
         assert_eq!(repeated["duplicate"], true);
         let connection = rusqlite::Connection::open(db).unwrap();
         let (ack, replies): (Option<i64>, i64) = connection.query_row(
@@ -3034,7 +3270,7 @@ mod dot_wire {
         };
 
         assert_eq!(
-            success(call(json!(2), "radio999k_wait", filtered(0))),
+            success(call(json!(2), "p-999k_wait", filtered(0))),
             json!({"state":"timeout","message":null})
         );
 
@@ -3046,7 +3282,7 @@ mod dot_wire {
             (json!("bounded-wait"), filtered(10)),
             (json!(3), json!({"timeout_ms":0})),
         ] {
-            let result = call(id.clone(), "radio999k_wait", arguments);
+            let result = call(id.clone(), "p-999k_wait", arguments);
             assert_eq!(result, (503, expected(id, "storage_busy")));
         }
         assert_eq!(
@@ -3054,13 +3290,13 @@ mod dot_wire {
                 &state,
                 "invalid-fixture-token",
                 json!(4),
-                "radio999k_wait",
+                "p-999k_wait",
                 filtered(0)
             ),
             (401, json!({"error":{"code":"unauthorized"}}))
         );
         assert_eq!(
-            call(json!("inbox-read"), "radio999k_inbox", json!({})),
+            call(json!("inbox-read"), "p-999k_inbox", json!({})),
             (503, expected(json!("inbox-read"), "storage_unavailable"))
         );
         lock.execute_batch("ROLLBACK").unwrap();
@@ -3084,25 +3320,25 @@ mod dot_wire {
         assert_eq!(
             call(
                 json!("reply-write"),
-                "radio999k_reply",
+                "p-999k_reply",
                 json!({"message_id":message.id,"body":"answer"})
             ),
             (503, expected(json!("reply-write"), "storage_unavailable"))
         );
         let observation = success(call(
             json!(5),
-            "radio999k_read",
+            "p-999k_read",
             json!({"message_id":message.id}),
         ));
         assert_eq!(observation["state"], "pending");
-        let (status, missing) = call(json!(6), "radio999k_read", json!({"message_id":"missing"}));
+        let (status, missing) = call(json!(6), "p-999k_read", json!({"message_id":"missing"}));
         assert_eq!(status, 200);
         assert_eq!(missing["id"], 6);
         assert_eq!(missing["error"]["data"]["reason"], "message_not_available");
         assert_eq!(
             call(
                 json!(7),
-                "radio999k_send",
+                "p-999k_send",
                 json!({
                     "recipient":"test-peer, unregistered","body":"fixture","idempotency_key":"test-subset"
                 })

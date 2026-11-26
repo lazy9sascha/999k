@@ -58,7 +58,6 @@ impl OriginDescriptor {
         if self.kind != "unix_v1"
             || self.nonce != expected.nonce()
             || self.hub_port == 0
-            || self.mcp_paths.is_empty()
             || !self.mcp_paths.iter().all(|route| {
                 radio999k::mailbox_catalog::valid_mcp_route(route)
                     && !matches!(route.as_str(), "/receiver/mcp" | "/admin/mcp" | "/rpc/mcp")
@@ -68,6 +67,12 @@ impl OriginDescriptor {
             return Err("hosted Unix origin binding changed or is unsafe".into());
         }
         Ok(())
+    }
+
+    pub(crate) fn same_origin(&self, previous: &Self) -> bool {
+        self.kind == previous.kind
+            && self.nonce == previous.nonce
+            && self.hub_port == previous.hub_port
     }
 
     pub(crate) fn origin(&self) -> Result<UnixOrigin, String> {
@@ -90,9 +95,14 @@ pub(crate) fn finish_unix(
     id: &str,
     proof: &str,
     origin: &UnixOrigin,
+    routes: Option<&[String]>,
 ) -> Result<(String, String, OriginDescriptor), String> {
     if !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id) {
         return Err("invalid_installation_id".into());
+    }
+    let mut payload = json!({"kind":"unix_v1", "nonce":origin.nonce()});
+    if let Some(routes) = routes {
+        payload["routes"] = json!(routes);
     }
     let response = client()
         .post(format!(
@@ -100,7 +110,7 @@ pub(crate) fn finish_unix(
             base.trim_end_matches('/')
         ))
         .bearer_auth(proof)
-        .json(&json!({"kind":"unix_v1", "nonce":origin.nonce()}))
+        .json(&payload)
         .send()
         .map_err(|_| "registration_service_unavailable".to_owned())?;
     let status = response.status();
@@ -114,6 +124,9 @@ pub(crate) fn finish_unix(
         return Err("unexpected_state".into());
     }
     response.origin.validate(origin)?;
+    if routes.is_none() && response.origin.mcp_paths.is_empty() {
+        return Err("hosted Unix origin binding changed or is unsafe".into());
+    }
     Ok((
         response.public_url,
         response.connector_token,

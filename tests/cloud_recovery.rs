@@ -335,7 +335,7 @@ fn assert_isolated_runner_restart(explicit: bool) {
             TOKEN,
             &json!({
                 "jsonrpc":"2.0","id":1,"method":"tools/call",
-                "params":{"name":"radio999k_read","arguments":{"message_id":id}}
+                "params":{"name":"p-999k_read","arguments":{"message_id":id}}
             }),
         )
         .unwrap();

@@ -40,6 +40,7 @@ pub(crate) enum RequestKind {
         installation_id: Uuid,
         proof: String,
         origin: UnixOrigin,
+        routes: Option<Vec<String>>,
     },
     RegisterPage {
         installation_id: Uuid,
@@ -145,6 +146,7 @@ where
             struct UnixInput {
                 kind: String,
                 nonce: String,
+                routes: Option<Vec<String>>,
             }
             let installation_id = path_uuid(installation_id)?;
             let proof = installation_proof(&parts.headers).ok_or(RegistrationNotFound)?;
@@ -158,6 +160,7 @@ where
                 installation_id,
                 proof,
                 origin,
+                routes: payload.routes,
             })
         }
         (Method::GET, ["", "register", installation_id]) => {
@@ -469,7 +472,7 @@ mod tests {
         let good = r#"{"kind":"unix_v1","nonce":"0123456789abcdef0123456789abcdef"}"#;
         assert!(matches!(
             parse_request(installer_request(Method::POST, &path, PROOF, good)).await,
-            Ok(RequestKind::FinishUnix { installation_id, proof, origin })
+            Ok(RequestKind::FinishUnix { installation_id, proof, origin, routes: None })
                 if installation_id.to_string() == ID && proof == PROOF
                     && origin.socket_path() == "/private/tmp/pmq-0123456789abcdef0123456789abcdef/hub.sock"
         ));

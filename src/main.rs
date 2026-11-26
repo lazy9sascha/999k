@@ -41,8 +41,16 @@ mod lifecycle_service;
 mod local_http;
 #[path = "cloud/mailbox_startup.rs"]
 mod mailbox_startup;
+#[path = "cloud/orca_handoff.rs"]
+mod orca_handoff;
 #[path = "cloud/orca_onboard.rs"]
 mod orca_onboard;
+#[path = "cloud/pairing.rs"]
+mod pairing;
+#[path = "cloud/pairing_cli.rs"]
+mod pairing_cli;
+#[path = "cloud/registration_origin.rs"]
+mod registration_origin;
 #[path = "cloud/reply_mailbox_setup.rs"]
 mod reply_mailbox_setup;
 #[path = "cloud/runtime_profiles.rs"]
@@ -187,13 +195,13 @@ enum Command {
         /// Select the owner-private executable that receives a destination and message ID.
         #[arg(long, requires = "email_recipient", conflicts_with = "operational")]
         relay_command: Option<PathBuf>,
-        /// Reserve a hosted HTTPS address for this installation (experimental).
-        #[arg(long, hide = true, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
+        /// Reserve an address through the operator and approve in your browser.
+        #[arg(long, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port"])]
         reserve_address: bool,
         /// Enable the private stdio socket during a managed apply; an already-active home can enable it once.
         #[arg(long, requires = "apply", conflicts_with = "reserve_address")]
         stdio_socket: bool,
-        /// Onboard existing local Orca bots for the five peers using stdio.
+        /// Discover authorized Orca peers on the local hub.
         #[arg(long, conflicts_with_all = ["agent", "operational", "apply", "profiles_file", "email_recipient", "relay_command", "port", "reserve_address"])]
         orca: bool,
         /// Authorized sender mailbox for Orca onboarding.
@@ -202,8 +210,26 @@ enum Command {
         /// Private bearer file for the Orca sender.
         #[arg(long, requires = "orca")]
         orca_bearer_file: Option<PathBuf>,
-        /// Request a new card after confirming the previous offer was dismissed or lost.
-        #[arg(long, requires = "orca")]
+        /// Set up one peer in Orca.
+        #[arg(long, requires = "orca", value_parser = clap::builder::PossibleValuesParser::new(orca_onboard::PEERS.map(|(id, _)| id)))]
+        orca_peer: Option<String>,
+        /// Request owner-approved hosted setup for exactly this peer.
+        #[arg(long, requires = "orca_peer", conflicts_with = "retry_orca_offer")]
+        orca_reserve_address: bool,
+        /// Private peer bearer file for the remote transport check.
+        #[arg(long, requires = "orca_peer")]
+        orca_remote_bearer_file: Option<PathBuf>,
+        /// Check for a matching reply to this original request without sending mail.
+        #[arg(long, requires = "orca_peer", conflicts_with_all = ["orca_reserve_address", "orca_email_recipient", "retry_orca_offer"])]
+        orca_proof_original: Option<String>,
+        /// Opt in to email arrival notifications for Cue or Instinct.
+        #[arg(long, requires = "orca_peer", conflicts_with = "retry_orca_offer")]
+        orca_email_recipient: Option<String>,
+        /// Approved owner-private command for email arrival notifications.
+        #[arg(long, requires = "orca_email_recipient")]
+        orca_relay_command: Option<PathBuf>,
+        /// Request a new card for an authorized peer after confirming the previous offer was lost.
+        #[arg(long, requires = "orca", value_parser = clap::builder::PossibleValuesParser::new(orca_onboard::PEERS.map(|(id, _)| id)))]
         retry_orca_offer: Option<String>,
         /// Use a private Unix origin for a new hosted enrollment.
         #[arg(long, hide = true, requires = "reserve_address")]
@@ -283,6 +309,9 @@ enum Command {
     },
     /// Inspect local credential custody or explicitly import/export a protected handoff.
     Credentials(cloud_credentials::CredentialOptions),
+    /// Offer or redeem a short-lived code for one peer mailbox.
+    #[command(subcommand)]
+    Pair(pairing_cli::Action),
     /// Copy a connector prompt, or separately copy its bearer from Keychain.
     Handoff {
         #[arg(long, default_value = ".local")]
@@ -412,6 +441,7 @@ enum HostedCueBearerAction {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match &cli.command {
+        Command::Pair(action) => pairing_cli::run(action).map_err(Into::into),
         Command::Credentials(options) => {
             cloud_credentials::run_credentials(options).map_err(Into::into)
         }
@@ -439,6 +469,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             orca,
             orca_sender,
             orca_bearer_file,
+            orca_peer,
+            orca_reserve_address,
+            orca_remote_bearer_file,
+            orca_proof_original,
+            orca_email_recipient,
+            orca_relay_command,
             retry_orca_offer,
         } => {
             let home = cloud_setup::resolve_home(home.clone());
@@ -446,16 +482,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return cloud_setup::reserve_address(&home, *hosted_unix);
             }
             if *orca {
+                let explicit_peer = orca_peer.as_deref();
+                let retry = retry_orca_offer.as_deref();
+                if let (Some(peer), Some(retry_peer)) = (explicit_peer, retry)
+                    && peer != retry_peer
+                {
+                    return Err(
+                        "--orca-peer must match --retry-orca-offer when used together".into(),
+                    );
+                }
+                // Check the requested provider before creating the local sender, peer, or enrollment.
+                let provider = if *orca_reserve_address {
+                    Some(hosted_enrollment::selected_provider(
+                        explicit_peer.ok_or("select a hosted peer")?,
+                    )?)
+                } else {
+                    None
+                };
                 let sender = orca_sender.as_deref().unwrap_or("codex-cloud");
-                let bearer_file = match orca_bearer_file.clone() {
-                    Some(path) => path,
+                let default_managed_sender = cfg!(target_os = "macos")
+                    && orca_sender.is_none()
+                    && orca_bearer_file.is_none();
+                let managed_nonretry =
+                    default_managed_sender && retry.is_none() && orca_proof_original.is_none();
+                let bearer_file = match orca_bearer_file {
+                    Some(path) => path.clone(),
+                    None if managed_nonretry => lifecycle::orca_sender_file(&home)?,
                     None => orca_onboard::resolve_bearer_file(&home, sender)?,
                 };
                 return orca_onboard::onboard(
                     &home,
                     sender,
                     &bearer_file,
-                    retry_orca_offer.as_deref(),
+                    orca_onboard::OnboardOptions {
+                        selected: explicit_peer.or(retry),
+                        retry: retry.is_some(),
+                        may_provision: managed_nonretry,
+                        remote: orca_onboard::RemoteOptions {
+                            provider,
+                            bearer_file: orca_remote_bearer_file.as_deref(),
+                        },
+                        proof_original: orca_proof_original.as_deref(),
+                        email_recipient: orca_email_recipient.as_deref(),
+                        relay_command: orca_relay_command.as_deref(),
+                    },
                 );
             }
             if *operational {
@@ -869,4 +939,24 @@ fn daemon_keychain_ui_is_process_local() {
         .unwrap();
     assert!(child.status.success(), "isolated Keychain UI check failed");
     assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), original);
+}
+
+#[cfg(test)]
+mod orca_cli_tests {
+    use super::*;
+
+    #[test]
+    fn orca_peer_flags_only_accept_supported_ids_when_orca_is_enabled() {
+        for (peer, _) in orca_onboard::PEERS {
+            assert!(Cli::try_parse_from(["999k", "init", "--orca", "--orca-peer", peer]).is_ok());
+            assert!(
+                Cli::try_parse_from(["999k", "init", "--orca", "--retry-orca-offer", peer]).is_ok()
+            );
+        }
+        for flag in ["--orca-peer", "--retry-orca-offer"] {
+            assert!(Cli::try_parse_from(["999k", "init", "--orca", flag, "unknown"]).is_err());
+            assert!(Cli::try_parse_from(["999k", "init", flag, "dot"]).is_err());
+        }
+        assert!(Cli::try_parse_from(["999k", "init", "--orca"]).is_ok());
+    }
 }

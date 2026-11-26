@@ -62,6 +62,20 @@ impl Drop for GrokWaitGuard<'_> {
     }
 }
 impl GrokState {
+    pub(super) fn validate_pairing_registration(
+        &self,
+        authorization: &[Vec<u8>],
+    ) -> Result<(), Fault> {
+        let principal = policy::authenticate_grok(&self.policy, authorization)?;
+        let path = principal
+            .registration_path()
+            .ok_or((503, "registration_unavailable"))?;
+        radio999k::registration::validate_registration(
+            std::path::Path::new(path),
+            "grok-bot",
+            "grok-bot",
+        )
+    }
     pub(super) fn new(db: PathBuf, policy: PathBuf, deadline: Option<Instant>) -> Self {
         Self {
             db,
@@ -217,7 +231,7 @@ fn call_grok_tool(
     arguments: &Value,
 ) -> Result<Value, Fault> {
     Ok(match name {
-        "radio999k_inbox" => inbox_page::list_with(
+        "p-999k_inbox" => inbox_page::list_with(
             &state.db,
             "grok-bot",
             arguments,
@@ -256,13 +270,13 @@ fn call_grok_tool(
                 }
             },
         )?,
-        "radio999k_recipients" => {
+        "p-999k_recipients" => {
             registered_mailbox_fields(arguments, &[], &[])?;
             let scope =
                 state.scope(authorization, policy::GrokOperation::Send, active, deadline)?;
             json!({"recipients":scope.allowed_senders,"connection_status":"unknown"})
         }
-        "radio999k_confirm_terminal" => {
+        "p-999k_confirm_terminal" => {
             let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             if message_id.trim().is_empty() || message_id.len() > 128 {
@@ -310,7 +324,7 @@ fn call_grok_tool(
                     .map(|s| s.allowed_senders)
             },
         )?,
-        "radio999k_read" => {
+        "p-999k_read" => {
             let args = registered_mailbox_fields(arguments, &["message_id"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             let scope =
@@ -324,7 +338,7 @@ fn call_grok_tool(
             }
             serde_json::to_value(observed).map_err(|_| (500, "serialization_failed"))?
         }
-        "radio999k_wait" => {
+        "p-999k_wait" => {
             let args = registered_mailbox_fields(arguments, &["timeout_ms"], &[])?;
             let timeout = args["timeout_ms"]
                 .as_u64()
@@ -389,7 +403,7 @@ fn call_grok_tool(
                 thread::sleep((until - now).min(Duration::from_millis(100)));
             }
         }
-        "radio999k_reply" => {
+        "p-999k_reply" => {
             let args = registered_mailbox_fields(arguments, &["message_id", "body"], &[])?;
             let message_id = args["message_id"].as_str().ok_or((400, "invalid_fields"))?;
             let body = args["body"].as_str().ok_or((400, "invalid_fields"))?;
@@ -406,7 +420,7 @@ fn call_grok_tool(
             .map_err(grok_fault)?;
             serde_json::to_value(result).map_err(|_| (500, "serialization_failed"))?
         }
-        "radio999k_send" => super::send_registered(
+        "p-999k_send" => super::send_registered(
             &state.db,
             "grok-bot",
             radio999k::grok_mailbox::MAX_TEXT as i64,
@@ -512,7 +526,7 @@ mod grok_authority_tests {
         let state = GrokState::new(db, policy, None);
         let cancel =
             br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"42"}}"#;
-        let wait = br#"{"jsonrpc":"2.0","id":"42","method":"tools/call","params":{"name":"radio999k_wait","arguments":{"timeout_ms":10000}}}"#;
+        let wait = br#"{"jsonrpc":"2.0","id":"42","method":"tools/call","params":{"name":"p-999k_wait","arguments":{"timeout_ms":10000}}}"#;
         let send = |token, headers, body| post(&state, token, headers, body);
         thread::scope(|scope| {
             let in_flight = scope.spawn(|| send("public-fixture", ACCEPT, wait));
@@ -619,19 +633,16 @@ mod grok_authority_tests {
         );
         assert_eq!(tool("unknown_tool", json!({}))["error"]["code"], -32602);
         assert_eq!(
-            tool("radio999k_read", json!({"message_id":8}))["error"]["code"],
+            tool("p-999k_read", json!({"message_id":8}))["error"]["code"],
             -32602
         );
         failed(
-            tool("radio999k_read", json!({"message_id":"missing-fixture"})),
+            tool("p-999k_read", json!({"message_id":"missing-fixture"})),
             "message_not_available",
         );
         let send = json!({"recipient":"hermes","body":"fixture","idempotency_key":"fixture-send"});
-        failed(tool("radio999k_send", send.clone()), "forbidden");
-        assert_eq!(
-            call("radio999k_send", send.clone()),
-            Err((403, "forbidden"))
-        );
+        failed(tool("p-999k_send", send.clone()), "forbidden");
+        assert_eq!(call("p-999k_send", send.clone()), Err((403, "forbidden")));
         assert!(
             queue
                 .receive("hermes", Duration::from_secs(1))
@@ -646,24 +657,24 @@ mod grok_authority_tests {
         );
         policy["operations"] = json!(["send", "read", "wait", "reply"]);
         private(&policy_path, &policy);
-        assert!(call("radio999k_send", send.clone()).is_ok());
+        assert!(call("p-999k_send", send.clone()).is_ok());
         failed(
             tool(
-                "radio999k_send",
+                "p-999k_send",
                 json!({"recipient":"hermes,unknown,hermes","body":"fixture","idempotency_key":"multi"}),
             ),
             "subset_recipient_not_authorized",
         );
         active.cancelled.store(true, Ordering::Release);
         assert_eq!(
-            call("radio999k_send", send.clone()),
+            call("p-999k_send", send.clone()),
             Err((499, "request_cancelled"))
         );
         active.cancelled.store(false, Ordering::Release);
 
         assert_eq!(
             call(
-                "radio999k_send",
+                "p-999k_send",
                 json!({"recipient":"hermes","body":"x","idempotency_key":"fixture-invalid","correlation_id":3})
             ),
             Err((400, "invalid_fields"))
@@ -681,9 +692,9 @@ mod grok_authority_tests {
             .unwrap()
             .message
             .id;
-        assert!(call("radio999k_read", json!({"message_id":id})).is_ok());
+        assert!(call("p-999k_read", json!({"message_id":id})).is_ok());
         assert_eq!(
-            call("radio999k_wait", json!({"timeout_ms":0})).unwrap()["message"]["id"],
+            call("p-999k_wait", json!({"timeout_ms":0})).unwrap()["message"]["id"],
             id
         );
         let unknown = queue
@@ -691,10 +702,10 @@ mod grok_authority_tests {
             .unwrap()
             .message
             .id;
-        assert!(call("radio999k_read", json!({"message_id":unknown})).is_err());
+        assert!(call("p-999k_read", json!({"message_id":unknown})).is_err());
         let other = queue.send(envelope("hermes", "dot")).unwrap().message.id;
-        assert!(call("radio999k_read", json!({"message_id":other})).is_err());
-        let inbox = call("radio999k_inbox", json!({})).unwrap();
+        assert!(call("p-999k_read", json!({"message_id":other})).is_err());
+        let inbox = call("p-999k_inbox", json!({})).unwrap();
         let messages = inbox["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["id"], id);
@@ -703,37 +714,37 @@ mod grok_authority_tests {
         assert_eq!(inbox["metadata_only"], true);
         policy["operations"] = json!(["wait"]);
         private(&policy_path, &policy);
-        assert_eq!(call("radio999k_inbox", json!({})), Err((403, "forbidden")));
+        assert_eq!(call("p-999k_inbox", json!({})), Err((403, "forbidden")));
         policy["operations"] = json!(["send", "read", "wait", "reply"]);
         private(&policy_path, &policy);
-        let completion = call("radio999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
+        let completion = call("p-999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
         assert_eq!(completion["state"], "replied");
         assert_eq!(completion["duplicate"], false);
-        let replay = call("radio999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
+        let replay = call("p-999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
         assert_eq!(replay["duplicate"], true);
         assert_eq!(replay["reply_id"], completion["reply_id"]);
         failed(
             tool(
-                "radio999k_reply",
+                "p-999k_reply",
                 json!({"message_id":id,"body":"different reply"}),
             ),
             "reply_conflict",
         );
-        let replay = call("radio999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
+        let replay = call("p-999k_reply", json!({"message_id":id,"body":"reply"})).unwrap();
         assert_eq!(replay["reply_id"], completion["reply_id"]);
         entries["hermes"]["revoked"] = json!(true);
         private(&registry, &entries);
-        assert!(call("radio999k_read", json!({"message_id":id})).is_err());
-        assert!(call("radio999k_send", send).is_err());
-        assert!(call("radio999k_reply", json!({"message_id":id,"body":"reply"})).is_err());
+        assert!(call("p-999k_read", json!({"message_id":id})).is_err());
+        assert!(call("p-999k_send", send).is_err());
+        assert!(call("p-999k_reply", json!({"message_id":id,"body":"reply"})).is_err());
         assert_eq!(
-            call("radio999k_wait", json!({"timeout_ms":0})).unwrap()["state"],
+            call("p-999k_wait", json!({"timeout_ms":0})).unwrap()["state"],
             "timeout"
         );
         policy["enabled"] = json!(false);
         private(&policy_path, &policy);
         assert_eq!(
-            call("radio999k_read", json!({"message_id":id})),
+            call("p-999k_read", json!({"message_id":id})),
             Err((401, "unauthorized"))
         );
         policy["enabled"] = json!(true);
@@ -741,7 +752,7 @@ mod grok_authority_tests {
         private(&policy_path, &policy);
         assert_eq!(
             call(
-                "radio999k_send",
+                "p-999k_send",
                 json!({"recipient":"hermes","body":"x","idempotency_key":"fixture-expired"})
             ),
             Err((401, "unauthorized"))
@@ -750,10 +761,10 @@ mod grok_authority_tests {
         private(&policy_path, &policy);
         std::fs::write(&registry, "invalid").unwrap();
         assert_eq!(
-            call("radio999k_read", json!({"message_id":id})),
+            call("p-999k_read", json!({"message_id":id})),
             Err((503, "auth_unavailable"))
         );
         std::fs::remove_file(&registry).unwrap();
-        assert!(call("radio999k_wait", json!({"timeout_ms":0})).is_err());
+        assert!(call("p-999k_wait", json!({"timeout_ms":0})).is_err());
     }
 }

@@ -1,8 +1,15 @@
 import type { OrcaWorkerApi } from 'orca/worker'
-import { setupCommand, setupTitle } from './setup'
+import { setupFor } from './setup'
 
 export default function activate(orca: OrcaWorkerApi): void {
-  orca.panels.handle('setup.open', async () => {
+  orca.panels.handle('setup.open', async (input) => {
+    const target = typeof input === 'object' && input !== null && 'target' in input
+      ? input.target
+      : undefined
+    const action = input && typeof input === 'object' && 'action' in input ? input.action : undefined
+    const setup = setupFor(target, action)
+    if (!setup) throw new Error('Select a supported setup target.')
+
     const context = await orca.host.call('workspace.readContext')
     if (!context?.workspaceId) return { opened: false }
 
@@ -14,8 +21,8 @@ export default function activate(orca: OrcaWorkerApi): void {
 
     await orca.host.call('terminal.create', {
       workspaceId: workspace.id,
-      title: setupTitle,
-      command: setupCommand
+      title: setup.title,
+      command: setup.command
     })
     return { opened: true }
   })

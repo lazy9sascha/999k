@@ -44,11 +44,26 @@ fn create_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 pub(crate) fn stage(home: &Path, mailbox: &str) -> io::Result<Value> {
-    let profile = match mailbox {
-        "instinct" | "cue" => radio999k::mailbox_catalog::http_by_id(mailbox),
-        _ => None,
+    if !matches!(mailbox, "instinct" | "cue") {
+        return Err(io::Error::other("--operational supports instinct and cue"));
     }
-    .ok_or_else(|| io::Error::other("--operational supports instinct and cue"))?;
+    stage_local(
+        home,
+        mailbox,
+        &home.join(crate::mailbox_startup::REGISTRATION),
+    )
+}
+
+/// Stage a local mailbox using the registration owned by the managed hub.
+pub(crate) fn stage_local(home: &Path, mailbox: &str, registration: &Path) -> io::Result<Value> {
+    let profile = radio999k::mailbox_catalog::http_by_id(mailbox)
+        .filter(|_| {
+            matches!(
+                mailbox,
+                "instinct" | "cue" | "dot" | "codex-cloud" | "muse" | "grok-bot"
+            )
+        })
+        .ok_or_else(|| io::Error::other("unsupported local mailbox"))?;
     let metadata = home.symlink_metadata()?;
     // SAFETY: geteuid has no arguments or preconditions.
     if !metadata.is_dir()
@@ -96,15 +111,26 @@ pub(crate) fn stage(home: &Path, mailbox: &str) -> io::Result<Value> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    let expected = json!({"principals":[{
-        "id":mailbox,"token_sha256":digest,"operations":["read","wait","reply","send"],
-        "send_to":[],"mailboxes":[mailbox],"revoked":false
-    }]});
+    let expected = if mailbox == "dot" {
+        json!({"principal":"dot","mailbox":"dot","enabled":true,"token_sha256":digest,
+            "registration":registration})
+    } else if matches!(mailbox, "muse" | "grok-bot") {
+        json!({"principal":mailbox,"mailbox":mailbox,"enabled":true,"token_sha256":digest,
+            "registration":registration,"expires_at_ms":u64::MAX,"operations":["read","wait","reply","send"]})
+    } else {
+        json!({"principals":[{
+            "id":mailbox,"token_sha256":digest,"operations":["read","wait","reply","send"],
+            "send_to":[],"mailboxes":[mailbox],"revoked":false
+        }]})
+    };
     if let Some(policy) = policy {
         let actual = serde_json::from_slice::<Value>(&policy).map_err(|_| {
             io::Error::other("existing reply mailbox policy is invalid; file preserved")
         })?;
-        if actual != expected || crate::auth::validate_private(&policy_path).is_err() {
+        if actual != expected
+            || (matches!(mailbox, "cue" | "instinct" | "codex-cloud")
+                && crate::auth::validate_private(&policy_path).is_err())
+        {
             return Err(io::Error::other(
                 "existing reply mailbox policy differs from the ordinary mailbox grant or saved token; file preserved",
             ));

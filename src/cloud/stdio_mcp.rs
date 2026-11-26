@@ -415,7 +415,7 @@ fn serve(
     }
 }
 
-fn bearer(path: &Path) -> io::Result<String> {
+pub(crate) fn bearer(path: &Path) -> io::Result<String> {
     let bytes = read_private(path)?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| fail("invalid MCP bearer file"))?
@@ -427,35 +427,86 @@ fn bearer(path: &Path) -> io::Result<String> {
     Ok(token.to_owned())
 }
 
-pub(crate) fn orca_recipients(
-    home: &Path,
-    sender: &str,
-    bearer_file: &Path,
-) -> io::Result<Vec<String>> {
-    let home = crate::cloud_setup::require_home(home)?;
-    let route = route_for(sender)?;
-    let token = bearer(bearer_file)?;
+fn initialize_owner(home: &Path, route: &str, token: &str) -> io::Result<()> {
     let init = exchange(
-        &home,
-        &route,
-        &token,
+        home,
+        route,
+        token,
         &json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
             "protocolVersion":PROTOCOL, "capabilities":{},
-            "clientInfo":{"name":"999k-orca-setup", "version":env!("CARGO_PKG_VERSION")}
+            "clientInfo":{"name":"p-999k-setup", "version":env!("CARGO_PKG_VERSION")}
         }}),
     )?;
     if init["result"]["protocolVersion"] != PROTOCOL {
         return Err(fail("local MCP initialization failed"));
     }
-    let reply = exchange(
-        &home,
-        &route,
-        &token,
-        &json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
-            "name":"radio999k_recipients", "arguments":{}
-        }}),
+    Ok(())
+}
+
+pub(crate) fn verify_pairing_bearer(home: &Path, route: &str, token: &str) -> io::Result<()> {
+    initialize_owner(home, route, token)?;
+    // Discovery alone may succeed for a policy whose mailbox was revoked in
+    // the central registry. Prove the current read scope without fetching an
+    // existing message or modifying any queue state.
+    let probe = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"p-999k_read","arguments":{"message_id":uuid::Uuid::new_v4().to_string()}
+    }});
+    let response = exchange(home, route, token, &probe)?;
+    let result = &response["result"];
+    let reason = result["content"][0]["text"]
+        .as_str()
+        .and_then(|text| strict_json(text.as_bytes()).ok());
+    if result["isError"] == true
+        && reason.as_ref().is_some_and(|value| {
+            matches!(
+                value["error"].as_str(),
+                Some("message_not_available" | "not_found")
+            )
+        })
+    {
+        Ok(())
+    } else {
+        Err(fail("active registered mailbox read credential required"))
+    }
+}
+
+fn orca_call(
+    home: &Path,
+    sender: &str,
+    bearer_file: &Path,
+    peer: Option<&str>,
+    tool: &str,
+    arguments: Value,
+) -> io::Result<Value> {
+    let home = crate::cloud_setup::require_home(home)?;
+    let route = route_for(sender)?;
+    let token = bearer(bearer_file)?;
+    initialize_owner(&home, &route, &token)?;
+    let request = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
+        "name":tool, "arguments":arguments
+    }});
+    let forward = |request: &Value| exchange(&home, &route, &token, request);
+    let reply = if let Some(peer) = peer {
+        peer_scope::Scope::new(sender, peer)?.exchange("tools/call", &request, forward)?
+    } else {
+        forward(&request)?
+    };
+    peer_scope::tool_value(&reply)
+}
+
+pub(crate) fn orca_recipients(
+    home: &Path,
+    sender: &str,
+    bearer_file: &Path,
+) -> io::Result<Vec<String>> {
+    let recipients = orca_call(
+        home,
+        sender,
+        bearer_file,
+        None,
+        "p-999k_recipients",
+        json!({}),
     )?;
-    let recipients = peer_scope::tool_value(&reply)?;
     recipients["recipients"]
         .as_array()
         .ok_or_else(|| fail("invalid local MCP recipient list"))?
@@ -466,6 +517,24 @@ pub(crate) fn orca_recipients(
                 .ok_or_else(|| fail("invalid local MCP recipient"))
         })
         .collect()
+}
+
+pub(crate) fn orca_linked_reply(
+    home: &Path,
+    sender: &str,
+    bearer_file: &Path,
+    peer: &str,
+    original: &str,
+) -> io::Result<bool> {
+    let observed = orca_call(
+        home,
+        sender,
+        bearer_file,
+        Some(peer),
+        "p-999k_wait",
+        json!({"timeout_ms":0, "in_reply_to":original}),
+    )?;
+    Ok(!observed["message"].is_null())
 }
 
 pub(crate) fn run(
@@ -556,12 +625,12 @@ mod tests {
             .unwrap();
         let tools = listing["result"]["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], "radio999k_send");
+        assert_eq!(tools[0]["name"], "p-999k_send");
         let sent = scope
             .exchange(
                 "tools/call",
                 &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
-                    "name":"radio999k_send","arguments":{"recipient":"dot"}
+                    "name":"p-999k_send","arguments":{"recipient":"dot"}
                 }}),
                 exchange,
             )

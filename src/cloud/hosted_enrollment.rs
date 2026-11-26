@@ -4,6 +4,7 @@ use crate::{
     hosted_origin::UnixOrigin,
     hosted_origin_local,
     hosted_registration::{self, OriginDescriptor},
+    registration_origin::https_origin,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use radio999k::{arrival_notify::lock_state, private_file};
@@ -33,6 +34,10 @@ struct Enrollment {
     unix_nonce: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unix_descriptor: Option<OriginDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selected_mcp_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requested_routes: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -41,28 +46,6 @@ struct Binding {
     installation_id: String,
     public_url: String,
     expires_at: String,
-}
-
-fn https_origin(input: &str) -> Result<Url, String> {
-    if !input.starts_with("https://")
-        || input
-            .chars()
-            .any(|ch| ch.is_control() || ch.is_whitespace())
-    {
-        return Err("registration origin must be an HTTPS origin".into());
-    }
-    Url::parse(input)
-        .ok()
-        .filter(|url| {
-            url.scheme() == "https"
-                && url.host_str().is_some()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.path() == "/"
-                && url.query().is_none()
-                && url.fragment().is_none()
-        })
-        .ok_or_else(|| "registration origin must be an HTTPS origin".into())
 }
 
 fn valid_secret(value: &str) -> bool {
@@ -84,6 +67,8 @@ fn new_enrollment(origin: &Url) -> Enrollment {
         binding: None,
         unix_nonce: None,
         unix_descriptor: None,
+        selected_mcp_path: None,
+        requested_routes: None,
     }
 }
 
@@ -184,6 +169,7 @@ if (!$.NSWorkspace.sharedWorkspace.openURL($.NSURL.URLWithString({quoted}))) thr
 enum OriginIntent {
     Legacy,
     UnixV1,
+    SelectableUnix,
 }
 
 #[allow(
@@ -197,6 +183,7 @@ fn enroll(
     wait: Duration,
     poll: Duration,
     intent: OriginIntent,
+    selected_mcp_path: Option<&str>,
     open: impl FnOnce(&Url) -> Result<(), String>,
     finalize: impl FnOnce(&str, &str, &str) -> Result<(), String>,
 ) -> Result<String, String> {
@@ -206,19 +193,51 @@ fn enroll(
         Some(saved) if saved.origin != origin.as_str() => {
             return Err("use the original HTTPS registration origin for this home".into());
         }
-        Some(saved) if saved.unix_nonce.is_some() == (intent == OriginIntent::UnixV1) => saved,
+        Some(saved)
+            if saved.unix_nonce.is_some() == (intent != OriginIntent::Legacy)
+                && saved.requested_routes.is_some() == (intent == OriginIntent::SelectableUnix) =>
+        {
+            saved
+        }
         Some(_) => return Err("use the original hosted origin mode for this home".into()),
         None => {
             let mut enrollment = new_enrollment(origin);
-            if intent == OriginIntent::UnixV1 {
+            if intent != OriginIntent::Legacy {
                 let nonce = hosted_origin_local::new_origin()
                     .map_err(|_| "cannot select a hosted Unix origin")?;
                 enrollment.unix_nonce = Some(nonce.nonce().to_owned());
+            }
+            if intent == OriginIntent::SelectableUnix {
+                enrollment.requested_routes = Some(Vec::new());
+            } else {
+                enrollment.selected_mcp_path = selected_mcp_path.map(str::to_owned);
             }
             save(&path, &enrollment)?;
             enrollment
         }
     };
+    if intent != OriginIntent::SelectableUnix
+        && let Some(selected) = selected_mcp_path
+        && Some(selected) != saved.selected_mcp_path.as_deref()
+        && !saved
+            .unix_descriptor
+            .as_ref()
+            .is_some_and(|scope| exact_peer_scope(&scope.mcp_paths, selected))
+    {
+        return Err("This home has a different hosted enrollment. Preserve it and use an approved exact ingress for this peer.".into());
+    }
+    let previous_routes = saved.requested_routes.clone();
+    if let Some(routes) = &mut saved.requested_routes
+        && let Some(selected) = selected_mcp_path
+        && !routes.iter().any(|path| path == selected)
+    {
+        routes.push(selected.to_owned());
+        save(&path, &saved)?;
+    }
+    let required_path = saved
+        .selected_mcp_path
+        .clone()
+        .or_else(|| selected_mcp_path.map(str::to_owned));
     let unix = saved.unix_nonce.as_deref().and_then(UnixOrigin::parse);
 
     // Retry the same begin even if the last call reached the server but lost its response.
@@ -281,8 +300,25 @@ fn enroll(
             std::thread::sleep(remaining.min(poll));
         }
         let (public_url, token, descriptor) = if let Some(origin) = unix.as_ref() {
-            let (url, token, scope) =
-                hosted_registration::finish_unix(api, &reg.installation_id, &saved.proof, origin)?;
+            let result = hosted_registration::finish_unix(
+                api,
+                &reg.installation_id,
+                &saved.proof,
+                origin,
+                saved.requested_routes.as_deref(),
+            );
+            if matches!(&result, Err(reason) if reason == "http_400")
+                && saved.requested_routes != previous_routes
+            {
+                saved.requested_routes = previous_routes;
+                save(&path, &saved)?;
+            }
+            let (url, token, scope) = result.map_err(|reason| match reason.as_str() {
+                "http_400" if selected_mcp_path.is_some() && saved.requested_routes.is_some() => {
+                    "The registration provider did not accept the selected peer route".into()
+                }
+                _ => reason,
+            })?;
             (url, token, Some(scope))
         } else {
             let (url, token) =
@@ -298,20 +334,39 @@ fn enroll(
         {
             return Err("invalid hosted finish response".into());
         }
-        if let Some(descriptor) = descriptor {
-            if saved
-                .unix_descriptor
-                .as_ref()
-                .is_some_and(|previous| previous != &descriptor)
+        if let Some(descriptor) = descriptor.as_ref() {
+            if let Some(requested) = &saved.requested_routes {
+                if descriptor.mcp_paths.len() != requested.len()
+                    || !requested
+                        .iter()
+                        .all(|path| descriptor.mcp_paths.contains(path))
+                    || saved
+                        .unix_descriptor
+                        .as_ref()
+                        .is_some_and(|previous| !descriptor.same_origin(previous))
+                {
+                    return Err("hosted Unix origin binding changed or provider did not approve the requested peer routes".into());
+                }
+            } else if required_path
+                .as_deref()
+                .is_some_and(|path| !exact_peer_scope(&descriptor.mcp_paths, path))
+            {
+                return Err("Registration provider did not approve exactly the selected peer route; connector remains unattached".into());
+            }
+            if saved.requested_routes.is_none()
+                && saved
+                    .unix_descriptor
+                    .as_ref()
+                    .is_some_and(|previous| previous != descriptor)
             {
                 return Err("hosted Unix origin binding changed".into());
             }
-            if saved.unix_descriptor.is_none() {
-                saved.unix_descriptor = Some(descriptor);
-                save(&path, &saved)?;
-            }
         }
         finalize(&public_url, &reg.installation_id, &token)?;
+        if descriptor.is_some() && saved.unix_descriptor != descriptor {
+            saved.unix_descriptor = descriptor;
+            save(&path, &saved)?;
+        }
         Ok(public_url)
     })();
 
@@ -326,12 +381,36 @@ fn enroll(
         Err(reason) if reason == "registration_revoked" => Err(
             "Registration was revoked. Do not reuse this enrollment. Contact the operator.".into(),
         ),
+        Err(reason) if required_path.is_some() => Err(format!(
+            "{reason}. Repeat the same selected-peer setup command to resume."
+        )),
         Err(reason) => Err(format!("{reason}. {RESUME}")),
         Ok(url) => Ok(url),
     }
 }
 
-pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor)>, String> {
+pub(crate) fn address_only_home(home: &Path) -> Result<bool, Box<dyn std::error::Error>> {
+    if !has_selectable_reservation(home)?
+        || !staged_unix(home)?.is_some_and(|(_, scope, _)| scope.mcp_paths.is_empty())
+    {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(home)? {
+        if !matches!(
+            entry?.file_name().to_str(),
+            Some(
+                FILE | "hosted-enrollment.lock"
+                    | "hosted-connection.json"
+                    | crate::hosted_connector::TOKEN_FILE
+            )
+        ) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor, String)>, String> {
     let Some(saved) = load(&home.join(FILE))? else {
         return Ok(None);
     };
@@ -345,20 +424,92 @@ pub(crate) fn staged_unix(home: &Path) -> Result<Option<(Uuid, OriginDescriptor)
         return Err("invalid hosted installation binding".into());
     }
     let staged = crate::hosted_connector::load_connection(home)?;
-    if staged.as_ref() != Some(&(binding.public_url, binding.installation_id)) {
+    if staged.as_ref().is_none_or(|(url, installation)| {
+        *url != binding.public_url || *installation != binding.installation_id
+    }) {
         return Err("hosted credentials do not belong to this enrollment".into());
     }
     private_file::open_private_file(&home.join(crate::hosted_connector::TOKEN_FILE))
         .map_err(|_| "hosted connector credential is unavailable")?;
-    Ok(Some((id, descriptor)))
+    Ok(Some((id, descriptor, binding.public_url)))
 }
 
+fn exact_peer_scope(paths: &[String], selected: &str) -> bool {
+    paths == [selected]
+}
+
+const RELEASE_ORIGIN: &str = env!("RADIO999K_COMPILED_REGISTRATION_ORIGIN");
+
 pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
+    let saved = load(&home.join(FILE))?;
+    let intent = match saved.as_ref() {
+        Some(saved) if saved.requested_routes.is_some() => OriginIntent::SelectableUnix,
+        Some(saved) if saved.unix_nonce.is_some() => OriginIntent::UnixV1,
+        Some(_) if !unix => OriginIntent::Legacy,
+        _ if unix => OriginIntent::UnixV1,
+        _ => OriginIntent::SelectableUnix,
+    };
+    let origin = match saved {
+        Some(saved) => https_origin(&saved.origin)?,
+        None => registration_origin()?,
+    };
+    reserve(home, &origin, intent, None).map(|_| ())
+}
+
+pub(crate) fn selected_provider(peer: &str) -> Result<Url, String> {
+    if crate::pairing::route(peer).is_none() {
+        return Err("The selected peer does not support hosted HTTPS enrollment.".into());
+    }
+    registration_origin()
+}
+
+pub(crate) fn reserve_selected_peer(
+    home: &Path,
+    origin: &Url,
+    route: &str,
+) -> Result<String, String> {
+    let intent = match load(&home.join(FILE))? {
+        Some(saved) if saved.requested_routes.is_none() => OriginIntent::UnixV1,
+        _ => OriginIntent::SelectableUnix,
+    };
+    reserve(home, origin, intent, Some(route))
+}
+
+pub(crate) fn has_selectable_reservation(home: &Path) -> Result<bool, String> {
+    Ok(load(&home.join(FILE))?.is_some_and(|saved| saved.requested_routes.is_some()))
+}
+
+pub(crate) fn saved_route_provider(home: &Path, route: &str) -> Result<Option<Url>, String> {
+    let Some(saved) = load(&home.join(FILE))? else {
+        return Ok(None);
+    };
+    if saved.requested_routes.is_none()
+        || saved
+            .unix_descriptor
+            .as_ref()
+            .is_some_and(|scope| scope.mcp_paths.iter().any(|path| path == route))
+    {
+        return Ok(None);
+    }
+    https_origin(&saved.origin).map(Some)
+}
+
+fn registration_origin() -> Result<Url, String> {
     let configured = std::env::var_os("RADIO999K_REGISTRATION_URL")
         .or_else(|| std::env::var_os("PIGEONMQ_REGISTRATION_URL"))
-        .and_then(|url| url.into_string().ok())
-        .ok_or("registration_url_required")?;
-    let origin = https_origin(&configured)?;
+        .or_else(|| (!RELEASE_ORIGIN.is_empty()).then(|| RELEASE_ORIGIN.into()))
+        .ok_or("This build has no hosted registration provider. Use an operator-configured build or set RADIO999K_REGISTRATION_URL to your operator’s HTTPS origin.")?
+        .into_string()
+        .map_err(|_| "registration origin must be an HTTPS origin")?;
+    https_origin(&configured)
+}
+
+fn reserve(
+    home: &Path,
+    origin: &Url,
+    intent: OriginIntent,
+    selected_mcp_path: Option<&str>,
+) -> Result<String, String> {
     if !cfg!(target_os = "macos") {
         return Err("hosted enrollment requires macOS".into());
     }
@@ -369,22 +520,24 @@ pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
     }
     let home =
         cloud_setup::require_home(home).map_err(|_| "hosted hub home must be owner-private")?;
+    let schedule = intent == OriginIntent::UnixV1 || selected_mcp_path.is_some();
     let public_url = enroll(
         &home,
-        &origin,
+        origin,
         origin.as_str(),
         Duration::from_secs(90),
         Duration::from_secs(2),
-        if unix {
-            OriginIntent::UnixV1
-        } else {
-            OriginIntent::Legacy
-        },
+        intent,
+        selected_mcp_path,
         open_browser,
         |url, id, token| crate::hosted_connector::stage(&home, url, id, token),
     )?;
-    println!("reserved_address={public_url}");
-    let scheduled = if unix {
+    if selected_mcp_path.is_none() {
+        println!("reserved_address={public_url}");
+    } else {
+        println!("Hosted address reserved.");
+    }
+    let scheduled = if schedule {
         match crate::lifecycle::schedule_hosted_unix(&home) {
             Ok(value) => value,
             Err(err) => {
@@ -401,16 +554,13 @@ pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
         if scheduled { "scheduled" } else { "staged" }
     );
     println!("hosted_public_route=unverified");
-    if !scheduled {
-        if unix {
-            eprintln!("Activate the required managed profiles, then run the same reserve command.");
-        } else {
-            eprintln!(
-                "The connector credential is saved. This preview does not start a hosted connector."
-            );
-        }
+    if !scheduled && schedule {
+        eprintln!("Activate the required managed profiles, then repeat hosted setup.");
     }
-    Ok(())
+    if selected_mcp_path.is_some() && !scheduled {
+        return Err("The selected route is staged. Start its managed profile and repeat selected-peer setup.".into());
+    }
+    Ok(public_url)
 }
 
 #[cfg(test)]
@@ -431,6 +581,9 @@ pub(crate) fn stage_unix_fixture(home: &Path, id: Uuid, port: u16, paths: &[&str
         }))
         .unwrap(),
     );
+    if paths.is_empty() {
+        saved.requested_routes = Some(Vec::new());
+    }
     save(&home.join(FILE), &saved).unwrap();
     crate::hosted_connector::stage(home, public_url, &id.to_string(), "synthetic-token").unwrap();
 }
@@ -552,7 +705,11 @@ mod tests {
                 }
                 if request.ends_with("/finish-unix HTTP/1.1") {
                     let body: Value = serde_json::from_slice(&body).unwrap();
-                    assert_eq!(body, json!({"kind":"unix_v1", "nonce":saved.unix_nonce}));
+                    let mut expected = json!({"kind":"unix_v1", "nonce":saved.unix_nonce});
+                    if let Some(routes) = saved.requested_routes {
+                        expected["routes"] = json!(routes);
+                    }
+                    assert_eq!(body, expected);
                 }
                 if let Some((status, value)) = response {
                     let body = value.to_string();
@@ -582,6 +739,7 @@ mod tests {
             Duration::ZERO,
             Duration::ZERO,
             OriginIntent::Legacy,
+            None,
             open,
             finalize,
         )
@@ -601,6 +759,7 @@ mod tests {
                 Duration::ZERO,
                 Duration::ZERO,
                 intent,
+                None,
                 |_| panic!("unexpected opener"),
                 |_, _, _| Ok(()),
             )
@@ -675,6 +834,148 @@ mod tests {
         assert!(stored.proof == first.proof && stored.unix_nonce == first.unix_nonce);
         assert_eq!(stored.unix_descriptor.unwrap().mcp_paths, ["/muse/mcp"]);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn selected_enrollment_never_finalizes_a_wider_provider_scope() {
+        let home = temp_home();
+        let path = home.path().join(FILE);
+        let origin = https_origin(ORIGIN).unwrap();
+        let selected = "/muse/mcp";
+        let (drop_api, dropped) = operator_with_intent(home.path(), vec![(BEGIN, None)], true);
+        let run = |api: &str, finalize: fn(&str, &str, &str) -> Result<(), String>| {
+            enroll(
+                home.path(),
+                &origin,
+                api,
+                Duration::ZERO,
+                Duration::ZERO,
+                OriginIntent::UnixV1,
+                Some(selected),
+                |_| panic!("unexpected opener"),
+                finalize,
+            )
+        };
+        assert!(run(&drop_api, |_, _, _| panic!("unexpected finalization")).is_err());
+        dropped.join().unwrap();
+        let pending = load(&path).unwrap().unwrap();
+        assert_eq!(pending.selected_mcp_path.as_deref(), Some(selected));
+        let nonce = pending.unix_nonce.as_deref().unwrap();
+        let finish =
+            "POST /v1/enrollments/11111111-1111-4111-8111-111111111111/finish-unix HTTP/1.1";
+        let complete = |paths: &[&str]| {
+            vec![
+                (BEGIN, Some((200, begin(ORIGIN, ID, None)))),
+                (
+                    STATUS,
+                    Some((200, json!({"state":"approved","public_url":PUBLIC}))),
+                ),
+                (
+                    finish,
+                    Some((
+                        200,
+                        json!({
+                            "state":"ready", "public_url":PUBLIC, "connector_token":"fixture-token",
+                            "origin":{"kind":"unix_v1","nonce":nonce,"hub_port":54843,"mcp_paths":paths}
+                        }),
+                    )),
+                ),
+            ]
+        };
+        let (api, server) =
+            operator_with_intent(home.path(), complete(&[selected, "/cue/mcp"]), true);
+        let error = run(&api, |_, _, _| {
+            panic!("broader ingress must not reach finalization")
+        })
+        .unwrap_err();
+        assert!(error.contains("did not approve exactly the selected peer route"));
+        server.join().unwrap();
+        assert!(load(&path).unwrap().unwrap().unix_descriptor.is_none());
+
+        let (api, server) = operator_with_intent(home.path(), complete(&[selected]), true);
+        assert_eq!(run(&api, |_, _, _| Ok(())).unwrap(), PUBLIC);
+        server.join().unwrap();
+        assert_eq!(
+            load(&path)
+                .unwrap()
+                .unwrap()
+                .unix_descriptor
+                .unwrap()
+                .mcp_paths,
+            [selected]
+        );
+    }
+
+    #[test]
+    fn selectable_enrollment_reuses_saved_origin_and_rejects_extra_routes() {
+        let home = temp_home();
+        let path = home.path().join(FILE);
+        let origin = https_origin(ORIGIN).unwrap();
+        let mut saved = new_enrollment(&origin);
+        let nonce = hosted_origin_local::new_origin().unwrap();
+        saved.unix_nonce = Some(nonce.nonce().into());
+        saved.requested_routes = Some(Vec::new());
+        save(&path, &saved).unwrap();
+        let steps = |paths: &[&str]| {
+            vec![
+                (BEGIN, Some((200, begin(ORIGIN, ID, None)))),
+                (
+                    STATUS,
+                    Some((200, json!({"state":"ready","public_url":PUBLIC}))),
+                ),
+                (
+                    "POST /v1/enrollments/11111111-1111-4111-8111-111111111111/finish-unix HTTP/1.1",
+                    Some((
+                        200,
+                        json!({
+                            "state":"ready", "public_url":PUBLIC, "connector_token":"fixture-token",
+                            "origin":{"kind":"unix_v1","nonce":nonce.nonce(),"hub_port":54843,"mcp_paths":paths}
+                        }),
+                    )),
+                ),
+            ]
+        };
+        for (selected, paths, accepted) in [
+            (None, &[][..], true),
+            (Some("/cue/mcp"), &["/cue/mcp"][..], true),
+            (
+                Some("/muse/mcp"),
+                &["/cue/mcp", "/muse/mcp", "/instinct/mcp"][..],
+                false,
+            ),
+            (Some("/muse/mcp"), &["/cue/mcp", "/muse/mcp"][..], true),
+        ] {
+            if let Some(route) = selected {
+                assert_eq!(
+                    saved_route_provider(home.path(), route).unwrap(),
+                    Some(origin.clone())
+                );
+            }
+            let (api, server) = operator_with_intent(home.path(), steps(paths), true);
+            let result = enroll(
+                home.path(),
+                &origin,
+                &api,
+                Duration::ZERO,
+                Duration::ZERO,
+                OriginIntent::SelectableUnix,
+                selected,
+                |_| panic!("the installation is already approved"),
+                |url, id, _| {
+                    assert!(accepted);
+                    assert_eq!((url, id), (PUBLIC, ID));
+                    Ok(())
+                },
+            );
+            assert_eq!(result.is_ok(), accepted);
+            server.join().unwrap();
+        }
+        let current = load(&path).unwrap().unwrap();
+        assert_eq!(current.request_id, saved.request_id);
+        assert_eq!(
+            current.unix_descriptor.unwrap().mcp_paths,
+            ["/cue/mcp", "/muse/mcp"]
+        );
     }
 
     #[test]

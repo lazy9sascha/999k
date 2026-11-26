@@ -1,8 +1,8 @@
 {
   "manifestVersion": 2,
   "execution": "sandboxed-ui",
-  "id": "radio999k-demo",
-  "name": "999K Demo",
+  "id": "p-999k-demo",
+  "name": "P-999K Demo",
   "version": "0.1.0",
   "description": "Try 999K conversations with synthetic contacts.",
   "author": {
@@ -15,7 +15,7 @@
     "panels": [
       {
         "id": "conversations",
-        "title": "999K Demo",
+        "title": "P-999K Demo",
         "icon": "bot",
         "entry": "panel.html"
       }
