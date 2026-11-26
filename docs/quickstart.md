@@ -2,6 +2,8 @@
 
 Use the [Orca plugin](#connect-orca-to-your-existing-peers) to ask an existing agent for help from your project chat. For a standalone hub, start with [the CLI](#1-install).
 
+P-999K is experimental. Use a hosted address or [connect through your own HTTPS domain](#switch-to-your-own-domain). You can keep the same hub and queue when you switch.
+
 ## Connect Orca to your existing peers
 
 Use an Apple Silicon Mac with Orca 1.4.268 or later. Open a terminal in an empty download directory. This example installs [0.2.1](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1). If this Mac already runs a managed hub, follow the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
@@ -79,6 +81,28 @@ For a custom installation, pass absolute paths. Orca relay tool commands require
 ```
 
 When a project agent calls a bot, keep the Orca question ID with the 999K original ID. After retrieving the matching answer, the bot can use `orca orchestration reply --id <original-orca-question-id> --body-file -` and pass the answer on standard input.
+
+### Switch to your own domain
+
+Choose **Initial setup → Use my own domain** in the panel, or ask your P-999K
+management bot **“Use my own domain.”** If you created the bot before it offered
+this guide, update its purpose from **Set up a management bot**.
+
+1. Point an [HTTPS proxy or tunnel you control](tunnels.md#use-your-own-https-origin)
+   at the hub you already use. Keep the same hub home. Publish the selected
+   peer’s MCP and pairing routes. For Dot, configure its
+   [protected OAuth endpoint](hosted-registration.md#connect-dot-and-codex-cloud-through-cloudflare).
+2. In the hub home's owner-private `orca-ingress.json`, add the peer ID and
+   exact MCP URL. Keep the other entries and file mode `0600`.
+   For example, use `{"muse":"https://radio.example.com/muse/mcp"}`.
+   Setup uses that URL for the peer even if you already reserved a hosted address.
+3. Run `999k init --orca --orca-peer <id>` in the same home. Update the
+   connector in the peer's private settings. Use **Get a setup code** where
+   supported, or authorize Dot at its new OAuth endpoint.
+4. Ask the peer one question in the original Orca project. Keep the previous
+   connection until the new connector returns the matching reply. To roll
+   back, restore the previous endpoint in the app and remove or restore that
+   peer's entry in `orca-ingress.json`.
 
 <a id="1-build"></a>
 

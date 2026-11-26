@@ -387,6 +387,9 @@ pub(crate) fn login_form(
 <h1>Register 999K</h1>
 <p>Proposed hostname: <strong>{hostname}</strong></p>
 <h2>About hosted setup</h2>
+<p>P-999K is experimental. You can use your own HTTPS domain now or switch to
+one later. Keep the same hub on your Mac and update each peer's connector
+after you switch.</p>
 <p>Supabase Auth receives your email address and verifies your one-time code.
 The registration service stores your verified account ID, installation status,
 and Cloudflare resource references so it can resume or revoke your registration.</p>

@@ -128,6 +128,18 @@ fn peer_endpoint(
     route: &str,
     provider: Option<&Url>,
 ) -> Result<Url, String> {
+    let inventory = super::read_private_json::<BTreeMap<String, String>>(&home.join(INVENTORY))
+        .map_err(|_| "Check the owner-private orca-ingress.json file")?;
+    if let Some(raw) = inventory.as_ref().and_then(|entries| entries.get(peer)) {
+        let url = endpoint(raw, route)
+            .ok_or("The configured HTTPS endpoint does not match the selected peer route")?;
+        if provider.is_some() {
+            println!(
+                "Using the existing HTTPS endpoint for {peer} from orca-ingress.json. Skipping hosted registration."
+            );
+        }
+        return Ok(url);
+    }
     if hosted_enrollment::has_selectable_reservation(home)? {
         if let Some(provider) = provider {
             let origin = hosted_enrollment::reserve_selected_peer(home, provider, route)?;
@@ -142,19 +154,6 @@ fn peer_endpoint(
         }
         return Err("Select this peer in Orca setup to attach it to the reserved address.".into());
     }
-    let inventory = super::read_private_json::<BTreeMap<String, String>>(&home.join(INVENTORY))
-        .map_err(|_| "Check the owner-private orca-ingress.json file")?;
-    if let Some(raw) = inventory.as_ref().and_then(|entries| entries.get(peer)) {
-        let url = endpoint(raw, route)
-            .ok_or("The configured HTTPS endpoint does not match the selected peer route")?;
-        if provider.is_some() {
-            println!(
-                "Using the existing HTTPS endpoint for {peer} from orca-ingress.json. Skipping hosted registration."
-            );
-        }
-        return Ok(url);
-    }
-
     let origin = if let Some(provider) = provider {
         hosted_enrollment::reserve_selected_peer(home, provider, route)?
     } else if let Some((_, scope, approved_origin)) = hosted_enrollment::staged_unix(home)?
@@ -396,6 +395,40 @@ mod tests {
             "https://u-fixture.example.test/cue/mcp"
         );
         assert!(lookup("muse", "/muse/mcp").is_err());
+    }
+
+    #[test]
+    fn configured_peer_endpoint_can_replace_an_address_first_reservation() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().canonicalize().unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        hosted_enrollment::stage_unix_fixture(&home, uuid::Uuid::new_v4(), 54843, &[]);
+        let enrollment = home.join("hosted-enrollment.json");
+        let before = std::fs::read(&enrollment).unwrap();
+        let inventory = home.join(INVENTORY);
+        radio999k::private_file::replace_private(
+            &inventory,
+            br#"{"muse":"https://radio.example.test/muse/mcp"}"#,
+        )
+        .unwrap();
+        let provider = Url::parse("https://registration.example.test").unwrap();
+        for hosted in [None, Some(&provider)] {
+            assert_eq!(
+                peer_endpoint(&home, "muse", "/muse/mcp", hosted)
+                    .unwrap()
+                    .as_str(),
+                "https://radio.example.test/muse/mcp"
+            );
+        }
+        assert_eq!(std::fs::read(&enrollment).unwrap(), before);
+        assert!(peer_endpoint(&home, "cue", "/cue/mcp", None).is_err());
+        radio999k::private_file::replace_private(
+            &inventory,
+            br#"{"muse":"https://radio.example.test/cue/mcp"}"#,
+        )
+        .unwrap();
+        assert!(peer_endpoint(&home, "muse", "/muse/mcp", Some(&provider)).is_err());
     }
 
     #[test]
