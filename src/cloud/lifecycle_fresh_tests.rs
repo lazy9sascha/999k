@@ -432,6 +432,34 @@ fn orca_fresh_home_resumes_after_partial_activation_with_sender_only() {
 }
 
 #[test]
+fn orca_bootstraps_after_address_only_reservation() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("hub");
+    mkdir_private(&home).unwrap();
+    let id = uuid::Uuid::new_v4();
+    crate::hosted_enrollment::stage_unix_fixture(&home, id, 54843, &[]);
+    let launch = FakeLaunchctl::default();
+    let directory = root.path().join("LaunchAgents");
+    let binary = std::env::current_exe().unwrap();
+    let jobs = Jobs {
+        service: &launch,
+        directory: &directory,
+        executable: &binary,
+        installation: None,
+    };
+    orca_sender_file_with(&home, |home, name, options| {
+        init_with(home, name, options, Some(&jobs))
+    })
+    .unwrap();
+    assert_eq!(state(&home).profiles.len(), 1);
+    let (id_after, scope, _) = crate::hosted_enrollment::staged_unix(&home)
+        .unwrap()
+        .unwrap();
+    assert_eq!(id_after, id);
+    assert!(scope.mcp_paths.is_empty());
+}
+
+#[test]
 fn orca_adds_only_selected_peers_and_reuses_credentials_on_retry() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("hub");

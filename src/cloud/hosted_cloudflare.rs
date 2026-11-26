@@ -23,6 +23,8 @@ pub(crate) enum ResourceState {
 pub(crate) struct CloudflareResources {
     pub(crate) tunnel: ResourceState,
     pub(crate) dns_record: ResourceState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) selected_routes: Option<Vec<String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -371,7 +373,6 @@ impl CloudflareProvisioner {
         if installation_id.is_nil()
             || !first_label.is_some_and(valid_label)
             || loopback_port == 0
-            || approved_mcp_paths.is_empty()
             || !approved_mcp_paths
                 .iter()
                 .all(|path| valid_public_mcp_path(path.as_ref()))

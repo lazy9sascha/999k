@@ -17,6 +17,30 @@ test('waits for a click and reports a terminal opening', async () => {
   await view.unmount()
 })
 
+test('reserves a hosted address from initial setup', async () => {
+  const host = mockHost({ requests: { 'setup.open': (input) => {
+    assert.deepEqual(input, { target: 'initial', action: 'hosted' })
+    return { opened: true }
+  } } })
+  const view = await mount(panel, { host })
+  await view.press({ text: 'Reserve hosted address' })
+  assert.ok(view.find({ text: 'Terminal opened. Continue in “P-999K hosted address”.' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('offers a single address-first Computer Use request for all five peers', async () => {
+  const view = await mount(panel, { host: mockHost() })
+  await view.press({ text: 'Ask my assistant to set up all peers' })
+  const request = view.find({ label: 'Computer Use request for all peers' })
+  assert.ok(request)
+  assert.match(request.props.code, /init --reserve-address.*init --orca --orca-peer <id>/)
+  assert.match(request.props.code, /dot, instinct, cue, muse, grok-bot/)
+  assert.match(request.props.code, /Transfer the saved address and code directly into the form/)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
 test('passes the selected peer and names its setup terminal', async () => {
   const host = mockHost({ requests: { 'setup.open': (input) => {
     assert.deepEqual(input, { target: 'cue' })
@@ -70,7 +94,7 @@ test('asks for a code only after the owner chooses a supported peer and presses 
   assert.deepEqual(calls, [])
   assert.equal(view.find({ text: 'Set up hosted address' }), null)
   await view.select({ label: 'Setup target' }, 'cue')
-  assert.equal(view.find({ text: 'Ask my assistant to do it' }), null)
+  assert.ok(view.find({ text: 'Ask my assistant to do it' }))
   await view.press({ text: 'I’ll do it myself' })
   const handoff = view.find({ label: 'Message for your Cue chat' })
   assert.ok(handoff)

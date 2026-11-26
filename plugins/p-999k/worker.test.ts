@@ -71,15 +71,20 @@ test('issues a code only for an allowed pairing target on a local workspace', as
   await mounted.deactivate()
 })
 
-test('opens hosted setup only for an explicit Cue selection', async () => {
+test('opens an address reservation before any peer is selected', async () => {
   const host = hostFor('local')
   const mounted = await mountWorker(worker, { host })
-  for (const target of ['initial', 'dot', 'muse', 'instinct', 'grok-bot']) {
+  for (const target of ['dot', 'muse', 'instinct', 'grok-bot']) {
     await assert.rejects(mounted.request('setup.open', { target, action: 'hosted' }))
   }
   assert.deepEqual(host.callsOf('terminal.create'), [])
+  await mounted.request('setup.open', { target: 'initial', action: 'hosted' })
   await mounted.request('setup.open', { target: 'cue', action: 'hosted' })
   assert.deepEqual(host.callsOf('terminal.create'), [{
+    workspaceId: 'fixture',
+    title: 'P-999K hosted address',
+    command: '"$HOME/.local/bin/999k" init --reserve-address'
+  }, {
     workspaceId: 'fixture',
     title: 'P-999K hosted setup · Cue',
     command: '"$HOME/.local/bin/999k" init --orca --orca-peer cue --orca-reserve-address'

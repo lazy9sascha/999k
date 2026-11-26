@@ -2013,23 +2013,35 @@ fn handle_hub_connection(stream: impl Into<ProfileStream>, authority: &str, stat
     handle_hub_routes(stream.into(), authority, state, None, None, false)
 }
 
+const DOT_MCP_PATH: &str = "/dot/mcp";
+
+#[derive(Clone, Copy)]
+struct HostedIngress<'a> {
+    installation: uuid::Uuid,
+    authority: &'a str,
+    dot_oauth_only: bool,
+}
+
 fn handle_hub_routes(
     stream: ProfileStream,
     authority: &str,
     state: &HubState,
     allowed: Option<&[String]>,
-    hosted: Option<(uuid::Uuid, &str)>,
+    hosted: Option<HostedIngress<'_>>,
     legacy_tool_listing: bool,
 ) {
+    let dot_oauth_only =
+        |path: &str| path == DOT_MCP_PATH && hosted.is_some_and(|ingress| ingress.dot_oauth_only);
     transport::handle_connection(
         stream,
         authority,
-        hosted.map(|(_, public_authority)| public_authority),
+        hosted.map(|ingress| ingress.authority),
         |path| {
             let pairing = crate::pairing::by_path(path);
             let mcp = pairing.map_or(path, |(_, mcp)| mcp);
             if (legacy_tool_listing && pairing.is_some())
-                || allowed.is_some_and(|allowed| !allowed.iter().any(|route| route == mcp))
+                || (allowed.is_some_and(|allowed| !allowed.iter().any(|route| route == mcp))
+                    && !dot_oauth_only(mcp))
             {
                 return Err((404, "route_not_found"));
             }
@@ -2039,7 +2051,10 @@ fn handle_hub_routes(
                 .map(|route| pairing.map_or(route.body_limit, |_| crate::pairing::BODY_LIMIT))
         },
         |input, body, peer_closed| {
-            let hosted = hosted.map(|(installation, _)| installation);
+            let hosted = hosted.map(|ingress| ingress.installation);
+            if dot_oauth_only(&input.path) && input.access_assertions.is_empty() {
+                return (Err((401, "unauthorized")), 200).into();
+            }
             if crate::pairing::by_path(&input.path).is_some() {
                 return dispatch_pairing(state, authority, input, body, peer_closed, hosted);
             }
@@ -2518,6 +2533,17 @@ fn serve_hub_on(
         let installation = socket.installation;
         let public_authority = socket.public_authority.to_owned();
         let hosted_state = state.clone();
+        let dot_oauth_only = hosted_state
+            .routes
+            .get(DOT_MCP_PATH)
+            .is_ok_and(|route| route.access.is_some())
+            && hosted_state.db.parent().is_some_and(|home| {
+                crate::orca_onboard::dot_oauth_endpoint(home, DOT_MCP_PATH).is_ok_and(|endpoint| {
+                    endpoint.is_some_and(|url| {
+                        url.origin().ascii_serialization() == format!("https://{public_authority}")
+                    })
+                })
+            });
         listeners.push((
             ProfileListener::Unix(holder.listener.try_clone()?, format!("127.0.0.1:{port}")),
             Arc::new(move |stream, authority| {
@@ -2526,7 +2552,11 @@ fn serve_hub_on(
                     authority,
                     &hosted_state,
                     Some(&allowed),
-                    Some((installation, &public_authority)),
+                    Some(HostedIngress {
+                        installation,
+                        authority: &public_authority,
+                        dot_oauth_only,
+                    }),
                     false,
                 );
             }),
@@ -3038,7 +3068,7 @@ mod dot_wire {
             json!(["test-peer"])
         );
         assert!(matches!(
-            call(TOKEN, &[valid.clone(), valid]),
+            call(TOKEN, &[valid.clone(), valid.clone()]),
             WireResponse::Json((Err((403, _)), _))
         ));
         claims["aud"] = json!(["unrelated-mailbox-fixture"]);
@@ -3049,6 +3079,61 @@ mod dot_wire {
         assert!(
             matches!(call(TOKEN, &[]), WireResponse::Sdk(response) if response.status() == 200)
         );
+
+        use std::os::unix::net::UnixStream;
+        let public = "u-fixture.example.test";
+        let installation = uuid::Uuid::new_v4();
+        let call_hosted = |path: &str, host: &str, assertion: Option<&[u8]>, dot_oauth_only| {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            write!(
+                client,
+                "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {}\r\n",
+                body.len(),
+            )
+            .unwrap();
+            if let Some(assertion) = assertion {
+                client.write_all(b"Cf-Access-Jwt-Assertion: ").unwrap();
+                client.write_all(assertion).unwrap();
+                client.write_all(b"\r\n").unwrap();
+            }
+            client.write_all(b"\r\n").unwrap();
+            client.write_all(body).unwrap();
+            handle_hub_routes(
+                ProfileStream::Unix(server),
+                authority,
+                &state,
+                Some(&[]),
+                Some(HostedIngress {
+                    installation,
+                    authority: public,
+                    dot_oauth_only,
+                }),
+                false,
+            );
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            response
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse::<u16>()
+                .unwrap()
+        };
+        assert_eq!(call_hosted(DOT_MCP_PATH, public, Some(&valid), false), 404);
+        assert_eq!(call_hosted(DOT_MCP_PATH, public, None, true), 401);
+        assert_eq!(
+            call_hosted(DOT_MCP_PATH, public, Some(&signed(&claims)), true),
+            403
+        );
+        assert_eq!(
+            call_hosted(DOT_MCP_PATH, "wrong.example.test", Some(&valid), true),
+            403
+        );
+        assert_eq!(call_hosted("/muse/mcp", public, Some(&valid), true), 404);
+        assert_eq!(call_hosted(DOT_MCP_PATH, public, Some(&valid), true), 200);
     }
 
     #[test]

@@ -42,6 +42,12 @@ cargo build --locked
 cargo test --locked -- --test-threads=1
 ```
 
+## Hosted onboarding checks
+
+Use `scripts/check-hosted-onboarding.sh` for local checks. For a live first connection, start with an empty test home and Orca profile. Verify address reservation, app pairing, and a linked reply with ACK in the originating project chat. Continue with other peers while one is blocked. Keep evidence in `.local/`.
+
+Use the CLI or app UI as appropriate. Verify a form targets the intended test peer before entering credentials. Check the result before retrying a submission. Keep Orca’s default agent unless the operator selects one.
+
 ## Rules
 
 - **Secrets.** Never put tokens, webhook URLs or headers, live tunnel URLs, session IDs, or queue data in source, docs, logs, or chat. Use placeholders such as `https://<name>.tunnl.gg`.

@@ -72,6 +72,7 @@ struct Config {
     mcp_path: Option<String>,
     #[serde(default)]
     mcp_paths: Vec<String>,
+    selectable_mcp_paths: Option<Vec<String>>,
 }
 
 struct Operator {
@@ -81,6 +82,7 @@ struct Operator {
     zone: String,
     hub_port: u16,
     mcp_paths: Vec<String>,
+    selectable_mcp_paths: Vec<String>,
     registry: Mutex<Registry>,
     home: PathBuf,
     account_id: String,
@@ -155,9 +157,14 @@ impl Operator {
                 mcp_paths.push(path);
             }
         }
+        let selectable_mcp_paths = config
+            .selectable_mcp_paths
+            .unwrap_or_else(|| mcp_paths.clone());
         if config.hub_port == 0
-            || mcp_paths.is_empty()
-            || !mcp_paths.iter().all(|path| valid_public_mcp_path(path))
+            || !mcp_paths
+                .iter()
+                .chain(&selectable_mcp_paths)
+                .all(|path| valid_public_mcp_path(path))
         {
             return Err(unavailable());
         }
@@ -179,6 +186,7 @@ impl Operator {
             zone: config.cloudflare_zone_name,
             hub_port: config.hub_port,
             mcp_paths,
+            selectable_mcp_paths,
             registry: Mutex::new(
                 Registry::open(&home.join("enrollments.sqlite3")).map_err(|_| unavailable())?,
             ),
@@ -227,7 +235,7 @@ impl Operator {
 
     #[cfg(test)]
     async fn finish(&self, id: Uuid, proof: String) -> Result<RegistrationResponse, HttpError> {
-        self.finish_at(id, proof, None).await
+        self.finish_at(id, proof, None, None).await
     }
 
     async fn finish_at(
@@ -235,7 +243,11 @@ impl Operator {
         id: Uuid,
         proof: String,
         unix: Option<UnixOrigin>,
+        routes: Option<Vec<String>>,
     ) -> Result<RegistrationResponse, HttpError> {
+        if routes.is_none() && unix.is_some() && self.mcp_paths.is_empty() {
+            return Err(HttpError::TemporarilyUnavailable);
+        }
         let now = epoch_seconds()?;
         let record = self.record(|reg| reg.get(id, &proof, now))?;
         require_approved(&record)?;
@@ -248,10 +260,49 @@ impl Operator {
 
         self.check_finish_lifecycle(id)
             .map_err(|_| HttpError::TemporarilyUnavailable)?;
-        self.record(|reg| reg.bind_origin(id, &proof, now, unix.as_ref()))?;
         let mut resources = self
             .bound_resources(record.resources.as_deref())
             .map_err(|_| HttpError::TemporarilyUnavailable)?;
+        let paths = match routes {
+            Some(requested) => {
+                if requested.len() > self.selectable_mcp_paths.len()
+                    || requested
+                        .iter()
+                        .any(|path| !self.selectable_mcp_paths.contains(path))
+                    || (resources.selected_routes.is_none() && record.resources.is_some())
+                {
+                    return Err(HttpError::InvalidRequest);
+                }
+                let mut selected = resources.selected_routes.take().unwrap_or_default();
+                if selected
+                    .iter()
+                    .any(|path| !self.selectable_mcp_paths.contains(path))
+                {
+                    return Err(HttpError::TemporarilyUnavailable);
+                }
+                for path in requested {
+                    if !selected.contains(&path) {
+                        selected.push(path);
+                    }
+                }
+                resources.selected_routes = Some(selected.clone());
+                selected
+            }
+            None if resources.selected_routes.is_some() => return Err(HttpError::InvalidRequest),
+            None => self.mcp_paths.clone(),
+        };
+        self.record(|reg| reg.bind_origin(id, &proof, now, unix.as_ref()))?;
+        if resources.selected_routes.is_some() {
+            self.persist_route_resources(
+                id,
+                &resources,
+                record
+                    .resources
+                    .as_deref()
+                    .filter(|_| record.state == EnrollmentState::Ready),
+            )
+            .map_err(|_| HttpError::TemporarilyUnavailable)?;
+        }
         let provisioned = self
             .cloudflare
             .provision_at(
@@ -259,7 +310,7 @@ impl Operator {
                 &self.hostname(id),
                 self.hub_port,
                 unix.as_ref(),
-                &self.mcp_paths,
+                &paths,
                 &mut resources,
                 |resources| self.persist_resources(id, resources),
             )
@@ -275,7 +326,7 @@ impl Operator {
         if let Some(unix) = unix {
             response["origin"] = json!({
                 "kind": "unix_v1", "nonce": unix.nonce(),
-                "hub_port": self.hub_port, "mcp_paths": self.mcp_paths,
+                "hub_port": self.hub_port, "mcp_paths": paths,
             });
         }
         Ok(json_response(StatusCode::OK, response))
@@ -338,12 +389,16 @@ impl Operator {
             RequestKind::Finish {
                 installation_id,
                 proof,
-            } => self.finish_at(installation_id, proof, None).await,
+            } => self.finish_at(installation_id, proof, None, None).await,
             RequestKind::FinishUnix {
                 installation_id,
                 proof,
                 origin,
-            } => self.finish_at(installation_id, proof, Some(origin)).await,
+                routes,
+            } => {
+                self.finish_at(installation_id, proof, Some(origin), routes)
+                    .await
+            }
             RequestKind::RegisterPage { installation_id } => {
                 let login = self.record(|reg| reg.login(installation_id, now))?;
                 if login.expires_at <= now {

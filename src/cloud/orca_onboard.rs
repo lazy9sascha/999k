@@ -3,7 +3,7 @@ use crate::{cloud_setup, stdio_mcp};
 #[path = "orca_remote.rs"]
 mod remote;
 use radio999k::private_file;
-pub(crate) use remote::{Options as RemoteOptions, verified_pairing_origin};
+pub(crate) use remote::{Options as RemoteOptions, dot_oauth_endpoint, verified_pairing_origin};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -130,7 +130,20 @@ struct Inventory {
 
 fn purpose(peer: &str) -> String {
     format!(
-        "999K relay for {peer}. Use the local peer-scoped MCP connector to send only to {peer}. Report Queued after acceptance. Wait with the original ID, and return the matching peer reply to its originating chat."
+        "999K relay for {peer}. \
+         For an incoming Orca question, call p-999k_send once on the local MCP connector for {peer}, \
+         using the Orca question ID as the idempotency key. Keep the accepted 999K original ID and \
+         check p-999k_wait with in_reply_to set to that ID. \
+         If empty, leave the question pending. Use orca bot chats --json to find this chat and \
+         orca automations create --bot <your-name> --once --by <ISO time about one minute from now> \
+         --runs-in chat:<this-chat-id> to schedule a follow-up. Check for an existing pending \
+         follow-up for this original before scheduling. Include both original IDs and the remaining \
+         check count in the private automation prompt. Schedule up to three checks, one at a time. \
+         Each check reads only the same 999K original, and schedules the next check only if still pending. \
+         On a matching answer, use orca orchestration reply on the original Orca question once, \
+         passing the answer as data. On ambiguous delivery, recover the receipt before retrying. \
+         Do not enqueue again, post a preliminary orchestration reply, or show IDs in chat. \
+         For requests directly in this bot chat, send once and show the matching peer answer here."
     )
 }
 
@@ -345,7 +358,7 @@ impl Setup<'_> {
             return Ok((
                 false,
                 format!(
-                    "Open Bots → New bot. Choose your agent and select Create.\n\nName: {name}\nIdentity: {}\n\n{next}",
+                    "Open Bots → New bot. Keep the default agent and select Create.\n\nName: {name}\nIdentity: {}\n\n{next}",
                     purpose(peer)
                 ),
             ));

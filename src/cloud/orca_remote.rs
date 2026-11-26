@@ -44,6 +44,7 @@ fn credential(home: &Path, peer: &str, path: Option<&Path>) -> Option<String> {
 
 fn probe(endpoint: &Url, peer: &str, bearer: &str) -> bool {
     let Ok(client) = reqwest::blocking::Client::builder()
+        .user_agent(concat!("p-999k/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
@@ -127,6 +128,20 @@ fn peer_endpoint(
     route: &str,
     provider: Option<&Url>,
 ) -> Result<Url, String> {
+    if hosted_enrollment::has_selectable_reservation(home)? {
+        if let Some(provider) = provider {
+            let origin = hosted_enrollment::reserve_selected_peer(home, provider, route)?;
+            return endpoint(&format!("{}{route}", origin.trim_end_matches('/')), route)
+                .ok_or_else(|| "The approved hosted address is invalid".into());
+        }
+        if let Some((_, scope, origin)) = hosted_enrollment::staged_unix(home)?
+            && scope.mcp_paths.iter().any(|path| path == route)
+        {
+            return endpoint(&format!("{}{route}", origin.trim_end_matches('/')), route)
+                .ok_or_else(|| "The approved hosted address is invalid".into());
+        }
+        return Err("Select this peer in Orca setup to attach it to the reserved address.".into());
+    }
     let inventory = super::read_private_json::<BTreeMap<String, String>>(&home.join(INVENTORY))
         .map_err(|_| "Check the owner-private orca-ingress.json file")?;
     if let Some(raw) = inventory.as_ref().and_then(|entries| entries.get(peer)) {
@@ -181,6 +196,7 @@ pub(crate) fn verified_pairing_origin(
 
 fn pairing_route_available(origin: &str, pair: &str) -> bool {
     let Ok(client) = reqwest::blocking::Client::builder()
+        .user_agent(concat!("p-999k/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
@@ -206,6 +222,94 @@ fn pairing_route_available(origin: &str, pair: &str) -> bool {
             .is_ok_and(|value| value["error"]["code"] == "pairing_denied")
 }
 
+pub(crate) fn dot_oauth_endpoint(home: &Path, route: &str) -> Result<Option<Url>, String> {
+    let inventory = super::read_private_json::<BTreeMap<String, String>>(&home.join(INVENTORY))
+        .map_err(|_| "Check the owner-private orca-ingress.json file")?;
+    inventory
+        .as_ref()
+        .and_then(|entries| entries.get("dot"))
+        .map(|raw| {
+            endpoint(raw, route).ok_or_else(|| {
+                "The configured Dot endpoint must be the exact HTTPS MCP path.".into()
+            })
+        })
+        .transpose()
+}
+
+fn dot_oauth_discovery(endpoint: &Url, issuer: &str) -> bool {
+    let check = || -> Option<bool> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(concat!("p-999k/", env!("CARGO_PKG_VERSION")))
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+            .ok()?;
+        let response = client.post(endpoint.clone())
+            .header("Accept", "application/json, text/event-stream")
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":VERSION,"capabilities":{},"clientInfo":{"name":"p-999k-setup","version":env!("CARGO_PKG_VERSION")}
+            }}))
+            .send().ok()?;
+        if response.status().as_u16() != 401 {
+            return Some(false);
+        }
+        let metadata = [
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/cloudflare-access-protected-resource",
+        ]
+        .into_iter()
+        .filter_map(|prefix| endpoint.join(&format!("{prefix}{}", endpoint.path())).ok())
+        .find(|url| {
+            let challenge = format!("resource_metadata=\"{url}\"");
+            response
+                .headers()
+                .get_all(reqwest::header::WWW_AUTHENTICATE)
+                .iter()
+                .filter_map(|header| header.to_str().ok())
+                .any(|value| {
+                    value.split_once(' ').is_some_and(|(scheme, parameters)| {
+                        scheme.eq_ignore_ascii_case("bearer")
+                            && parameters.split(',').any(|p| p.trim() == challenge)
+                    })
+                })
+        })?;
+        let response = client.get(metadata).send().ok()?;
+        if !response.status().is_success() {
+            return Some(false);
+        }
+        const LIMIT: u64 = 16 * 1024;
+        let mut body = Vec::new();
+        response.take(LIMIT + 1).read_to_end(&mut body).ok()?;
+        if body.len() as u64 > LIMIT {
+            return Some(false);
+        }
+        let document = radio999k::mcp_request::strict_json(&body).ok()?;
+        Some(
+            document["resource"].as_str() == Some(endpoint.as_str())
+                && document["authorization_servers"] == json!([issuer]),
+        )
+    };
+    check().unwrap_or(false)
+}
+
+fn prepare_dot(home: &Path, route: &str) -> Result<bool, String> {
+    let Some(url) = dot_oauth_endpoint(home, route)? else {
+        return Ok(false);
+    };
+    let config = super::read_private_json::<Value>(&home.join("cloudflare-access.json"))
+        .map_err(|_| "Check the owner-private cloudflare-access.json file.")?
+        .ok_or("Configure the dedicated Cloudflare Access OAuth binding for Dot.")?;
+    let issuer = config["issuer"]
+        .as_str()
+        .filter(|_| config["dot"].is_object())
+        .ok_or("Configure the dedicated Cloudflare Access OAuth binding for Dot.")?;
+    if !dot_oauth_discovery(&url, issuer) {
+        return Err("The configured Dot route did not expose matching OAuth discovery. Check the Cloudflare Access app, issuer, and published path.".into());
+    }
+    Ok(true)
+}
+
 pub(super) fn prepare(home: &Path, peer: &str, options: Options<'_>) {
     let Some(profile) = radio999k::mailbox_catalog::http_by_id(peer) else {
         return;
@@ -215,18 +319,45 @@ pub(super) fn prepare(home: &Path, peer: &str, options: Options<'_>) {
         println!("Remote transport for {peer}: waiting. {reason}");
     };
     if peer == "dot" {
-        waiting(
-            "Connect Dot through its private Secure MCP Tunnel. See the Dot tunnel setup in the configuration guide.",
-        );
+        match prepare_dot(home, route) {
+            Ok(true) => println!(
+                "Remote transport for dot: OAuth discovery ready. Add the configured Dot URL in ChatGPT and approve the connection. Verify authenticated tools and a linked reply in the original project."
+            ),
+            Ok(false) => waiting(
+                "For direct OAuth, configure the protected Dot endpoint in owner-private orca-ingress.json. If you already use a private Secure MCP Tunnel, keep its existing connection.",
+            ),
+            Err(reason) => waiting(&reason),
+        }
         return;
     }
-    let url = match peer_endpoint(home, peer, route, options.provider.as_ref()) {
+    let saved_provider = match hosted_enrollment::saved_route_provider(home, route) {
+        Ok(provider) => provider,
+        Err(reason) => {
+            waiting(&reason);
+            return;
+        }
+    };
+    let provider = options.provider.as_ref().or(saved_provider.as_ref());
+    let url = match peer_endpoint(home, peer, route, provider) {
         Ok(url) => url,
         Err(reason) => {
             waiting(&reason);
             return;
         }
     };
+    if provider.is_none()
+        && hosted_enrollment::staged_unix(home).is_ok_and(|staged| {
+            staged.is_some_and(|(_, scope, origin)| {
+                scope.mcp_paths.iter().any(|path| path == route)
+                    && endpoint(&format!("{}{route}", origin.trim_end_matches('/')), route).as_ref()
+                        == Some(&url)
+            })
+        })
+        && let Err(err) = crate::lifecycle::schedule_hosted_unix(home)
+    {
+        waiting(&format!("The hosted credential is still staged: {err}"));
+        return;
+    }
     let Some(bearer) = credential(home, peer, options.bearer_file) else {
         waiting(
             "The peer's private credential is unavailable. Pass --orca-remote-bearer-file with its owner-private bearer file.",
@@ -342,6 +473,140 @@ mod tests {
             });
             // Production callers validate HTTPS and the exact route before this point.
             assert_eq!(probe(&local_url, "muse", "fixture"), first_status == 401);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn dot_uses_explicit_https_ingress_without_changing_the_reservation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().canonicalize().unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        hosted_enrollment::stage_unix_fixture(&home, uuid::Uuid::new_v4(), 54843, &["/cue/mcp"]);
+        assert!(dot_oauth_endpoint(&home, "/dot/mcp").unwrap().is_none());
+        let inventory = home.join(INVENTORY);
+        radio999k::private_file::replace_private(
+            &inventory,
+            br#"{"dot":"https://fixture.example/dot/mcp"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            dot_oauth_endpoint(&home, "/dot/mcp")
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "https://fixture.example/dot/mcp"
+        );
+        assert!(
+            prepare_dot(&home, "/dot/mcp")
+                .unwrap_err()
+                .contains("Access OAuth binding")
+        );
+        radio999k::private_file::replace_private(
+            &inventory,
+            br#"{"dot":"https://fixture.example/codex/mcp"}"#,
+        )
+        .unwrap();
+        assert!(dot_oauth_endpoint(&home, "/dot/mcp").is_err());
+    }
+
+    #[test]
+    fn dot_discovery_requires_the_selected_resource_and_issuer() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+        };
+        let issuer = "https://fixture.cloudflareaccess.com";
+        for (status, metadata_path, resource_path, response_issuer, ready) in [
+            (
+                401,
+                "/.well-known/oauth-protected-resource/dot/mcp",
+                "/dot/mcp",
+                issuer,
+                true,
+            ),
+            (
+                401,
+                "/.well-known/cloudflare-access-protected-resource/dot/mcp",
+                "/dot/mcp",
+                issuer,
+                true,
+            ),
+            (
+                200,
+                "/.well-known/oauth-protected-resource/dot/mcp",
+                "/dot/mcp",
+                issuer,
+                false,
+            ),
+            (
+                401,
+                "/.well-known/oauth-protected-resource/codex/mcp",
+                "/dot/mcp",
+                issuer,
+                false,
+            ),
+            (
+                401,
+                "/.well-known/oauth-protected-resource/dot/mcp",
+                "/codex/mcp",
+                issuer,
+                false,
+            ),
+            (
+                401,
+                "/.well-known/oauth-protected-resource/dot/mcp",
+                "/dot/mcp",
+                "https://other.cloudflareaccess.com",
+                false,
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let url = Url::parse(&format!("{origin}/dot/mcp")).unwrap();
+            let server = std::thread::spawn(move || {
+                let mut exchanges = vec![(
+                    "POST /dot/mcp HTTP/1.1".to_owned(),
+                    format!(
+                        "HTTP/1.1 {status} Response\r\nWWW-Authenticate: Bearer resource_metadata=\"{origin}{metadata_path}\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    ),
+                )];
+                if status == 401 && metadata_path.ends_with("/dot/mcp") {
+                    let body = json!({"resource":format!("{origin}{resource_path}"),"authorization_servers":[response_issuer]});
+                    exchanges.push((
+                        format!("GET {metadata_path} HTTP/1.1"),
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.to_string().len()),
+                    ));
+                }
+                for (request_line, response) in exchanges {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    assert_eq!(line.trim_end(), request_line);
+                    let mut length = 0;
+                    loop {
+                        line.clear();
+                        assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        let (name, value) = line.split_once(':').unwrap();
+                        assert!(!name.eq_ignore_ascii_case("authorization"));
+                        if name.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap();
+                        }
+                    }
+                    reader.read_exact(&mut vec![0; length]).unwrap();
+                    stream.write_all(response.as_bytes()).unwrap();
+                }
+            });
+            assert_eq!(dot_oauth_discovery(&url, issuer), ready);
             server.join().unwrap();
         }
     }

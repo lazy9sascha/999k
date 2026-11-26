@@ -1,6 +1,6 @@
 # P-999K
 
-Ask an existing 999K peer from your Orca project chat. The relay retrieves the linked answer for that chat. If its first check is empty, ask it to check the same request again.
+Ask an existing 999K peer from your Orca project chat. The relay retrieves the linked answer for that chat. If its first check is empty, a new relay can schedule follow-up checks of the same request.
 
 **Catalog summary.** Ask one existing peer from your project chat. The relay retrieves the linked answer. The first check can be empty.
 
@@ -22,15 +22,15 @@ For chat-based setup, choose **Set up a management bot**. Create **P-999K** once
 
 Choose **I’ll do it myself** for the steps in the terminal and the peer app. Where offered, **Ask my assistant to do it** copies a request for an assistant with Computer Use. Approve the relay in Orca when prompted. Run any resume command on the hub Mac.
 
-For Cue, choose **I’ll do it myself** and follow the hosted setup guide. Send the panel’s message in your existing Cue chat after the terminal reports authenticated MCP access. Type the hub address and one-time code into Cue’s private form. Setup is complete when Cue’s matching reply appears in the Orca project chat that asked. [Set up hosted Cue](../../docs/quickstart.md#prepare-the-selected-peers-transport)
+In **Initial setup**, choose **Ask my assistant to set up all peers** to copy one request for the address reservation and the five existing peer apps. The assistant can use Computer Use to transfer the address and code to each supported private form. Complete browser verification and any approvals the app asks you to make. [Hosted setup](../../docs/quickstart.md#prepare-the-selected-peers-transport)
 
-For a custom ingress for Muse, GrokBot, Cue or Instinct, publish the selected peer’s pairing and MCP routes before you choose **Get a setup code**. Enter the ten-minute code in the peer’s private setup flow. Dot uses a private ChatGPT tunnel. [Pair a remote client](../../docs/pairing.md)
+For a custom ingress for Muse, GrokBot, Cue or Instinct, publish the selected peer’s pairing and MCP routes before you choose **Get a setup code**. Enter the ten-minute code in the peer’s private setup flow. Dot supports an operator-protected OAuth endpoint or an existing private ChatGPT tunnel. [Pair a remote client](../../docs/pairing.md)
 
 ## One question
 
 Stay in the project chat and ask the project agent to consult one peer. For example: “Ask Muse for a shorter title for the release notes.”
 
-The project agent asks the Muse relay bot, which sends through local stdio. **Queued** means the hub accepted the request. A prepared Mac completed this exchange with all five peers. Cue and Instinct received manual notices. Muse’s first wait was empty. The fresh-profile installation and first linked reply remain open.
+The project agent asks the Muse relay bot, which sends through local stdio. **Queued** means the hub accepted the request. In an isolated new installation, each of the five peers returned a linked answer to its original project chat. Cue and Instinct received manual notices. Dot used a manually provisioned OAuth endpoint and checked its mailbox when prompted in ChatGPT.
 
 Muse polls its existing mailbox over HTTPS through the hub’s tunnel. Cue received a manual ID-only email and Instinct received a manual ID-only iMessage. Both read and replied through MCP.
 

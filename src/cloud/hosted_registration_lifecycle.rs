@@ -40,12 +40,26 @@ impl Operator {
         id: Uuid,
         resources: &CloudflareResources,
     ) -> io::Result<()> {
+        self.persist_route_resources(id, resources, None)
+    }
+
+    pub(super) fn persist_route_resources(
+        &self,
+        id: Uuid,
+        resources: &CloudflareResources,
+        ready_snapshot: Option<&[u8]>,
+    ) -> io::Result<()> {
         let data = serde_json::to_vec(&BoundResources {
             account_id: self.account_id.clone(),
             zone_id: self.zone_id.clone(),
             resources: resources.clone(),
         })
         .map_err(|_| unavailable())?;
+        if let Some(previous) = ready_snapshot {
+            return self
+                .record(|registry| registry.update_ready_resources(id, previous, &data))
+                .map_err(|_| unavailable());
+        }
         let now = epoch_seconds().map_err(|_| unavailable())?;
         self.record(|registry| registry.save_resources(id, &data, now))
             .map(|_| ())

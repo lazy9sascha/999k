@@ -1262,17 +1262,16 @@ mod tests {
         );
         assert_eq!(count(&p), (3, 2, 1));
         let outgoing = q.send(envelope("codex-cloud", "dot")).unwrap().message;
+        let wait_args = json!({"timeout_ms":0,"in_reply_to":outgoing.id});
+        let pending = p
+            .call(&headers(), "p-999k_wait", wait_args.clone())
+            .unwrap();
+        assert!(pending["message"].is_null());
         let mut terminal = envelope("dot", "codex-cloud");
         terminal.in_reply_to = Some(outgoing.id.clone());
         terminal.correlation_id = Some(outgoing.id.clone());
         let terminal = q.send(terminal).unwrap().message;
-        let observed = p
-            .call(
-                &headers(),
-                "p-999k_wait",
-                json!({"timeout_ms":0,"in_reply_to":outgoing.id}),
-            )
-            .unwrap();
+        let observed = p.call(&headers(), "p-999k_wait", wait_args).unwrap();
         assert_eq!(observed["message"]["id"], terminal.id);
         assert!(
             p.call(

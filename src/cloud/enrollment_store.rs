@@ -723,6 +723,25 @@ impl Registry {
         Ok(enrollment)
     }
 
+    pub(crate) fn update_ready_resources(
+        &mut self,
+        id: Uuid,
+        previous: &[u8],
+        resources: &[u8],
+    ) -> Result<()> {
+        if resources.is_empty() || resources.len() > MAX_RESOURCES {
+            return Err(RegistryError::InvalidRequest);
+        }
+        let changed = self.connection.execute(
+            "UPDATE enrollments SET resources = ?3 WHERE id = ?1 AND state = 'ready' AND removal IS NULL AND resources = ?2",
+            params![id.to_string(), previous, resources],
+        )?;
+        if changed != 1 {
+            return Err(RegistryError::Unavailable);
+        }
+        Ok(())
+    }
+
     pub(crate) fn mark_ready(&mut self, id: Uuid, now: i64) -> Result<Enrollment> {
         let id = id.to_string();
         let tx = self

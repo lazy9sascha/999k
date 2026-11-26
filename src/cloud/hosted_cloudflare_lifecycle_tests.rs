@@ -6,6 +6,7 @@ fn saved_resources() -> CloudflareResources {
     CloudflareResources {
         tunnel: ResourceState::Known(ID.to_owned()),
         dns_record: ResourceState::Known(DNS_ID.to_owned()),
+        selected_routes: None,
     }
 }
 

@@ -1278,7 +1278,9 @@ fn orca_sender_file_with(
     let pending = home.join(".orca-first-install-pending");
     let sender = "codex-cloud";
     if absent(&pending)? {
-        if fs::read_dir(&home)?.next().transpose()?.is_some() {
+        if fs::read_dir(&home)?.next().transpose()?.is_some()
+            && !crate::hosted_enrollment::address_only_home(&home)?
+        {
             return crate::orca_onboard::resolve_bearer_file(&home, sender);
         }
         write_json(&pending, &1u8)?;
