@@ -1,10 +1,11 @@
 import { atom, Button, Code, CodeView, Heading, Image, plugin, read, Select, set, Stack, Text } from 'orca'
-import { allPeersSetupRequest, cueSetupPrompt, initialTarget, managementBotPurpose, setupFor, setupTargets } from './setup'
+import { allPeersSetupRequest, cueSetupPrompt, initialTarget, managementBotPurpose, ownDomainSetupGuide, previewNotice, setupFor, setupTargets } from './setup'
 
 const opening = atom(false)
 const status = atom('')
 const target = atom(initialTarget)
 const showManagement = atom(false)
+const showOwnDomain = atom(false)
 const setupMode = atom<'guide' | 'delegate' | null>(null)
 
 function toggleManagement(): void {
@@ -42,6 +43,7 @@ export default function Panel() {
   const selection = read(target)
   const setup = setupFor(selection)
   const managementOpen = read(showManagement)
+  const ownDomainOpen = read(showOwnDomain)
   const mode = read(setupMode)
   const isInitial = selection === initialTarget
   const isCue = selection === 'cue'
@@ -51,7 +53,7 @@ export default function Panel() {
     <Stack gap="md">
       <Heading>Orca relay setup</Heading>
       <Image src="999k-field-radio-ink.png" alt="Ink drawing of a field radio" size="md" fit="contain" />
-      <Text>Open setup on the Mac that will run your local hub.</Text>
+      <Text>{previewNotice}</Text>
       <Select label="Setup target" value={selection} options={setupTargets}
         disabled={read(opening)} onChange={selectTarget} />
       <Text>Choose Initial setup for your hub or select one peer to set up its relay.</Text>
@@ -78,6 +80,14 @@ export default function Panel() {
             <Stack gap="sm">
               <Text>{isInitial ? 'Approve the address in your browser with your email and verification code.' : 'Install cloudflared on this Mac and follow the terminal instructions.'}</Text>
               <Button disabled={read(opening)} onPress={() => openSetup('hosted')}>{isInitial ? 'Reserve hosted address' : 'Set up hosted address'}</Button>
+            </Stack>
+          )}
+          {isInitial && (
+            <Stack gap="sm">
+              <Button onPress={() => set(showOwnDomain, !ownDomainOpen)}>
+                {ownDomainOpen ? 'Hide own-domain guide' : 'Use my own domain'}
+              </Button>
+              {ownDomainOpen && ownDomainSetupGuide.map((step) => <Text key={step}>{step}</Text>)}
             </Stack>
           )}
           {isCue && (
