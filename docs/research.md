@@ -61,7 +61,8 @@ On an Apple Silicon guest with Orca 1.4.268, the anonymous release download retu
 
 ### New Orca installation with a hosted address
 
-An isolated Apple Silicon guest started with a new 999K home. The installer
+An isolated Apple Silicon guest tested the hosted onboarding candidate
+with a new 999K home. The installer
 reserved one HTTPS address before adding peer routes. Each of the five peers
 returned a matching reply to its originating Orca chat. The queue recorded
 one original, one ACK, and one linked reply for each completed exchange.
@@ -75,7 +76,8 @@ one original, one ACK, and one linked reply for each completed exchange.
 | Dot | The operator provisioned a dedicated Cloudflare Managed OAuth app on the hosted address. Dot read and replied after a prompt in ChatGPT. One operator-scheduled lookup returned the linked answer to the original Orca chat. |
 
 The direct Dot test covered OAuth approval, authenticated tool calls, and
-the project round trip. Automatic Events and token refresh remain unverified
+the project round trip. The public 0.2.2 release ran through separate install,
+loopback, and restart checks. Automatic Events and token refresh remain unverified
 for that path. The private-tunnel Events test is recorded separately.
 [DOT-03](#dot-03-standalone-terminal-reply-events)
 

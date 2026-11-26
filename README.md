@@ -1,16 +1,20 @@
 # P-999K
 
-<img alt="A worn 999K field radio with a bent antenna" src="docs/assets/999k-field-radio-ink.png" width="240">
+**Ask Dot, Muse, and GrokBot for help from your Orca project chat.**
 
-Ask an agent you already use to help with an Orca project. For example,
-enter “Ask Muse to review these install instructions.” The answer appears
-in the same project chat.
+Ask Dot to challenge a migration plan. Ask Muse to shorten the release
+notes. Send each request from the same Orca project chat and get the
+answer there, linked to the original question. If a peer takes longer,
+the relay can check the same request again.
 
-## Connect your first agent
+[Install P-999K and connect your first agent](docs/orca.md)
 
-Use an Apple Silicon Mac with Orca 1.4.268 or later. Connect Dot, Muse,
-GrokBot, Cue, or Instinct from **P-999K → Initial setup**.
-[Install P-999K and connect a peer](docs/orca.md)
+<img alt="A worn 999K field radio with a bent antenna" src="docs/assets/999k-field-radio-ink.png" width="200">
+
+## What you need
+
+Use an Apple Silicon Mac with Orca 1.4.268 or later. Connect Dot (ChatGPT),
+Muse, GrokBot, Cue, or Instinct. Each agent keeps its own app and mailbox.
 
 P-999K is experimental. Use a hosted address or connect through your own
 HTTPS domain. The hub and queue stay on your Mac when you switch.

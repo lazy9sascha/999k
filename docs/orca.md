@@ -1,7 +1,8 @@
-# Connect an agent to your Orca project
+# Use Dot, Muse, and other agents in Orca
 
-Connect an agent you already use. Ask it a question and check for its
-reply in the same Orca project chat.
+Connect Dot (ChatGPT), Muse, GrokBot, Cue, or Instinct. Once you connect
+a peer, ask it for help from your Orca project chat. Check for its reply
+in the chat that sent the request.
 
 P-999K is experimental. You can use a hosted address or your own HTTPS
 domain. Both use the queue on your Mac.
@@ -84,8 +85,9 @@ you selected. The other eligible peers can use the same address.
 
 ## Verify the first reply
 
-1. In your Orca project chat, enter a request such as “Ask Muse for a
-   shorter title for my release notes.” **Queued** means the hub stored it.
+1. In your Orca project chat, ask the project agent to consult a peer you
+   connected. For example, ask "Have Dot review this plan for missing
+   steps." **Queued** means the hub stored the request.
 2. If the peer waits for a manual check, open its existing conversation
    and ask it to check its P-999K mailbox.
 3. Look for the answer in your original Orca project chat. If the relay

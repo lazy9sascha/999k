@@ -1,7 +1,8 @@
 # P-999K
 
-Ask an agent you already use from your Orca project chat. The relay returns
-the peer's answer to that chat.
+Ask Dot, Muse, GrokBot, Cue, or Instinct from your Orca project chat. Your
+agents stay in their existing apps. Each answer returns to the Orca
+project chat, linked to its request.
 
 P-999K is experimental. Choose a hosted address or use your own HTTPS domain.
 The hub and queue stay on your Mac when you switch domains.
@@ -10,7 +11,7 @@ The hub and queue stay on your Mac when you switch domains.
 
 Use an Apple Silicon Mac with Orca 1.4.268 or later. The panel uses the 0.2.2
 CLI at `$HOME/.local/bin/999k`. The catalog ID is `lazy9sascha.p-999k`.
-[Install P-999K and connect an agent](https://github.com/lazy9sascha/p-999k/blob/main/docs/quickstart.md#connect-orca-to-your-existing-peers)
+[Install P-999K and connect an agent](https://github.com/lazy9sascha/p-999k/blob/main/docs/orca.md)
 
 Orca asks you to approve the plugin's permissions. The plugin uses
 `workspace:read` to find your workspace and `terminal:send` to open a

@@ -1,209 +1,142 @@
 # Architecture
 
-999K keeps its queue in SQLite on your Mac. The hub applies mailbox policy
-and stores linked replies. Each agent’s capabilities determine how it receives
-work. Some agents poll, some can receive a wake, and a native Codex worker can
-claim requests for a local thread. See [agent capabilities](agents.md) for the
-connection and evidence for each agent.
+P-999K lets an Orca project agent ask Dot, Muse, GrokBot, and other
+connected agents for help. Each peer keeps its own app and mailbox. The
+answer returns to the Orca project chat that asked.
 
-- [Big picture](#big-picture)
-- [Connection modes](#connection-modes)
-- [Components](#components)
-- [Message lifecycle](#message-lifecycle)
-- [Auth model](#auth-model)
-- [Failure, retry, and duplicate rules](#failure-retry-and-duplicate-rules)
-- [Agent triage](#agent-triage)
-- [Limitations](#limitations)
+[Connect an agent in Orca](orca.md) · [Verified connections](research.md#new-orca-installation-with-a-hosted-address)
 
 ## Big picture
 
 ```mermaid
 flowchart LR
-    subgraph Cloud["Cloud agents"]
-        Muse["Muse (connector)"]
-        Grok["Grok Bot (routine)"]
-        Mail["Cue and Instinct clients"]
-    end
-    TG["Public HTTPS tunnel"]
-    Email["Email provider"]
+    Project["Orca project chat"]
     subgraph Mac["Your Mac"]
-        SSH["optional reverse tunnel<br/>(999k run)"]
-        Hub["Hub on 127.0.0.1:54843<br/>/muse/mcp · /grok/mcp · /dot/mcp · /codex/mcp"]
-        Q[("SQLite queue<br/>pigeonmq-cloud-queue.sqlite3")]
-        Wake["Grok wake notifier<br/>(inside the hub)"]
-        Relay["One optional email relay"]
-        Receiver["Common /receiver API"]
-        Worker["Codex local native worker<br/>codex-local"]
-        Native["Bound local Codex thread"]
-        Events["Shared Events runtime<br/>codex-cloud / optional dot"]
+        Relay["Orca relay bot for one peer"]
+        Hub["999K hub"]
+        Queue[("SQLite queue")]
     end
-    Muse -- "MCP over HTTPS + Bearer" --> TG
-    Grok -- "MCP over HTTPS + Bearer" --> TG
-    Mail -- "MCP over HTTPS + Bearer" --> TG
-    TG --> SSH --> Hub --> Q
-    Q -. "read-only scan" .-> Relay
-    Relay -- "destination and message ID" --> Email
-    Email -. "arrival hint, not message text" .-> Mail
-    Q -. "read-only scan" .-> Wake
-    Wake -- "POST {message_id, mailbox}" --> Grok
-    Worker <--> Receiver
-    Receiver <--> Q
-    Worker <--> Native
-    Q -. "outbox" .-> Events
+    Ingress["Authenticated remote connection"]
+    Peer["Connected agent in its existing app"]
+
+    Project -->|"Ask the relay"| Relay
+    Relay -->|"Return the linked answer"| Project
+    Relay <-->|"Local MCP over stdio"| Hub
+    Hub <-->|"Store requests, replies, and ACKs"| Queue
+    Hub <-->|"Selected mailbox route"| Ingress
+    Peer <-->|"Read and reply over MCP"| Ingress
 ```
 
-- The diagram shows a public HTTPS tunnel. `run` requires a tunnel mode. See [Tunnel URLs](tunnels.md).
-- The hub only binds to loopback. The tunnel is transport only. It does not grant mailbox access.
-- The queue records requests, replies, and acknowledgments.
+The relay's local MCP connection can send to one peer and read replies to
+its own requests. Each connected peer has its own relay and mailbox.
+Several relays can answer in the same project chat. The plugin opens setup
+terminals. The relay bot handles requests after setup.
+
+The hub stores every accepted request before the peer reads it. Each relay
+keeps the Orca question ID and the original 999K message ID. It queries the
+hub for a reply to that original. If the first wait ends early, the relay
+can schedule a later check without sending the request again. When the
+relay finds the reply, Orca uses the question ID to return it to the
+originating project chat. [Pending replies](troubleshooting.md#check-a-pending-orca-reply)
+
+For hosted addresses, the registrar provisions the HTTPS route and tunnel.
+Supabase verifies email during address reservation. Cloudflare carries
+remote MCP traffic. The queue and mailbox credentials stay on your Mac.
+You can route peers through [your own HTTPS domain](orca.md#use-your-own-https-domain)
+using the same hub and queue.
 
 ## Connection modes
 
-Four ways an agent can be connected. They differ in **who starts the conversation**. In every mode, mail waits in the queue while the recipient is offline and is not lost. Only modes A and C can start the agent. In B and D the agent gets mail when it next checks the hub. **C. Event push is the intended design** wherever the agent's platform supports event subscriptions. A, B, and D cover agents whose platforms do not support event subscriptions, or serve as interim paths.
+Peers read and reply through the hub. Their apps differ in how they learn
+that work is pending. Wake signals carry identifiers. The app reads the
+request from its own mailbox.
 
-| Mode | Who initiates | Needs a public URL? | Agent learns of new mail by | Used by |
-| --- | --- | --- | --- | --- |
-| **A. Wake + pull** | Hub sends a webhook; agent then calls the hub | Yes, for the agent's MCP calls. The agent's webhook URL is outbound from the Mac. | Webhook POST with the message ID | Grok Bot |
-| **B. Pull only (connector or polling)** | Agent calls the hub's MCP route | Yes | Only when it polls (`p-999k_wait`/`p-999k_inbox`) or a user asks it to check | Muse |
-| **C. Event push (MCP Events)** | Hub sends an event to the agent platform. The agent then calls the hub. | Direct HTTPS or a private tunnel | Signed platform callback | Codex Work Cloud and Dot |
-| **D. Local bound receiver** (Mac desktop thread) | A native worker uses the common receiver API and the bound app thread | No | The worker claims through the hub | Codex Local (`codex-local`) |
+| Mode | How the app starts work | Example |
+| --- | --- | --- |
+| A. Wake and pull | A webhook starts a run. The app reads the request from the hub. | GrokBot |
+| B. Pull only | The app polls the mailbox or checks it when prompted. | Muse |
+| C. MCP Events | A signed callback notifies a platform subscription. | Codex Work Cloud and Dot with a supported subscription |
+| D. Local bound receiver | A local worker claims the request and starts a turn in a bound app thread. | Codex Local |
 
-### A. Wake + pull
+<a id="a-wake--pull"></a>
 
-```mermaid
-sequenceDiagram
-    participant S as Sender
-    participant Q as Queue (Mac)
-    participant W as Wake notifier
-    participant G as Grok Bot routine
-    S->>Q: p-999k_send → pending
-    W->>Q: read-only scan (every 5 s)
-    W->>G: POST webhook {message_id, mailbox}
-    G->>Q: p-999k_read(message_id) via /grok/mcp
-    G->>Q: p-999k_reply → reply + ACK in one transaction
-```
+### A. Wake and pull
 
-- The webhook body has only `message_id` and `mailbox`. It carries no message text and no hub identity. **Use one webhook per hub**, or the agent can't tell which hub to read from.
-- The agent must treat the wake as a hint and re-read the message itself.
-- A lost wake loses nothing: the message stays `pending` and can be found by polling.
-- Two notifiers pointed at the same webhook will wake the agent twice for one message. The agent must ignore repeats (see [duplicates](#failure-retry-and-duplicate-rules)).
+The GrokBot notifier sends `message_id` and `mailbox` to the configured
+webhook. The routine reads the request from `/grok/mcp` and posts a linked
+reply. A missing wake leaves the request queued. Use one webhook per hub so
+the routine knows which hub to read. [GrokBot wake setup](quickstart.md#5-optional-grok-bot-wake)
 
 ### B. Pull only
 
-The agent's app registers the hub as an MCP connector (Muse), or the agent calls the route over plain HTTP JSON-RPC from its own computer. There is no wake. Mail is seen only when the agent checks. This is the simplest mode and the one to try first.
+Muse polls its mailbox. A peer can also check when prompted in its existing
+app. In the isolated Orca installation, Cue received an ID-only email and
+Instinct received an ID-only iMessage. Both read and replied through MCP.
 
-#### Cue and Instinct: email is a notification, not a mailbox
+The optional Mac email relay reads eligible arrivals and passes the
+destination and message ID to a provider command. Each mailbox has its
+own destination and activation point. A notification failure leaves the
+request queued. The provider's acceptance confirms only the notification
+step. [Email setup](configuration.md#opt-in-to-email-arrivals)
 
-1. **Send.** The sender calls `p-999k_send` on its own authenticated MCP route. The hub stores the message in the recipient's SQLite mailbox on the Mac. Cue and Instinct each have a route and a Bearer; they do not need separate hubs or queues.
-2. **Notify (optional).** One relay on the Mac serves all opted-in mailboxes. Each has its own destination and activation point. The relay checks new eligible ordinary messages and linked replies, then passes only the destination and 999K message ID to the configured provider command. It does not send the message text, claim it, or ACK it. An email failure leaves the message available over MCP.
-3. **Read and reply.** A remote client reaches its route (`/cue/mcp` or `/instinct/mcp` by default) through the reverse tunnel. It uses its own Bearer to call `p-999k_read` with the ID, or finds the message with `p-999k_inbox`. Calling `p-999k_reply` stores the linked reply and ACKs the original in one transaction. The sender reads that reply from its own mailbox. 999K does not ingest replies to the notification email.
+<a id="c-event-push-intended-design"></a>
 
-The November 25 Orca check used an explicit email notice for Cue and an explicit iMessage notice for Instinct. Each peer posted its answer through MCP. [Peer verification](research.md#orca-onboarding-and-peer-returns-2026-11-25)
+### C. MCP Events
 
-Enabling email for a second mailbox updates the shared relay's configuration rather than starting another service. Removing the last opted-in mailbox stops the managed relay. See [email setup](configuration.md#opt-in-to-email-arrivals).
+A peer subscribes through its platform's MCP Events support. The hub
+queues a signed callback in its outbox and retries delivery. The platform
+starts or resumes the bound conversation. The peer reads the message and
+replies through the same mailbox route.
 
-A provider's acceptance proves it accepted a notification for sending. It does not prove inbox delivery, an automatic agent wake, a mailbox read, or a reply. The [Cue and Instinct research log](research.md#mail-01-cue-and-instinct-on-013) records the observed linked replies separately from provider acceptance.
-
-### C. Event push (intended design)
-
-The agent subscribes to its mailbox through its platform's event system (MCP Events). When mail arrives, the hub sends a signed event callback. The platform starts or resumes the agent. The agent then reads and replies over MCP, as in the other modes. This is the target design: no polling, no per-agent webhook files, and the platform knows which subscription (and so which hub) the event came from.
-
-```mermaid
-sequenceDiagram
-    participant S as Sender
-    participant Q as Queue + hub (Mac)
-    participant P as Agent platform
-    participant A as Agent
-    A->>Q: subscribe (MCP Events) via /<agent>/mcp
-    S->>Q: p-999k_send → pending
-    Q->>P: signed event callback (durable outbox, retried)
-    P->>A: start or resume a turn
-    A->>Q: p-999k_read → p-999k_reply (reply + ACK in one transaction)
-```
-
-Where it stands:
-
-- **Dot** used MCP Events subscriptions in PigeonMQ Local, with exchanges and subscription renewal recorded there.
-- **Codex Cloud** completed one event-triggered exchange in PigeonMQ Local on 2026-11-13. The "Work delegation" workflow built on it was not adopted for normal work (PigeonMQ Local, `docs/decisions/0004-do-not-adopt-work-event-delegation.md`). That decision explicitly does not reject MCP Events itself.
-- This hub verified automatic Codex event runs and linked replies in web Work and app-created desktop Work Cloud. See [CODEX-08](research.md#codex-08-work-cloud-events-on-this-hub).
-- Dot terminal-reply Events woke the intended conversation without polling. Authenticated reads checked the exact linked replies. See [DOT-03](research.md#dot-03-standalone-terminal-reply-events).
-- Codex Local uses its separate native worker and mailbox.
-- Cloud acceptance requires a callable Cloud conversation and a platform subscription. A local native turn does not establish either.
+Codex completed automatic exchanges in web Work and app-created desktop
+Work Cloud. Dot received terminal-reply Events through a private tunnel.
+The direct Dot OAuth test used a prompted mailbox check.
+[Codex Events test](research.md#codex-08-work-cloud-events-on-this-hub) ·
+[Dot Events test](research.md#dot-03-standalone-terminal-reply-events) ·
+[Direct Dot test](research.md#new-orca-installation-with-a-hosted-address)
 
 #### Codex MCP and Events
 
-This hub implements the Codex Cloud route restored from PigeonMQ Local history (`src/adapters/codex/`, `src/events/`):
-
-- `POST /codex/mcp` with the mailbox tools, served when the hub loads the Codex profile and its registration.
-- `codex-prepare --queue DB --auth-policy P --registration R` prepares its Events storage.
-- Events callbacks are signed and go through a durable outbox.
-- `run` loads the standard Codex policy and central registration. It checks Events storage before starting the hub.
-- The official Secure MCP Tunnel client connects to the Codex route on loopback. Mailbox setup does not select a hub transport.
-
-The Codex endpoint uses one rmcp Streamable HTTP service for mailbox tools and configured Events.
-The client must send `Accept: application/json, text/event-stream` and use string or signed 64-bit integer request IDs.
-When Events is configured, the endpoint adds the Events capability to successful MCP discovery responses.
-
-Web Work and app-created desktop Work Cloud completed automatic event runs and linked replies on this hub.
-Native desktop UI clicks were not tested. Temporary test watches were paused after acceptance.
-These results do not establish another Cloud surface or unattended recovery. See [CODEX-08](research.md#codex-08-work-cloud-events-on-this-hub).
+`/codex/mcp` exposes mailbox tools and the Events capability when its policy
+enables Events. The hub checks that the subscription store is ready before
+serving that profile. The platform subscription binds delivery to the
+intended Cloud conversation. [Codex Cloud setup](configuration.md#codex-cloud-operation)
 
 ### D. Local bound receiver
 
-A local native worker uses the common authenticated `/receiver` API for queue operations.
-The worker for `codex-local` lives in `src/adapters/codex/receiver.rs` and `src/bin/999k-codex-receiver.rs`.
-It binds the existing local Codex thread, native socket, working directory, and registration through a private file.
-The worker does not open the database. The hub owns claims, lease renewal, admission, reply, and ACK.
-
-The default command checks the protected binding without starting native execution.
-`--run` processes one request. `--run --serve` keeps the foreground worker active for successive requests.
-Uncertain work requires reconciliation. The worker does not submit that input again.
-See [receiver configuration](configuration.md#local-codex-receiver) for command flags and scope.
+The native worker claims work for `codex-local` through `/receiver`. A
+private binding selects the Codex thread, native socket, and working
+directory. The hub owns claims, leases, and atomic completion. After an
+uncertain turn, the worker checks the existing native history before
+accepting more work. [Local Codex receiver](configuration.md#local-codex-receiver)
 
 ### Codex paths and shared operations
 
-| Path | Shared queue behavior | Agent-specific behavior |
+| Path | Queue responsibility | Codex responsibility |
 | --- | --- | --- |
-| Mailbox observation | Read, wait, and inbox inspect permitted messages without claim or ACK. | Each profile applies its wire format and authorization. Observation does not start a model. |
-| Leased receiver | `/receiver` handles claim, renew, admission, reconciliation, and atomic completion. | The local Codex worker submits native turns for `codex-local` through the protected binding. |
-| Cloud MCP and Events | `/codex/mcp` exposes mailbox tools and shared subscription, callback, and outbox behavior. | The Cloud platform must accept a subscription and invoke the intended `codex-cloud` conversation. |
-
-Code boundaries follow those responsibilities:
-
-- `src/adapters/codex/{mailbox,receiver,events}.rs` holds the Codex bindings.
-- `src/receiver/receiver_api.rs` and `src/receiver/receiver_client.rs` hold the common receiver protocol.
-- `src/events/` holds shared policy, subscriptions, callback transport, delivery, and runtime helpers.
-- `src/mcp/mcp_request.rs` holds shared strict JSON parsing, faults, and request context.
-
-The queue and local receiver source baseline is 999K revision `4a5fa0ad3556aa816a3353c511a7bfeaa5419c5f`.
-The Events restoration uses historical revision `e399161`, including the former `dot_*` Events modules.
-The Cloud extraction keeps these helpers under shared namespaces and omits unrelated local service startup paths.
-Synthetic tests establish local behavior only. They do not establish a live Cloud subscription, callback, conversation turn, reply, or ACK.
+| Mailbox tools | Apply mailbox policy and inspect or update permitted messages. | Use the selected profile's MCP route. |
+| `/receiver` | Claim, renew, reconcile, and complete work. | Run the request in the bound local thread. |
+| `/codex/mcp` with Events | Send signed callbacks from the durable outbox. | Start the authorized Cloud conversation through its subscription. |
 
 ## Components
 
-| Component | What it does | Where |
+| Component | Responsibility | Source |
 | --- | --- | --- |
-| **Hub** (`serve-hub`) | Loopback HTTP server. One route per agent profile, each with its own policy. Rejects non-POST, chunked bodies, and oversized requests. Shares up to 8 connection workers across all routes. | `src/local_http.rs` |
-| **Queue** | SQLite. Stores messages, leases, replies, ACKs. Created explicitly by `init`/`setup-muse`, never by the listener. | `src/lib.rs` |
-| **Agent adapters** | Per-agent MCP, native receiver, and Events bindings over the same queue. | `src/adapters/{codex,muse,grok_bot,dot}` |
-| **Runner** (`run`) | Supervises `serve-hub` and writes local recovery state. A tunnel mode is required. Set `RADIO999K_TUNNEL=external` with a public URL, or `RADIO999K_TUNNEL=tunnl` for testing. For an existing private hub, see [one LaunchAgent](launchd.md). `--local-only` is for loopback testing only. | `src/cloud/cloud_service.rs` |
-| **Grok wake notifier** | Runs inside the hub with an active Grok policy and a selected wake credential source. Read-only on the queue. | `src/adapters/grok_bot/grok_wake.rs` |
-| **Email relay** (`notify-arrivals`) | Optional service on the Mac. Reads eligible arrivals and calls the configured provider command with a destination and message ID. | `src/arrival_notify.rs` |
-| **Common receiver API** | Authenticated claims, leases, admission, and atomic completion. | `src/receiver/receiver_api.rs`, `src/receiver/receiver_client.rs` |
-| **Codex local worker** | Native execution in one protected existing local thread for `codex-local`. | `src/adapters/codex/receiver.rs`, `src/bin/999k-codex-receiver.rs` |
-| **Shared Events** | Subscription lifecycle, signed callbacks, durable outbox, and delivery. | `src/events/` |
-| **Shared MCP requests** | Strict JSON parsing, faults, and request context. | `src/mcp/mcp_request.rs` |
-| **Credentials** | Bearer tokens for built-in apps live in the macOS Keychain. Isolated local mailboxes use a mode 0600 token file. Policy files hold only their SHA-256. | `src/cloud/cloud_credentials.rs` |
-| **Setup / discover** | Creates the private runtime folder and per-app settings drafts; detects installed app bundles. | `src/cloud/cloud_setup.rs` |
-| **Local mailboxes** | `init <agent>` stages isolated mailboxes and, when a triage record is present, validates it. The normal runner never loads them. | `src/cloud/runtime_profiles.rs`, `src/cloud/runtime_triage.rs` |
+| Orca plugin and peer setup | Open the setup terminal and bind the relay to one peer. | `plugins/p-999k/`, `src/cloud/orca_onboard.rs` |
+| Local MCP client | Connect an authorized relay to the hub's private Unix socket. | `src/cloud/stdio_mcp.rs` |
+| Hub | Serve authenticated profiles over loopback HTTP and optional private Unix sockets. | `src/local_http.rs` |
+| Queue | Store messages, leases, replies, and acknowledgments in SQLite. | `src/lib.rs` |
+| Adapters | Apply profile-specific MCP, Events, and receiver behavior. | `src/adapters/`, `src/events/`, `src/receiver/` |
+| Runner | Supervise the hub and its selected tunnel or private companions. | `src/cloud/cloud_service.rs` |
+| Registrar | Reserve hosted addresses and provision Cloudflare routes and tunnels. | `src/bin/999k-registration.rs` |
+| Wake and email notifiers | Read eligible arrivals and send notification identifiers. | `src/adapters/grok_bot/grok_wake.rs`, `src/arrival_notify.rs` |
 
 ### Built-in profile catalog
 
-`src/mcp/catalog.rs` defines the built-in routes, policy filenames, CLI options, and status keys. The CLI, supervisor, HTTP hub, and setup commands use those definitions. The hub still applies each adapter's own request limits, authentication, and protocol behavior.
-
-Codex Cloud also uses a shared mailbox definition for its identity and optional Events support. HTTP route metadata does not grant a mailbox identity, enable a route, or change credential custody. Private policy and registration still control access. This is an internal catalog, not a plugin system or a new onboarding command.
-
-An explicit [profile manifest](configuration.md#select-existing-hub-profiles) can select the routes and private policies for these existing adapters. The descriptor still sets the adapter, request limits, and status keys. The policy and registration still authorize each operation. The manifest does not change the listener, ports, or Events behavior.
+The CLI and hub use `src/mcp/catalog.rs` for built-in profile IDs, routes,
+and policy filenames. A [profile manifest](configuration.md#select-existing-hub-profiles)
+can select routes and policies for an existing adapter. The hub applies that
+adapter's mailbox policy, registration, and limits.
 
 ### Routes
 
@@ -218,8 +151,9 @@ An explicit [profile manifest](configuration.md#select-existing-hub-profiles) ca
 | `POST /receiver` | Common leased receiver | `pigeonmq-cloud-codex-local-policy.json` exists. `run` uses the central registration. |
 
 A route whose policy is missing returns `404 profile_disabled`.
-`run` loads each configured profile. Lower-level `serve-hub` accepts explicit policy and registration paths.
-The hub keeps older generic routes (`/mcp`, `/rpc/*`, `/messages/send`) behind `--auth-policy`.
+`run` loads the configured profiles. `serve-hub` accepts explicit policy
+and registration paths. The older generic routes (`/mcp`, `/rpc/*`,
+and `/messages/send`) require `--auth-policy`.
 
 For sandbox use, named local profiles are registered from a dedicated private home and share the same mailbox handler. They are not in the built-in catalog and are never loaded by the runner. The explicit bounded loopback listener keeps them separate from built-in roles. See [local mailbox setup](configuration.md#stage-local-mailboxes).
 
@@ -283,28 +217,32 @@ stateDiagram-v2
     end note
 ```
 
-1. **Send.** The sender's policy must allow `send` to that recipient. The queue returns a receipt. A receipt means "stored", not "seen".
-2. **Observe.** `read`, `wait`, and `inbox` only look. They never ACK, so reading twice is safe.
-3. **Reply.** The reply and the ACK of the original commit in **one transaction**. Either both exist or neither does. After a restart the original stays `replied` with the same reply ID and is not delivered again.
-4. **Terminal.** The reply is an ordinary message back to the sender. The sender confirms it with `p-999k_confirm_terminal`, which ACKs the reply without creating another one.
+A send receipt confirms that the hub stored the request. The read, wait,
+and inbox tools leave delivery state unchanged. A reply stores the answer and
+acknowledges the original in one SQLite transaction. The sender can
+acknowledge the answer separately with `p-999k_confirm_terminal`.
+Delivery to an Orca project chat happens after the relay reads the linked
+reply.
 
-A claim moves an ordinary request to `dead_lettered` after five expired delivery attempts. Observation does not count as an attempt. RPC requests, terminal replies, and completed messages are excluded. The queue keeps the message, receipt, admission records, and callback history. Active delivery skips dead-lettered requests. An operator can [inspect dead-letter metadata](configuration.md#dead-letter-inspection) through the local CLI or the opt-in generic HTTP API. There is no revival operation.
+For leased requests, the next claim moves an ordinary request to
+`dead_lettered` after five expired attempts. The queue keeps the stored request and its metadata. [Inspect dead-lettered requests](configuration.md#dead-letter-inspection)
 
 ## Auth model
 
-Transport, mailbox authorization, wake credentials, and peer registration
-have separate checks.
+The ingress admits traffic to selected routes. The hub authorizes the
+mailbox and operation. Wake credentials allow a notifier to start a run.
 
 | Layer | Input | Stored | Protects |
 | --- | --- | --- | --- |
-| Tunnel | SSH key `pigeonmq-cloud-tunnel-ed25519` + pinned host key in `pigeonmq-cloud-tunnel-known_hosts` | Runtime folder, mode 600 | Who can open the tunnel; that it goes to the real tunnl.gg |
-| Mailbox | Per-app Bearer token | Built-in apps use the macOS Keychain. Isolated local mailboxes use a mode 0600 token file. The policy keeps only `token_sha256`. | Which mailbox and operations |
+| Tunnel | SSH key `pigeonmq-cloud-tunnel-ed25519` + pinned host key in `pigeonmq-cloud-tunnel-known_hosts` | Runtime folder, mode 600 | Which SSH client can connect and which server it trusts |
+| Mailbox | Per-app Bearer token | The macOS Keychain or a private credential file, depending on the setup. The policy stores `token_sha256`. | Mailbox and operation access |
 | Wake | Webhook URL + `Authorization` header | One macOS Keychain item selected by `grok-webhook-keychain`. Legacy mode uses two private files. | Who can start an agent run |
 | Registration | `pigeonmq-cloud-registration.json` | Runtime folder, mode 600 | Which mailboxes exist and whether they are revoked |
 
-The hub checks each MCP request in this order.
+The hub applies the following checks to a request.
 
-1. Path must be a known route with an enabled profile.
+1. The hub checks the request's Host and rejects browser Origin headers.
+   The path must match an enabled profile.
 2. For a direct [Cloudflare Access binding](configuration.md#dot-and-codex-cloud-through-direct-oauth)
    on `/dot/mcp` or `/codex/mcp`, the hub verifies the signed assertion and
    loads the configured mailbox Bearer from a private file.
@@ -315,10 +253,8 @@ The hub checks each MCP request in this order.
 
 Muse and Grok Bot reject the retired top-level `senders` field. The central registry determines peer access. See the [policy format](configuration.md#policy-format) before upgrading an existing hub.
 
-Things to know:
-
-- **tunnl.gg terminates TLS** when you opt in with `RADIO999K_TUNNEL=tunnl`. The provider can see the Bearer token and message bodies. Use synthetic data until you accept that, or use a different tunnel.
-- Source IP is never used for auth. Cloud agents call from shared egress IPs.
+The public TLS endpoint can read request headers and bodies. The origin
+can be hosted or under your control. [HTTPS ingress and TLS](tunnels.md#use-your-own-https-origin)
 
 ## Failure, retry, and duplicate rules
 
@@ -326,10 +262,10 @@ Things to know:
 
 | Situation | Result |
 | --- | --- |
-| Same reply sent again for the same original | Safe; no second reply. |
-| Different reply for an already-answered original | `reply_conflict`. Treat as "already answered"; don't reply again. |
+| Same reply sent again for the same original | The queue returns the existing reply. |
+| Different reply for an already answered original | The hub returns `reply_conflict`. |
 | Transaction fails mid-way | Nothing is stored. Retry is safe. |
-| Hub restarts | Replies and ACKs survive. Answered messages are not redelivered. |
+| Hub restarts | Replies and ACKs survive. Delivery skips answered requests. |
 | Send repeated with the same idempotency key | Stored once. |
 
 ### Runner (`run`)
@@ -354,51 +290,26 @@ The foreground runner does not install startup services. Use an existing OS supe
 
 | Webhook response | Behavior | `grok-wake-status.json` |
 | --- | --- | --- |
-| 2xx | Delivered. | `running` |
+| 2xx | The webhook accepted the notification. | `running` |
 | 408, 5xx, network error | Up to 3 tries (2 s, 5 s backoff), at most 3 rounds per message. | `running` |
 | 429 | Pause 5 minutes. | `rate_limited` |
 | 401 / 403 | Stop sending. File mode resumes after credentials change. Keychain mode requires a hub restart after correction. | `auth_blocked` |
 | Notifier can't start | Hub keeps serving; only the wake is off. | `failed` |
 
-The notifier also caps itself at 30 wakes per hour. It never claims, leases, or ACKs. A missing wake loses nothing.
+The notifier sends at most 30 wakes per hour. The hub keeps the request
+queued when a wake fails.
 
 Keychain mode caches the paired credential once at startup. An unreadable item blocks the notifier, not the hub.
 It does not fall back to private files. Fix access under the hub account and process. Then restart the hub.
 File mode reads `grok-webhook-url` and `grok-webhook-auth` for each send. A Grok entry in the [profile manifest](configuration.md#select-existing-hub-profiles) can select a separate private directory for those files. It does not change the wake state or lock location.
 See [Grok wake setup](quickstart.md#5-optional-grok-bot-wake).
 
-### What the agent must do
-
-- Re-read the message with `p-999k_read`. Never trust the webhook body.
-- Handle each `message_id` once. Ignore repeat wakes for the same ID.
-- On `reply_conflict`, stop: it's already answered.
-- Send a normal `User-Agent` header. Some tunnel paths return 403 without one.
-
 ## Agent triage
 
-**Agent triage** is how a new agent gets connected:
-
-**triage prompt → capability row → triage rules → adapter type**
-
-1. **Triage prompt.** Send the [agent triage prompt](agents.md#agent-triage-prompt) to the agent. It answers about itself, with `unknown` instead of guesses.
-2. **Capability row.** Its answer is one row of the [capability table](agents.md#capability-table).
-3. **Triage rules.** Run the row through the rules below.
-4. **Adapter type.** The result is the connection mode (A–D) to use or build.
-
-After you pick a type, write `<home>/triage/<agent>.json` and, for a supported local mailbox, run `init <agent>`. See [Triage file to init](#triage-file-to-init).
-
-`discover` only detects installed app bundles (ChatGPT/Codex, Muse, Grok Bot) and writes settings drafts (`src/cloud/cloud_setup.rs`, `discover_at`). The A/B/C/D rules are a manual checklist. `init <agent>` checks a locally staged record.
-
-### Known agents
-
-An agent that has already been triaged doesn't need the flow again. For Grok Bot, setup uses the hub's selected wake credentials plus the endpoint and token on the agent side ([configuration](configuration.md#known-agents-what-setup-really-is)).
-
-Credential setup has separate issuance, custody, client configuration, and authenticated-use stages.
-The [credential commands](configuration.md#credential-custody-and-handoff) check custody, recover existing tokens, and prepare protected client references.
-Explicit `reissue` stores a new token in a durable private file and replaces only its policy digest.
-Retries reuse the same saved token. Ordinary startup never reissues an existing digest.
-They never infer agent receipt from a digest, clipboard copy, or file export.
-Connectors without file-reference support require secure credential entry through their own supported interface.
+Triage selects a connection mode for an unfamiliar app. It checks what
+the app can authenticate to, where it runs, and how it starts work. App
+bundle detection by `discover` finds candidate apps. The connection check
+uses the actual app and mailbox. [Triage an agent](agents.md#agent-triage-prompt)
 
 ### Triage rules
 
@@ -407,13 +318,13 @@ flowchart TD
     P["Triage prompt<br/>(agents.md)"] --> R["Capability row<br/>(yes / no / unknown + source)"]
     R --> L{"Runs as a thread in a<br/>desktop app on this Mac?"}
     L -- yes --> D["D. Local bound receiver"]
-    L -- no --> M{"Can it call a remote<br/>HTTPS MCP server<br/>with a Bearer header?"}
+    L -- no --> M{"Can it authenticate to a<br/>remote HTTPS MCP server?"}
     M -- no --> X{"Can it only expose<br/>its own endpoint?"}
     X -- yes --> N["Not supported yet<br/>(hub would have to call it)"]
     X -- "no / unknown" --> U["Unsupported or unknown:<br/>probe more"]
     M -- unknown --> U
     M -- yes --> E{"Platform supports event<br/>subscriptions (MCP Events)?"}
-    E -- yes --> C["C. Event push<br/>(intended)"]
+    E -- yes --> C["C. MCP Events"]
     E -- "no / unknown" --> W{"Has an inbound trigger<br/>(webhook) that starts a run?"}
     W -- yes --> A["A. Wake + pull"]
     W -- "no / unknown" --> B["B. Pull only"]
@@ -422,7 +333,7 @@ flowchart TD
 | Capability row says | Adapter type |
 | --- | --- |
 | Lives in a desktop app thread on the Mac | **D. Local bound receiver** |
-| MCP client + event subscriptions | **C. Event push** (preferred when available) |
+| MCP client with event subscriptions | C. MCP Events |
 | MCP client + webhook trigger | **A. Wake + pull** |
 | MCP client, no trigger | **B. Pull only** (agent polls or the user prompts it) |
 | Can only host its own MCP/HTTP endpoint | Not supported in this release |
@@ -431,7 +342,7 @@ flowchart TD
 Extra checks before you pick A, B, or C:
 
 - **Sleeps?** If the agent's computer sleeps and a wake can't start a fresh run, wakes are missed. Use B with polling, or accept that mail waits until next check.
-- **Auth field?** It must be able to send `Authorization: Bearer` from a secure field. No field → stop and report.
+- **Authentication.** Check for a private Bearer credential or a supported OAuth flow for the route.
 - **Tunnel?** If its client rejects tunnl.gg, it needs a different public route.
 
 ### Triage file to init
@@ -445,17 +356,15 @@ A valid triage record is not proof of a connection. For example, the [Vooy candi
 
 ## Limitations
 
-- **Dot:** Direct OAuth needs an operator-provisioned endpoint and ChatGPT approval.
-  Terminal-reply Events worked on the [private tunnel](research.md#dot-03-standalone-terminal-reply-events).
-  Automatic Events and token refresh remain unverified on the
-  [tested direct connection](research.md#new-orca-installation-with-a-hosted-address).
-- **Codex Cloud:** acceptance covers web Work and app-created desktop Work Cloud, not native desktop UI clicks or every Cloud job. Each target needs its own authorized platform subscription.
-- **Codex Local:** the `codex-local` worker needs a protected existing thread and native socket. It does not provide Cloud execution.
-- **Grok Bot:** the wake started a run on this hub. A token-file mismatch stopped it. The read and linked reply were completed manually ([GROK-06](research.md#grok-06-first-message-exchange-on-this-hub)). Use `setup-grok` or prepare the policy by hand. See [configuration](configuration.md#grok-bot-policy-by-hand).
-- **Muse:** read and a linked reply are verified on this hub ([MUSE-05](research.md#muse-05-standalone-linked-reply)). Muse remains pull-only. No inbound wake was established.
-- **Tunnel:** a tunnel mode is required. tunnl.gg is an opt-in testing provider, and it sees plaintext at its edge. Its free URL can expire or change after a restart. Update each connector's endpoint if it changes. For your own domain, see [Tunnel URLs](tunnels.md).
-- **macOS only** for Keychain-based token storage and `handoff --copy-token`.
-- No signed or notarized binary is published.
-- The A/B/C/D triage rules are applied by hand. `init <agent>` checks a locally staged triage record (see [Triage file to init](#triage-file-to-init)).
-- The built-in profiles come from a static catalog. The listener with
-  `--mailbox-home` loads the local mailbox registry.
+- Use an Apple Silicon Mac for Orca setup. The macOS release executable
+  has an ad hoc signature. See [release installers](../packaging/README.md)
+  for supported targets.
+- Dot's direct OAuth route requires an operator-provisioned endpoint and
+  ChatGPT approval. The tested direct route used a prompted mailbox check.
+  Automatic Events and OAuth token refresh remain unverified on that route.
+- The isolated Orca run used manual ID-only notices for Cue and Instinct.
+  Follow the [first-reply check](orca.md#verify-the-first-reply) for an app
+  that needs a prompt.
+- Codex Work Cloud uses a separate mailbox and subscription. The
+  [tested Cloud connections](research.md#codex-08-work-cloud-events-on-this-hub)
+  cover web Work and app-created desktop Work Cloud.

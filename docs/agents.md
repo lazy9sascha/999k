@@ -1,6 +1,8 @@
 # Agents and capabilities
 
-Find the connection method, authentication, and test results for each agent.
+Use the [Orca setup guide](orca.md) to connect Dot, Muse, GrokBot, Cue, or
+Instinct. This page records the connection methods and test results for
+those peers and other clients.
 
 - [Capability table](#capability-table): what each agent can do
 - [Deployment matrix](#deployment-matrix): agent × where it runs → connection mode and status
