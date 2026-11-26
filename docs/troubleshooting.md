@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Use the same executable and private `CLOUD_HOME` from the [quickstart](quickstart.md#1-build).
+Use the same executable and private `CLOUD_HOME` from the [quickstart](quickstart.md#1-install-the-cli).
 If a setup command fails, read its terminal error first. If `run` started, check the loopback hub:
 
 ```sh
@@ -21,7 +21,7 @@ sqlite3 -readonly "$CLOUD_HOME/pigeonmq-cloud-queue.sqlite3" 'PRAGMA user_versio
 If it reports `2`, do not edit the version number. This release has no supported converter.
 
 - To keep the old state, stay on the release that supports the old queue.
-- To start empty, stop the old runner and back up its home. Keep the original home. Choose a different private home and follow the [quickstart](quickstart.md#1-build). The new home does not carry over messages, ACKs, or Events state.
+- To start empty, stop the old runner and back up its home. Keep the original home. Choose a different private home and follow the [quickstart](quickstart.md#1-install-the-cli). The new home does not carry over messages, ACKs, or Events state.
 
 ## Runner (`run`)
 
@@ -51,7 +51,7 @@ If it reports `2`, do not edit the version number. This release has no supported
 | Status / error | Meaning |
 | --- | --- |
 | `401` | Missing or wrong Bearer token, or token revoked |
-| `403` | Token is valid but the operation, sender, or mailbox isn't allowed. `p-999k_recipients` needs `send`. |
+| `403` | Check the mailbox grant and the selected operation. `p-999k_recipients` needs `send`. For a protected Dot or Codex route, also verify the Cloudflare Access assertion and binding. |
 | `404 profile_disabled` | That app's policy file isn't loaded. Restart `run` after adding it. |
 | `404 route_not_found` | Wrong path. Use the selected profile's `/muse/mcp`, `/grok/mcp`, `/dot/mcp`, or `/codex/mcp`. |
 | `405 post_required` | Only POST is accepted (a browser GET gets this) |
@@ -92,3 +92,30 @@ For Dot and Codex Cloud Events, look for JSON warnings on hub stderr with `compo
 Agent woken twice for one message? Two notifiers are pointed at the same webhook, or two hubs share it. Give each hub its own webhook, and have the agent handle each `message_id` once.
 
 Agent woken but `p-999k_read` says not found? The wake came from a different hub than the one the agent reads from. One webhook per hub.
+
+## Check a pending Orca reply
+
+If Orca already reported **Queued**, ask the relay to check the same request.
+Use the original request ID if you have it. The generated relay can schedule
+up to three checks before it stops waiting.
+
+If you have the original 999K ID and need to check the hub, run your peer's
+setup command with `--orca-proof-original <original-id>`. Use the same hub
+home and sender. The command checks for the linked reply without sending a
+new request. If it reports a verified reply, check the originating project
+chat for delivery. A pending or invalid original returns a failure status.
+
+## Refresh a saved MCP app
+
+If the serving hub advertises a tool that the saved app cannot call, refresh
+the app’s tool list before creating another connector.
+
+1. After upgrading the hub, run `tools/list` against the exact route with its
+   existing authentication. For example, check that `p-999k_inbox` advertises
+   `scope`, `query`, and `order` when testing inbox search. If the serving hub
+   lists an older schema, check the binary and home before you refresh the app.
+2. In the intended ChatGPT account or workspace, open the saved app and
+   choose **Refresh** if offered. Keep the same app and Events subscription.
+3. In the original conversation, call the tool with a synthetic test message.
+   If the conversation still uses an older schema, retry with the same app in
+   a new conversation.

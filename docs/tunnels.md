@@ -11,7 +11,8 @@ The hub always listens on loopback. `run` has no default tunnel mode. You must c
 
 Set the variables in the runner's process environment or pass `--env-file PATH`. The runner does not combine the two sources or search for a `.env` file. A missing mode, an unknown mode, `external` without a URL, or a URL without `external` stops startup.
 
-For private Dot or Codex Cloud access without a public URL, see the [OpenAI Secure MCP Tunnel example](../examples/openai-secure-tunnel/README.md).
+For Dot or Codex Cloud, use a [protected HTTPS endpoint](configuration.md#dot-and-codex-cloud-through-direct-oauth)
+or a [private OpenAI Secure MCP Tunnel](../examples/openai-secure-tunnel/README.md).
 
 ## Use a private .env file
 
@@ -52,7 +53,10 @@ Configure DNS and TLS with your provider, and manage the proxy or tunnel separat
 In your proxy or tunnel, map the hostname to `http://127.0.0.1:54843`. If your runner uses another `--port`, use that port in both the service URL and the upstream `Host` header. For the default port:
 
 - Set the upstream `Host` header to `127.0.0.1:54843`. Do not forward the public hostname as the upstream `Host`.
-- Preserve the [MCP paths](architecture.md#routes) and the `Authorization: Bearer` header. Publish only the MCP paths you need. Do not publish the leased receiver or legacy routes.
+- Preserve the [MCP paths](architecture.md#routes) and `Authorization: Bearer`
+  header. If you use one-time pairing, also forward the selected peer’s
+  [pairing path](pairing.md#prepare-the-route). Do not publish the leased
+  receiver or unrelated routes.
 - Keep the hub on loopback and leave Bearer, mailbox, Host, and Origin checks on. The hub rejects browser requests with `Origin` or `Sec-Fetch-Site` headers.
 
 For Cloudflare, see the [named tunnel example](../examples/cloudflare/README.md) for creation, path and Host settings, and separate credential files.
@@ -73,7 +77,11 @@ This setting starts the hub without SSH. It does not start the proxy, configure 
 ### Verify and update the clients
 
 1. Run `999k health --home "$CLOUD_HOME"` to check the local hub and queue without contacting the public hostname. Use a temporary private home and synthetic mail if rehearsing the switch.
-2. Verify that you control the endpoint and trust the TLS terminator. It can read the Bearer token. Set the new URL and matching token in the connector's secure fields. Stop if it has no secure credential field. 999K does not configure clients or hand off credentials for external origins. See [credential custody](configuration.md#credential-custody-and-handoff).
+2. Verify that you control the endpoint and trust the TLS terminator. It can
+   read the Bearer token. Add the new URL in the app. Use a [one-time pairing
+   code](pairing.md) for a supported peer or set the matching token in the
+   connector’s secure field. For Dot or Codex Cloud with Cloudflare Access,
+   follow the [OAuth setup](configuration.md#dot-and-codex-cloud-through-direct-oauth).
 3. In the updated connector, make a permitted read-only MCP call. For a manual MCP check, start with `initialize`, then send the negotiated version in the `MCP-Protocol-Version` header on later requests. A successful call proves that connector can reach the hub. It does not verify delivery or Events. The optional `health --probe-public` command checks each configured public MCP route. It sends no credentials. A proxy can stop the check before the request reaches 999K. `tunnel.routes` reports the result for each profile. A partial catalog does not confirm all routes. The command does not verify authenticated MCP. Its exit code still reports local readiness only.
 
 If you keep the same hostname and path, clients can keep that URL. Otherwise, update each affected client separately. Dot or Codex clients using a separate OpenAI Secure MCP Tunnel do not switch automatically. To roll back, restore the previous runner settings and point affected clients at the current URL of their previous transport.
@@ -90,7 +98,9 @@ Read these limits before you start:
 
 - tunnl.gg decrypts traffic on its servers. See the [privacy policy](https://tunnl.gg/privacy.md).
 - Free tunnels close after 2 hours idle or 24 hours. See [pricing](https://tunnl.gg/pricing).
-- From 2026-12-01, `stable@` needs a free account.
+- Register new SSH keys to a free account before using `stable@`. The same
+  requirement applies to previously used keys from December 1, 2026.
+  [Stable URL requirements](https://tunnl.gg/docs#keep-the-same-url)
 - The service has no uptime guarantee.
 - The [terms of service](https://tunnl.gg/terms) apply to that connection.
 

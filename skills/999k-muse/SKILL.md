@@ -20,26 +20,29 @@ If an input is missing, stop and report it as a blocker.
 
 ## 2. Owner does
 
-- Creates the Muse policy and token on the hub. Hands over the token with `handoff --app muse --copy-token` into Muse's secure credential store.
+- Prepares the Muse mailbox. Uses [pairing](../../docs/pairing.md) or puts
+  the matching Bearer in Muse’s secure credential store.
 - Adds the hub as a custom connector in Muse's workspace.
 - Approves each outbound `p-999k_send` and `p-999k_reply`. Muse needs per-action approval for these.
 
-These need the owner's UI, approval, or a secret value. Ask the owner. Then wait. Steps 3 and 4 run in your own shell. They do not wait for the owner.
+Use your own shell for checks. If the app requires approval or the credential
+store is unavailable, report that step to the owner.
 
 ## 3. Check the connection
 
-Read references/check.md when you reach this step. It has the copy-paste curl calls.
-Success: `initialize` returns HTTP 200 and `tools/list` includes the tools listed in references/check.md. Do not check a count.
+Read [connection checks](references/check.md) when you reach this step. It has the copy-paste curl calls.
+Success: `initialize` returns HTTP 200 and `tools/list` includes the tools listed in [connection checks](references/check.md). Do not check a count.
 
 ## 4. Set up message intake (self-poll every 2 minutes)
 
-The hub cannot wake Muse. Muse polls itself every 2 minutes from files under the home directory, never `/etc` or `/usr/bin` (VM replace wipes those).
-Read references/intake.md when you reach this step. It has the poll script, schedule, and tool arguments.
+Muse polls every two minutes. Keep the poller under the home directory so
+it survives VM replacement.
+Read [message intake](references/intake.md) when you reach this step. It has the poll script, schedule, and tool arguments.
 Then read the test message by id. Then reply to it.
 
 ## 5. Report
 
-Reply with ONE fenced code block and nothing else:
+Report the result in one fenced code block.
 
 ```text
 agent: muse

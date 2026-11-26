@@ -1,4 +1,4 @@
-# Grok Bot intake: webhook wake
+# Wake GrokBot with a webhook
 
 ## Create the routine
 
@@ -13,11 +13,10 @@ Then drain the inbox until nothing is pending.
 Send a curl-style User-Agent on every call. Never put secrets in a message body.
 ```
 
-3. The owner writes the webhook URL on one line to `$CLOUD_HOME/grok-webhook-url`.
-   The owner writes `Authorization: <value>` on one line to `$CLOUD_HOME/grok-webhook-auth`.
-   Both files use mode 600.
-   The owner then restarts `run`.
-   The wake starts only if the Grok policy and both files exist when the hub starts.
+3. On the hub Mac, store the routine credentials with `999k setup-grok-wake`.
+   Restart the hub with the GrokBot profile enabled. The
+   [wake setup guide](../../../docs/quickstart.md#5-optional-grok-bot-wake)
+   also covers existing private-file configurations.
 
 ## Check the wake
 
@@ -26,11 +25,13 @@ Owner checks `$CLOUD_HOME/grok-wake-status.json`:
 | `state` | Meaning |
 | --- | --- |
 | `running` | Normal. |
-| `auth_blocked` | Webhook returned 401/403. Fix the URL or auth file. |
+| `auth_blocked` | Check the configured Keychain item or private files. |
 | `rate_limited` | Webhook returned 429. Paused 5 minutes. |
 | `failed` | See `detail.reason` in `docs/troubleshooting.md`. |
 
-A webhook 200 means the run started. It does not mean that the run finished. Routine limits are 300 runs per hour in total and 200 per hour per routine. Runs over the limit fail and are not retried.
+An HTTP 200 confirms webhook acceptance. Check for a linked reply to verify
+the run completed. See [wake troubleshooting](../../../docs/troubleshooting.md#grok-bot-wake)
+for retries and rate limits.
 
 ## Drain the inbox
 

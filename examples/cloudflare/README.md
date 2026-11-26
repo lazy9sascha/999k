@@ -1,6 +1,6 @@
 # Cloudflare Tunnel for 999K
 
-Create a named, remotely managed tunnel for an HTTPS hostname in a Cloudflare zone you control. Use the existing 999K hub and queue on the same Mac as `cloudflared`. This example uses the reserved hostname `pigeon.example.com`, port `54843`, and only the Muse MCP route. Replace them with the approved hostname, actual hub port, and selected path. This is not an OpenAI Secure MCP Tunnel or a Cloudflare Quick Tunnel.
+Create a named, remotely managed tunnel for an HTTPS hostname in a Cloudflare zone you control. Use the existing 999K hub and queue on the same Mac as `cloudflared`. This example uses the reserved hostname `pigeon.example.com`, port `54843`, and only the Muse MCP route. Replace them with the approved hostname, actual hub port, and selected path. For a private OpenAI app, see [Secure MCP Tunnel](../openai-secure-tunnel/README.md).
 
 ## 1. Create the tunnel and start the connector
 
@@ -24,6 +24,10 @@ In your tunnel's **Routes** tab, add a **Published application**. Use these valu
 | Path | Only `/muse/mcp` (use `^/muse/mcp$` for an exact ingress regex) |
 | Service URL | `http://127.0.0.1:54843` |
 | Additional application settings → HTTP → [HTTP Host Header](https://developers.cloudflare.com/tunnel/reference/origin-parameters/#httphostheader) | `127.0.0.1:54843` |
+
+If you plan to issue a [Muse pairing code](../../docs/pairing.md#prepare-the-route),
+add a second exact route for `/muse/pair` on the same origin. Use the same
+service URL and Host override.
 
 The route forwards the full path to the hub. If the port changes, update both the origin URL and the Host override. Keep the hub on loopback. An empty Path routes the entire hostname, including other paths mounted on a shared hub. Do not leave it empty for this example. If the dashboard cannot restrict the path, use a reviewed ingress rule or local proxy. Allow only the intended path before publishing. Do not expose the leased receiver or unrelated profiles. Check the hostname's proxied DNS record and HTTPS certificate.
 

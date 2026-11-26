@@ -23,23 +23,23 @@ Never put a token in chat, 999K messages, logs, or Git.
 - Local: enables the receiver route. Writes the receiver policy, registration, token file, and binding. Starts `999k-codex-receiver`.
 - Cloud: runs `setup-codex`. Uses the hub that serves the Codex route. Connects the tunnel client to that route. Binds a platform Events subscription to the Cloud conversation.
 
-Read references/owner-setup.md when the owner needs the exact commands.
+Read [owner setup](references/owner-setup.md) when the owner needs the exact commands.
 
 ## 3. Check the connection
 
-Read references/check.md when you reach this step.
-Cloud success: `tools/list` includes the tools listed in references/check.md. Local: the worker reports `configuration_valid`, which checks the binding only.
+Read [connection checks](references/check.md) when you reach this step.
+Cloud success: `tools/list` includes the tools listed in [connection checks](references/check.md). Local: the worker reports `configuration_valid`, which checks the binding only.
 
 ## 4. Set up message intake
 
 - Local (mode D): the worker claims work and runs it on the bound native thread. No MCP polling.
 - Cloud: an MCP Event nudges the conversation. The conversation then drains the inbox.
 
-Read references/intake.md when you reach this step. Then handle the test message.
+Read [message intake](references/intake.md) when you reach this step. Then handle the test message.
 
 ## 5. Report
 
-Reply with ONE fenced code block and nothing else:
+Report the result in one fenced code block.
 
 ```text
 agent: codex-local | codex-cloud

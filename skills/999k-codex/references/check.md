@@ -1,6 +1,9 @@
 # Check the Codex connection
 
-Cloud mode: the owner runs the curl calls on the hub machine with `PIGEONMQ_URL=http://127.0.0.1:54843/codex/mcp` and the `codex-cloud` token. If loopback works and the Cloud conversation cannot list tools, the problem is the official tunnel or the conversation binding. It is not the hub.
+For cloud mode, run the commands on the hub Mac with
+`PIGEONMQ_URL=http://127.0.0.1:54843/codex/mcp` and the `codex-cloud` token.
+If loopback works and the Cloud conversation fails, check the selected
+transport and the conversation binding.
 
 Local mode: run `999k-codex-receiver` without `--run`. `configuration_valid` proves the binding only, not the token, native readiness, or an exchange. There is no MCP check for local mode.
 
@@ -31,7 +34,7 @@ Use the exact tool names your hub lists for the checks and intake examples below
 Success:
 
 - `initialize` returns `HTTP 200` and a `result` with `serverInfo`. The hub supports protocol versions `2025-03-26` and `2026-07-28`. It keeps no session, so no session header is needed.
-- `tools/list` is the source of truth. The count changes between versions. Do not check a number. Check that the tools this agent needs are listed:
+- Check `tools/list` for the names of the tools this agent needs.
   - receive: `p-999k_read`, `p-999k_wait`, `p-999k_reply`, `p-999k_confirm_terminal`
   - read-only inbox check: `p-999k_inbox`
   - send, if the policy allows `send`: `p-999k_send`, `p-999k_recipients`

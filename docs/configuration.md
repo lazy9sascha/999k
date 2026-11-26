@@ -28,6 +28,9 @@ Run `999k <command> --help` for exact flags.
 | `credentials --home DIR --app APP import --token-file PATH` | Recover an existing matching token from a private file. Keeps the policy unchanged. |
 | `credentials --home DIR --app APP reissue --token-file PATH [--use-stored-token]` | Explicit token repair. Save a private repair token and change only its policy digest. |
 | `credentials --home DIR --app APP export --token-file PATH [--format token\|authorization-header]` | Create a private credential file for an explicit client reference. |
+| `init --reserve-address --home DIR` | Reserve a [hosted HTTPS address](hosted-registration.md#reserve-an-address-without-starting-a-connector) through browser email verification. |
+| `init --orca --orca-peer ID --home DIR` | Set up one [Orca relay](orca.md#connect-a-peer) and check its configured transport. |
+| `hosted-status --home DIR` | Read the [status of the saved hosted registration](hosted-registration.md#what-users-see). |
 | `dot-tunnel-status --home DIR` | Show the local Dot tunnel state. |
 | `quickstart --home DIR` | Stage Instinct in a new local-only demo home. The command prints the loopback URL, the token file path, and how to start the hub. Use a new directory. |
 | `health --home DIR` | Check whether the supervised loopback hub answers. |
@@ -58,6 +61,29 @@ Use a Bearer token for a profile or API that already allows the operation.
 | `reply` to an unclaimed request | Call `p-999k_reply` on the recipient's MCP profile with `message_id` and `body`. It stores the linked reply and ACKs the original in one transaction. |
 | `reply --receipt` for a leased request | Keep the worker's authenticated [`/receiver` completion path](#local-codex-receiver). `p-999k_reply` does not accept a receipt or replace leased completion. |
 
+## Orca setup commands
+
+Use these commands from a local Orca terminal. If your CLI has no bundled
+registration URL, set `RADIO999K_REGISTRATION_URL` to the HTTPS origin your
+operator provides. For a custom hub, use the same absolute home and sender
+credential each time. Use relay tool paths without spaces or shell
+metacharacters.
+
+| Command or option | Purpose |
+| --- | --- |
+| `999k init --orca` | List the local sender's authorized peers. |
+| `999k init --orca --orca-peer ID` | Set up one relay. Use `dot`, `muse`, `grok-bot`, `cue`, or `instinct`. |
+| `--orca-reserve-address` | Request hosted setup for the selected pairing peer. An existing address-first reservation can supply the route during normal peer setup. |
+| `--orca-remote-bearer-file PATH` | Read a separate private Bearer for the remote MCP check. |
+| `--orca-proof-original ID` | Check for a linked reply without sending another request. [Check a pending reply](troubleshooting.md#check-a-pending-orca-reply) |
+
+To use a custom sender, run this command with your paths.
+
+```sh
+"$RADIO999K_BIN" init --orca --orca-peer muse --home /absolute/path/to/hub-home \
+	--orca-sender codex-cloud --orca-bearer-file /absolute/path/to/private-bearer-file
+```
+
 ## Select existing hub profiles
 
 By default, `run --home DIR` uses the conventional policy files in the Cloud home. To choose profiles with specific routes and policy files, pass `--profiles-file PATH`. Use absolute paths for PATH and the Cloud home. The manifest must be an owner-private regular file (mode 600 or 400, for example). It shares the 16 KiB size limit used for private policies and registration.
@@ -83,7 +109,7 @@ The low-level `serve-hub` command can also take `--profiles-file PATH` with the 
 ## Manage built-in profiles
 
 Install the release executable at a stable absolute path outside the checkout and temporary directories.
-See [Build](quickstart.md#1-build) for an owner-private install path.
+See [Build the CLI from source](quickstart.md#1-install-the-cli) for an owner-private install path.
 Use `init --home DIR` to prepare an absolute owner-private home for a new installation.
 Use `init NAME --home DIR` to stage a profile in that home.
 Run the installed executable with `init NAME --home DIR --apply` to start or reload the managed hub.
@@ -163,9 +189,41 @@ A legacy queue without that catalog can continue serving existing bindings.
 Removal and same-name replacement fail closed on that queue.
 Use a generation-aware build for every process serving a queue with replaced mailboxes.
 
+## Dot and Codex Cloud through direct OAuth
+
+For direct OAuth on your own domain, use a dedicated Cloudflare Access
+application for each Dot or Codex Cloud path. Enable Managed
+OAuth and allow only the intended account and the exact OpenAI redirect URI for
+that connection. Cloudflare handles the sign-in and sends a signed assertion to
+the hub. Use separate Access application audience tags for Dot and Codex Cloud.
+
+Add `cloudflare-access.json` to the private 999K hub home. Set the file mode
+to `0600`. Set only the bindings that you use.
+
+```json
+{
+  "issuer": "https://example-team.cloudflareaccess.com",
+  "email": "owner@example.com",
+  "dot": {"audience": "<dot-app-audience>", "bearer_file": "dot-mailbox.key"},
+  "codex": {"audience": "<codex-app-audience>", "bearer_file": "codex-mailbox.key"}
+}
+```
+
+Use your Cloudflare Access team URL as the issuer. Each `bearer_file` is
+the private token file for one mailbox. A file may include the `Bearer `
+prefix. The hub verifies the signed Access assertion, then uses the matching
+mailbox credential. Cloudflare Access serves the OAuth discovery response.
+
+For Dot in Orca, set `dot` in the hub's private `orca-ingress.json` to the
+protected HTTPS `/dot/mcp` URL. Restart the hub after changing the Access
+binding. Run `999k init --orca --orca-peer dot` and wait for
+`OAuth discovery ready`. Add the endpoint as a private MCP app in ChatGPT
+and approve OAuth. [Verify the first reply](orca.md#verify-the-first-reply)
+
 ## Dot through a private Secure MCP Tunnel
 
-Use a separate tunnel for this Dot profile. Keep existing agent tunnels unchanged.
+Use this procedure for a private Dot app with a dedicated tunnel. For a
+direct HTTPS connection, follow [Dot OAuth setup](#dot-and-codex-cloud-through-direct-oauth).
 This procedure requires a prepared queue, an active `dot` registration, and a matching Dot policy.
 Keep the policy and both credentials outside Git. Use owner-only directories and mode 600 credential files.
 
@@ -211,7 +269,7 @@ Each authorized caller through this tunnel uses the Dot identity. Do not share t
 Do not publish the plugin or grant another workspace access without separate approval.
 
 Record local readiness, installation, and the actual Dot call as separate results.
-A successful recipients call proves read-only access. It does not prove message delivery, replies, or Events.
+A successful `p-999k_recipients` call confirms authenticated recipient discovery. Verify message delivery and Events separately.
 A recipient status of `unknown` does not mean that the tunnel failed.
 Codex Cloud Events and a shared tunnel need separate configuration and acceptance.
 
@@ -417,6 +475,9 @@ See [Codex paths](architecture.md#codex-paths-and-shared-operations) for shared 
 | `pigeonmq-cloud-tunnel-known_hosts` | you | Pinned, verified tunnl.gg host key |
 | `pigeonmq-cloud-state.json` | `run` | Runtime state, loopback port when running, public origin when known, and failure reason |
 | `pigeonmq-cloud-run.lock` | `run` | One runner per home |
+| `orca-ingress.json` | you | Exact HTTPS MCP endpoints keyed by peer ID. See [switch to your own domain](orca.md#switch-to-your-own-domain). |
+| `cloudflare-access.json` | you | [Signed Access assertion bindings](#dot-and-codex-cloud-through-direct-oauth) for Dot or Codex Cloud. |
+| `hosted-enrollment.json` | `init --reserve-address` | Private registration state, including the installation proof and connector credential when issued. |
 | `grok-webhook-url`, `grok-webhook-auth` | you | Grok Bot wake target and header |
 | `grok-webhook-keychain` | `setup-grok-wake` | Selects the Keychain item. Contains no secrets. |
 | `grok-wake-state.json`, `grok-wake-status.json` | hub | Wake progress (not an ACK) and visible status |
@@ -636,7 +697,7 @@ mailbox with its default route, and its existing owner-private bearer file:
 999k stdio-mcp --home <hub-home> --mailbox <name> --bearer-file <private-file>
 ```
 
-Use `--peer <recipient-id>` to restrict this client to recipient discovery, sends to that recipient, and waits for its replies. Each wait must include the original request ID as `in_reply_to`. [Orca setup](quickstart.md#connect-orca-to-your-existing-peers) attaches a separate scoped client to each relay bot.
+Use `--peer <recipient-id>` to restrict this client to recipient discovery, sends to that recipient, and waits for its replies. Each wait must include the original request ID as `in_reply_to`. [Orca setup](orca.md#connect-a-peer) attaches a separate scoped client to each relay bot.
 
 For the default Orca sender, `codex-cloud`, `p-999k_wait` accepts whole milliseconds from 0 through 10000. Both `10000` and `10000.0` request a ten-second wait.
 

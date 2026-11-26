@@ -67,7 +67,7 @@ installable folder, `p-999k-0.2.2`. Keep the Orca checksum with the Orca
 archive in its own directory. The native installer checksum file lists platform
 archives only.
 
-Install the [0.2.2 CLI](../docs/quickstart.md#connect-orca-to-your-existing-peers) first. The plugin runs `$HOME/.local/bin/999k`. The 0.2.0 release archive lacks the required `--orca-peer` and `pair` commands. Use Orca 1.4.268 or newer
+Install the [0.2.2 CLI](../docs/orca.md#install-the-cli-and-plugin) first. The plugin runs `$HOME/.local/bin/999k`. Use Orca 1.4.268 or newer
 and run these commands from the directory containing the Orca archive and its release checksum file.
 
 ```sh

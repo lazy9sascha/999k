@@ -1,6 +1,14 @@
 # Check the Dot connection
 
-The owner runs the curl calls on the hub machine against loopback, with `PIGEONMQ_URL=http://127.0.0.1:$DOT_PORT/dot/mcp` and the token from the Dot header file. Dot itself then calls `p-999k_recipients` through the plugin. There is no public URL for Dot. The loopback-vs-public row means loopback vs ChatGPT. If loopback works and ChatGPT cannot list tools, the problem is the official tunnel or the plugin. It is not the hub.
+For direct OAuth, use the approved ChatGPT app to run a permitted mailbox
+tool after sign-in. Check the Access binding and exact HTTPS path if the app
+cannot load tools.
+
+For the private tunnel, check the hub first. On the hub Mac, set
+`PIGEONMQ_URL=http://127.0.0.1:$DOT_PORT/dot/mcp` and load
+`PIGEONMQ_TOKEN` from the private Dot credential. Then run the checks below.
+In ChatGPT, use the private app to call `p-999k_recipients` if the mailbox
+can send, or a read-only mailbox tool if it cannot.
 
 ## 1. Define the helper
 
@@ -15,8 +23,6 @@ mcp() {
 call() { mcp "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"; }
 ```
 
-The `-A 'curl/8'` header matters through tunnels: a missing or unusual User-Agent can get HTTP 403 or a Cloudflare 1010 page before the hub sees the call.
-
 ## 2. Initialize and list tools
 
 ```sh
@@ -29,22 +35,18 @@ Use the exact tool names your hub lists for the checks and intake examples below
 Success:
 
 - `initialize` returns `HTTP 200` and a `result` with `serverInfo`. The hub supports protocol versions `2025-03-26` and `2026-07-28`. It keeps no session, so no session header is needed.
-- `tools/list` is the source of truth. The count changes between versions. Do not check a number. Check that the tools this agent needs are listed:
+- Check `tools/list` for the names of the tools this agent needs.
   - receive: `p-999k_read`, `p-999k_wait`, `p-999k_reply`, `p-999k_confirm_terminal`
   - read-only inbox check: `p-999k_inbox`
   - send, if the policy allows `send`: `p-999k_send`, `p-999k_recipients`
 
 Extra tools such as `p-999k_read_thread` are normal. A listed tool can still return `403` when the policy does not allow it. Report missing tools by name. Do not guess.
 
-## 3. Loopback vs public
+## 3. Compare the hub and the app
 
-Run the same two calls against `http://127.0.0.1:<port>/dot/mcp` on the hub machine (default port 54843). Only the hub machine can reach loopback.
-
-| Loopback | Public | Meaning |
-| --- | --- | --- |
-| ok | ok | Connection is fine. |
-| ok | fails | Tunnel or public URL problem, not the app. The tunnel URL may have changed: ask the owner for the current one. |
-| fails | fails | Hub problem. See the table below. |
+If loopback fails, check the hub response below. If loopback works and the
+app fails, check the tunnel association or the OAuth configuration for the
+transport you selected. A successful app call verifies access.
 
 Hub errors are JSON with an `error` code. An HTML page or a Cloudflare error page came from something in front of the hub (tunnel or proxy).
 

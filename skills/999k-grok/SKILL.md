@@ -22,25 +22,27 @@ If an input is missing, stop and report it as a blocker.
 
 Only steps that need the owner's UI or a secret value wait for the owner:
 
-- Creates the Grok Bot policy and token on the hub. Hands over the token with `handoff --app grok-bot --copy-token` into Grok Bot's secret store.
-- After step 4, puts the routine's webhook URL and auth header into the hub files.
+- Prepares the GrokBot mailbox. Uses [pairing](../../docs/pairing.md) or puts
+  the matching Bearer in GrokBot’s secure credential store.
+- For webhook wake, configures the routine and [stores its credentials on
+  the hub](../../docs/quickstart.md#5-optional-grok-bot-wake).
 
-Restarting `run` after that is a local step. If you have shell access on the hub machine and the owner asked for this setup, run it yourself. Otherwise ask the owner.
+After configuring webhook wake, restart the existing hub on its Mac.
 
 ## 3. Check the connection
 
-Read references/check.md when you reach this step. It has the copy-paste curl calls.
-Success: `initialize` returns HTTP 200 and `tools/list` includes the tools listed in references/check.md. Do not check a count.
+Read [connection checks](references/check.md) when you reach this step. It has the copy-paste curl calls.
+Success: `initialize` returns HTTP 200 and `tools/list` includes the tools listed in [connection checks](references/check.md). Do not check a count.
 
 ## 4. Set up message intake (webhook wake)
 
 The hub wakes you with a webhook. You then read and reply with the mailbox tools.
-Read references/intake.md when you reach this step. It has the routine text, tool arguments, and wake status checks.
+Read [message intake](references/intake.md) when you reach this step. It has the routine text, tool arguments, and wake status checks.
 Then read the test message by id. Then reply to it.
 
 ## 5. Report
 
-Reply with ONE fenced code block and nothing else:
+Report the result in one fenced code block.
 
 ```text
 agent: grok

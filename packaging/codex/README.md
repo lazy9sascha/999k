@@ -1,22 +1,23 @@
 # Local Codex catalog preview
 
-Use a clean macOS VM with a GUI login. Do not use this catalog in your regular account.
-This preview does not publish a plugin or enable remote access.
+Use a clean Apple Silicon macOS VM with a GUI login. This procedure tests an unpublished Codex plugin against a local Cue mailbox.
 
 ## Build the catalog
 
-On a Mac with the same architecture as the guest, build the native release archive.
+On an Apple Silicon Mac, build the native archive. The packaging script prints the versioned archive path.
 
 ```sh
-scripts/package-release.sh aarch64-apple-darwin
-archive=target/artifacts/999k-0.2.0-aarch64-apple-darwin.tar.gz
-sha=$(shasum -a 256 "$archive" | cut -d ' ' -f 1)
-python3 packaging/codex/render.py "$archive" "$sha" target/codex-test-catalog
+(
+	set -e
+	build_dir=$(mktemp -d "${TMPDIR:-/tmp}/999k-codex.XXXXXX")
+	archive=$(scripts/package-release.sh aarch64-apple-darwin "$build_dir")
+	sha=$(shasum -a 256 "$archive" | cut -d ' ' -f 1)
+	python3 packaging/codex/render.py "$archive" "$sha" target/codex-test-catalog
+)
 ```
 
-Use the archive from this build. Do not use the older published archive.
-On Intel, replace `aarch64` with `x86_64`. Use a new catalog destination.
-The renderer copies the native binary and license. It does not download anything.
+Use a new catalog destination. The renderer checks the archive and copies
+the native binary and license into the test catalog.
 
 ## Install and test
 

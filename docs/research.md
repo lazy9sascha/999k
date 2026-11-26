@@ -1,8 +1,9 @@
 # Research log
 
-Every cloud agent connects in its own way, so each claim in these docs was tested on a real agent before it was written down. This page records those probes: what was asked, how it was set up, what happened, and what it changed. Setup docs say what to do. This page says how we know.
+This log records live tests, agent reports, and code checks. Each entry
+identifies the evidence for its result.
 
-> **Period:** 2026-11-06 to 2026-11-25 (KST)
+> **Period:** 2026-11-06 to 2026-11-26 (KST)
 >
 > **Hubs:** "Local" is PigeonMQ Local, the private sibling project this hub was extracted from. "This hub" is 999K. Dated entries below use the names and tool identifiers from the release that was tested.
 >
@@ -46,7 +47,7 @@ Every cloud agent connects in its own way, so each claim in these docs was teste
 
 ### Orca onboarding and peer returns, 2026-11-25
 
-On a prepared Mac, the project agent sent a request through each of the five scoped relays. Each external peer returned a linked reply and acknowledged its original. The project agent retrieved each answer. An empty first wait required a later check. Automatic return to an idle project chat remains unverified.
+On a prepared Mac, the project agent sent a request through each of the five scoped relays. Each external peer returned a linked reply and acknowledged its original. The project agent retrieved each answer. An empty first wait required a later check. That run did not verify automatic return to an idle project chat.
 
 | Peer | How the request reached the existing peer |
 | --- | --- |
@@ -56,7 +57,27 @@ On a prepared Mac, the project agent sent a request through each of the five sco
 | Instinct | The app enrolled through a secure form in Messages. A manual ID-only iMessage prompted a linked MCP reply. |
 | Dot | The existing ChatGPT chat received an explicit notice and replied through its private tunnel. |
 
-On an Apple Silicon guest with Orca 1.4.268, the anonymous release download returned 404. The checksum-verified 0.2.0 CLI lacked the peer selector and pairing commands. Candidate `5ea9dd993859` supported both. With the old test service isolated, two candidate initializations left one local sender and zero peers. A synthetic Muse completed a one-use exchange on loopback. Orca validated the package and rendered the panel during its check. Installation stopped for trusted-worker approval. A first install from public artifacts through a linked project reply remains open.
+On an Apple Silicon guest with Orca 1.4.268, the anonymous release download returned 404. The checksum-verified 0.2.0 CLI lacked the peer selector and pairing commands. Candidate `5ea9dd993859` supported both. With the old test service isolated, two candidate initializations left one local sender and zero peers. A synthetic Muse completed a one-use exchange on loopback. Orca validated the package and rendered the panel during its check. Installation stopped for trusted-worker approval. That run did not complete an installation from public artifacts.
+
+### New Orca installation with a hosted address
+
+An isolated Apple Silicon guest started with a new 999K home. The installer
+reserved one HTTPS address before adding peer routes. Each of the five peers
+returned a matching reply to its originating Orca chat. The queue recorded
+one original, one ACK, and one linked reply for each completed exchange.
+
+| Peer | How the new connection completed |
+| --- | --- |
+| Muse | Its two-minute poller picked up work while the app was idle. |
+| GrokBot | Its configured webhook routine picked up the original. |
+| Cue | A manual ID-only notice prompted the authenticated read and reply. |
+| Instinct | After the first scheduled check found no reply, the app received a manual notice and one-time vault approvals. The next relay check returned one answer to the original Orca chat without a new Orca prompt. |
+| Dot | The operator provisioned a dedicated Cloudflare Managed OAuth app on the hosted address. Dot read and replied after a prompt in ChatGPT. One operator-scheduled lookup returned the linked answer to the original Orca chat. |
+
+The direct Dot test covered OAuth approval, authenticated tool calls, and
+the project round trip. Automatic Events and token refresh remain unverified
+for that path. The private-tunnel Events test is recorded separately.
+[DOT-03](#dot-03-standalone-terminal-reply-events)
 
 ### MAIL-01: Cue and Instinct on 0.1.3
 
@@ -238,7 +259,7 @@ On an Apple Silicon guest with Orca 1.4.268, the anonymous release download retu
 - **Setup:** Dot subscribed through the Events path in PigeonMQ Local.
 - **Result:** ⚠️ partial. Exchanges, terminal confirmation, and subscription renewal were recorded. Long-term renewal and recovery after sleep or restart were not accepted.
 - **Evidence:** [local docs, 2026-11-14]
-- **What it changed:** Dot uses OpenAI Secure MCP Tunnels, not tunnl.gg [local decision, 2026-11-12]. This release has no Dot setup command.
+- **What it changed:** Local selected OpenAI Secure MCP Tunnels for this run [local decision, 2026-11-12]. Direct OAuth was tested later.
 
 ### DOT-03: Standalone terminal-reply Events
 
