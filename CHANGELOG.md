@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.2.2
+
+- Explain that P-999K is experimental before hosted registration. Describe what Cloudflare and Supabase handle, which data stays on the Mac, and when public access can expire.
+- Add an own-domain guide to the Orca setup panel and management bot. Reuse the same hub and queue when switching a peer from a hosted address to an HTTPS endpoint you control.
+- Show hosted registration status in the CLI. Let operators inspect Cloudflare resources and track a dedicated Dot Access app with the installation so its route survives updates and the app is removed during revocation or expiry.
+
 ## 0.2.1
 
 The native CLI and the P-999K Orca plugin both use version 0.2.1.

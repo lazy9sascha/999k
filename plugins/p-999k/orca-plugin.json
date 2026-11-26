@@ -3,7 +3,7 @@
   "id": "p-999k",
   "name": "P-999K",
   "publisher": "lazy9sascha",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Ask one existing peer from your project chat. The relay retrieves the linked answer. The first check can be empty.",
   "author": { "name": "999K" },
   "license": "MIT",

@@ -6,7 +6,7 @@ P-999K is experimental. Choose a hosted address or use your own HTTPS domain. Yo
 
 **Catalog summary.** Ask one existing peer from your project chat. The relay retrieves the linked answer. The first check can be empty.
 
-P-999K 0.2.1 needs Orca 1.4.268 or newer. Its catalog ID is `lazy9sascha.p-999k`. The panel runs `$HOME/.local/bin/999k`. Check that this executable lists `--orca-peer` in `init --help` and accepts `pair --help`. Use native CLI 0.2.1. [Install the CLI and plugin](../../docs/quickstart.md#connect-orca-to-your-existing-peers).
+P-999K 0.2.2 needs Orca 1.4.268 or newer. Its catalog ID is `lazy9sascha.p-999k`. The panel runs `$HOME/.local/bin/999k`. Check that this executable lists `--orca-peer` in `init --help` and accepts `pair --help`. Use native CLI 0.2.2. [Install the CLI and plugin](../../docs/quickstart.md#connect-orca-to-your-existing-peers).
 
 The release archive installs through Orca’s local plugin flow. Catalog availability is tracked separately.
 

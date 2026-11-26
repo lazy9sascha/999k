@@ -12,7 +12,7 @@ The relay sends your question to the selected agent. Its answer returns to the p
 
 ## Connect your first agent
 
-On the Mac where you use Orca, [install the 0.2.1 CLI and Orca plugin](docs/quickstart.md#connect-orca-to-your-existing-peers). You’ll need an Apple Silicon Mac and Orca 1.4.268 or later.
+On the Mac where you use Orca, [install the 0.2.2 CLI and Orca plugin](docs/quickstart.md#connect-orca-to-your-existing-peers). You’ll need an Apple Silicon Mac and Orca 1.4.268 or later.
 
 1. Open **P-999K → Initial setup** in a local Orca workspace. It prepares the hub on your Mac. You choose which agents to connect.
 2. Select an agent you already use. Choose **I’ll do it myself** for the guided setup, or copy the request to an assistant with Computer Use. Approve the relay in Orca and copy the peer’s setup instructions into its existing conversation.
