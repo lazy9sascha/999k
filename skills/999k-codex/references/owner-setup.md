@@ -24,7 +24,11 @@ Mount the `codex-local` adapter at `/receiver` in the [profile manifest](../../.
   --resolver /absolute/path/to/999k-dot-resolve
 ```
 
-Use the loopback route on the configured hub. For a new private hub, follow [Codex Cloud operation](../../../docs/configuration.md#codex-cloud-operation).
+If the operator provides a direct managed OAuth endpoint, follow
+[Cloudflare Access setup](../../../docs/configuration.md#dot-and-codex-cloud-through-direct-oauth).
+Check the Events subscription on the intended Cloud surface.
+
+For a private tunnel, use the loopback route on the configured hub. Follow [Codex Cloud operation](../../../docs/configuration.md#codex-cloud-operation).
 Use the actual port and route in the tunnel client settings below.
 
 | Setting | Value |

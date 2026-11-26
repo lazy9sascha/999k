@@ -1,12 +1,11 @@
 # Security policy
 
-999K exposes a queue on your Mac to cloud agents through a tunnel, so its auth checks matter. Thank you for reporting problems privately.
+999K lets cloud agents reach a queue on your Mac through authenticated routes. Report security issues privately.
 
 ## Supported versions
 
-| Version | Supported |
-| --- | --- |
-| 0.1.x (latest commit) | ✅ yes |
+Use the [latest stable release](https://github.com/lazy9sascha/p-999k/releases/latest)
+when reproducing an issue. Include the affected version in your report.
 
 ## Report a vulnerability
 
@@ -20,7 +19,7 @@
 - Bearer authentication, mailbox and operation policy, and Host/Origin checks on the hub routes
 - Signed Events callbacks and the webhook wake
 - Token storage and handoff (see [credential custody](docs/configuration.md#credential-custody-and-handoff))
-- Anything that lets a request reach the queue without a valid token
+- Registration, pairing, and verification of signed Cloudflare Access assertions
 
 The [auth model](docs/architecture.md#auth-model) describes what the hub checks. Known gaps are listed in [limitations](docs/architecture.md#limitations).
 

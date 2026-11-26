@@ -1,8 +1,10 @@
 # Architecture
 
-999K is one hub process and one SQLite file on your Mac. The hard part is not the queue. The hard part is that **every agent reaches the outside world differently**. Some can call an MCP server but can't be called. Some can be woken by a webhook but can't hold a connection open. Some run on a VM that sleeps. Some only exist as a thread inside a desktop app.
-
-So this page is organized by **connection mode**, not by agent. New agents go through [agent triage](#agent-triage), which picks the mode that fits what the agent can do. Which agent uses which mode, and what was actually tested, is in [Agents and capabilities](agents.md).
+999K keeps its queue in SQLite on your Mac. The hub applies mailbox policy
+and stores linked replies. Each agent’s capabilities determine how it receives
+work. Some agents poll, some can receive a wake, and a native Codex worker can
+claim requests for a local thread. See [agent capabilities](agents.md) for the
+connection and evidence for each agent.
 
 - [Big picture](#big-picture)
 - [Connection modes](#connection-modes)
@@ -52,7 +54,7 @@ flowchart LR
 
 - The diagram shows a public HTTPS tunnel. `run` requires a tunnel mode. See [Tunnel URLs](tunnels.md).
 - The hub only binds to loopback. The tunnel is transport only. It does not grant mailbox access.
-- The queue is the single source of truth. Wakes, tunnels, and app state are hints around it.
+- The queue records requests, replies, and acknowledgments.
 
 ## Connection modes
 
@@ -62,7 +64,7 @@ Four ways an agent can be connected. They differ in **who starts the conversatio
 | --- | --- | --- | --- | --- |
 | **A. Wake + pull** | Hub sends a webhook; agent then calls the hub | Yes, for the agent's MCP calls. The agent's webhook URL is outbound from the Mac. | Webhook POST with the message ID | Grok Bot |
 | **B. Pull only (connector or polling)** | Agent calls the hub's MCP route | Yes | Only when it polls (`p-999k_wait`/`p-999k_inbox`) or a user asks it to check | Muse |
-| **C. Event push (MCP Events)** — intended design | Hub pushes an event into the agent platform. Agent then calls the hub. | Yes, for the agent's MCP calls | Platform event subscription (signed callback) | Codex Work Cloud (live acceptance on this hub). Dot (terminal-reply Events verified here). |
+| **C. Event push (MCP Events)** | Hub sends an event to the agent platform. The agent then calls the hub. | Direct HTTPS or a private tunnel | Signed platform callback | Codex Work Cloud and Dot |
 | **D. Local bound receiver** (Mac desktop thread) | A native worker uses the common receiver API and the bound app thread | No | The worker claims through the hub | Codex Local (`codex-local`) |
 
 ### A. Wake + pull
@@ -290,29 +292,32 @@ A claim moves an ordinary request to `dead_lettered` after five expired delivery
 
 ## Auth model
 
-There are four separate secrets. None of them substitutes for another.
+Transport, mailbox authorization, wake credentials, and peer registration
+have separate checks.
 
-| Layer | Secret | Stored | Protects |
+| Layer | Input | Stored | Protects |
 | --- | --- | --- | --- |
 | Tunnel | SSH key `pigeonmq-cloud-tunnel-ed25519` + pinned host key in `pigeonmq-cloud-tunnel-known_hosts` | Runtime folder, mode 600 | Who can open the tunnel; that it goes to the real tunnl.gg |
 | Mailbox | Per-app Bearer token | Built-in apps use the macOS Keychain. Isolated local mailboxes use a mode 0600 token file. The policy keeps only `token_sha256`. | Which mailbox and operations |
 | Wake | Webhook URL + `Authorization` header | One macOS Keychain item selected by `grok-webhook-keychain`. Legacy mode uses two private files. | Who can start an agent run |
 | Registration | `pigeonmq-cloud-registration.json` | Runtime folder, mode 600 | Which mailboxes exist and whether they are revoked |
 
-How a request is checked:
+The hub checks each MCP request in this order.
 
 1. Path must be a known route with an enabled profile.
-2. `Authorization: Bearer <token>` is hashed and compared in constant time with `token_sha256`.
-3. The policy must be active. Muse and Grok Bot also check `expires_at_ms`.
-4. Routes with operation grants check `operations`. Dot has no separate operation grants.
-5. The route checks recipient and mailbox access. Muse, Grok Bot, Dot, and Codex MCP use registration to check peers. Generic send and request routes use the principal’s `send_to` list.
+2. For a direct [Cloudflare Access binding](configuration.md#dot-and-codex-cloud-through-direct-oauth)
+   on `/dot/mcp` or `/codex/mcp`, the hub verifies the signed assertion and
+   loads the configured mailbox Bearer from a private file.
+3. The hub hashes the Bearer and compares it with `token_sha256` in constant time.
+4. The policy must be active. Muse and Grok Bot also check `expires_at_ms`.
+5. Routes with operation grants check `operations`. Dot has no separate operation grants.
+6. The route checks recipient and mailbox access. Muse, Grok Bot, Dot, and Codex MCP use registration to check peers. Generic send and request routes use the principal’s `send_to` list.
 
 Muse and Grok Bot reject the retired top-level `senders` field. The central registry determines peer access. See the [policy format](configuration.md#policy-format) before upgrading an existing hub.
 
 Things to know:
 
 - **tunnl.gg terminates TLS** when you opt in with `RADIO999K_TUNNEL=tunnl`. The provider can see the Bearer token and message bodies. Use synthetic data until you accept that, or use a different tunnel.
-- A Cloudflare Access header (or any tunnel-level credential) is not 999K auth. The Bearer check still applies.
 - Source IP is never used for auth. Cloud agents call from shared egress IPs.
 
 ## Failure, retry, and duplicate rules
@@ -440,7 +445,10 @@ A valid triage record is not proof of a connection. For example, the [Vooy candi
 
 ## Limitations
 
-- **Dot:** manual Secure MCP Tunnel setup and optional terminal-reply Events exist. There is no one-step setup command. Live terminal-reply wake is recorded in [DOT-03](research.md#dot-03-standalone-terminal-reply-events).
+- **Dot:** Direct OAuth needs an operator-provisioned endpoint and ChatGPT approval.
+  Terminal-reply Events worked on the [private tunnel](research.md#dot-03-standalone-terminal-reply-events).
+  Automatic Events and token refresh remain unverified on the
+  [tested direct connection](research.md#new-orca-installation-with-a-hosted-address).
 - **Codex Cloud:** acceptance covers web Work and app-created desktop Work Cloud, not native desktop UI clicks or every Cloud job. Each target needs its own authorized platform subscription.
 - **Codex Local:** the `codex-local` worker needs a protected existing thread and native socket. It does not provide Cloud execution.
 - **Grok Bot:** the wake started a run on this hub. A token-file mismatch stopped it. The read and linked reply were completed manually ([GROK-06](research.md#grok-06-first-message-exchange-on-this-hub)). Use `setup-grok` or prepare the policy by hand. See [configuration](configuration.md#grok-bot-policy-by-hand).
@@ -449,4 +457,5 @@ A valid triage record is not proof of a connection. For example, the [Vooy candi
 - **macOS only** for Keychain-based token storage and `handoff --copy-token`.
 - No signed or notarized binary is published.
 - The A/B/C/D triage rules are applied by hand. `init <agent>` checks a locally staged triage record (see [Triage file to init](#triage-file-to-init)).
-- Built-in app routes and profiles are still a static catalog in code. Moving them to registered modules is planned for the next version. Local mailboxes from `init <agent>` already route through the registry when the hub runs with `--mailbox-home`.
+- The built-in profiles come from a static catalog. The listener with
+  `--mailbox-home` loads the local mailbox registry.

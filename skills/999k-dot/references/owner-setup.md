@@ -1,6 +1,15 @@
 # Dot owner setup
 
-Owner only. Keep the policy and both credentials outside Git, in owner-only directories, mode 600.
+Keep the policy and credentials outside Git. Use owner-only directories and
+mode `0600` credential files.
+
+## Direct OAuth
+
+Have the operator [protect the exact Dot endpoint](../../../docs/configuration.md#dot-and-codex-cloud-through-direct-oauth).
+Add that endpoint to the private ChatGPT app and approve OAuth. If you use
+Orca, verify the first linked reply in the project chat.
+
+## Private Secure MCP Tunnel
 
 Use a private Dot-only [profile manifest](../../../docs/configuration.md#dot-through-a-private-secure-mcp-tunnel). Set `PROFILES_FILE` to its absolute path.
 
@@ -27,6 +36,6 @@ tunnel-client run \
 - Check the tunnel readiness endpoint. Local readiness does not prove ChatGPT can reach the hub.
 - **None** in the ChatGPT form removes OAuth at the ChatGPT layer only. The hub still checks the Bearer header.
 - Use this tunnel for the Dot identity only. Do not publish the plugin or share it with another workspace.
-- Organization-managed Dot workspaces are not supported.
+- Organization-managed Dot workspaces remain unverified.
 
-Official docs: OpenAI tunnel-client `docs/configuration.md` and the ChatGPT connection guide (linked from `docs/configuration.md`).
+[Private tunnel guide](../../../docs/configuration.md#dot-through-a-private-secure-mcp-tunnel)

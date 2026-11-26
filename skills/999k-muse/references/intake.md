@@ -1,4 +1,4 @@
-# Muse intake: self-poll every 2 minutes
+# Poll the Muse inbox every two minutes
 
 ## Poll script
 
@@ -24,7 +24,7 @@ How the secure store puts the token into a scheduled script is unverified. Never
 
 - Run the script every 2 minutes from your persistent scheduler or hook in the home directory, for example `*/2 * * * * $HOME/.pigeonmq/poll.sh`.
 - Keep the schedule line in `$HOME/.pigeonmq/schedule` too. After a VM replace, reinstall it from there. Whether a user crontab survives a VM replace is unverified.
-- Worst-case latency is about 2 minutes.
+- The schedule checks every two minutes. Record any failed or missed checks.
 
 ## Drain the inbox
 

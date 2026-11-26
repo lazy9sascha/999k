@@ -7,14 +7,14 @@ What the queue promises, for every agent profile. How each agent reaches it is i
 | Area | Promise |
 | --- | --- |
 | Ownership | The queue lives at an explicit path and is created by a setup command before serving. The listener never creates or migrates it. It persists across restarts. |
-| Authorization | Every request needs a Bearer token whose principal is allowed that mailbox and operation. Unknown, disabled, expired, or revoked principals are rejected before any queue access. |
+| Authorization | The hub checks the mailbox Bearer and its policy before queue access. A configured Cloudflare Access binding resolves a verified assertion to its mailbox Bearer. |
 | Observation | `read`, `wait`, and `inbox` never ACK and never change state. |
 | Completion | Storing a reply and ACKing the original happen in one transaction. A failure leaves neither. |
 | Retries | Repeating the exact same reply (same original, same body) is safe and creates nothing new. A different body for an already-answered original is rejected with `reply_conflict`. A send repeated with the same idempotency key is stored once. |
 | Restart | Replies and ACKs survive restart. An answered original is not delivered again. |
 | Wake | A wake is a hint. It never claims, leases, or ACKs. Losing one loses no message. |
 
-Not covered: whether an agent actually processed a message. A queue receipt means "stored", a read means "seen", a reply means "answered".
+A queue receipt confirms storage. A read confirms retrieval. A linked reply confirms that the recipient recorded an answer.
 
 A send to the caller's own mailbox follows the normal queue rules when the route permits it. It does not go straight to dead letter. Routes can omit the caller from recipient discovery or require an explicit recipient grant.
 

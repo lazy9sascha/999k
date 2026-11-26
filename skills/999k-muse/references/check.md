@@ -29,7 +29,7 @@ Use the exact tool names your hub lists for the checks and intake examples below
 Success:
 
 - `initialize` returns `HTTP 200` and a `result` with `serverInfo`. The hub supports protocol versions `2025-03-26` and `2026-07-28`. It keeps no session, so no session header is needed. Use a string or signed 64-bit integer as the request ID.
-- `tools/list` is the source of truth. The count changes between versions. Do not check a number. Check that the tools this agent needs are listed:
+- Check `tools/list` for the names of the tools this agent needs.
   - receive: `p-999k_read`, `p-999k_wait`, `p-999k_reply`, `p-999k_confirm_terminal`
   - read-only inbox check: `p-999k_inbox`
   - send, if the policy allows `send`: `p-999k_send`, `p-999k_recipients`

@@ -1,16 +1,16 @@
-# Setup skills per adapter type
+# Set up agent inbox handling
 
-The examples use the new `p-999k_*` MCP names. On the released 0.2.0 hub or stdio client, use the `radio999k_*` names returned by `tools/list`.
+Use the tool names returned by `tools/list`. These examples use the
+`p-999k_` prefix. Release 0.2.0 advertises `radio999k_` names.
 
 Triage ends when you choose a connection mode (A–D). The modes are defined in [architecture](architecture.md#connection-modes). The next step is to give the agent a setup skill for that type.
 
-**Flow:** triage prompt → capability row → adapter type → paste that type's setup skill into the agent → the agent reports back in ONE fenced code block.
+After triage, copy the template for the selected mode into the agent’s
+instructions. Use the fenced block as the template. Ask the agent for its
+setup result in one code block.
 
-Keep agent instruction files, skills, and MCP tool descriptions small. Load details on demand. The templates tell the agent to call the mailbox tools on demand. Do not paste tool docs into a skill. The notes below are for you. The fenced blocks are what you copy to the agent.
-
-Only agents with a webhook can be woken. The hub never wakes a polling agent. Type B must poll itself.
-
-> **Planned design.** This handoff is a manual checklist, like [agent triage](architecture.md#agent-triage). No code pastes or installs these skills yet.
+Webhook and Events connections can receive a wake. A pull-only agent needs
+its own poller or a request from the user.
 
 ## Which template to use
 
@@ -30,7 +30,7 @@ Use `p-999k_inbox` with `{}` for the latest received mail. Use `{"query":"build 
 
 Browsing is read-only. Use `p-999k_wait` to look for pending work. `p-999k_reply` stores the reply and acknowledges the original together. `p-999k_confirm_terminal` acknowledges a terminal answer.
 
-These skills are repository Markdown for a separate agent-side handoff. The hub advertises MCP tools and has no MCP Resources catalog. Update the copied or installed skill through the agent's own mechanism. The [app upgrade checklist](quickstart.md#upgrade-an-existing-app-to-012) covers refreshing the MCP tool catalog.
+These skills are repository Markdown for a separate agent-side handoff. The hub advertises MCP tools and has no MCP Resources catalog. Update the copied or installed skill through the agent's own mechanism. The [app upgrade checklist](troubleshooting.md#refresh-a-saved-mcp-app) covers refreshing the MCP tool catalog.
 
 ## Type B (pull only)
 
@@ -53,7 +53,7 @@ The hub cannot wake you. You must poll.
 2. Each run, call `p-999k_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `p-999k_reply` once on that message_id. Call the mailbox tools on demand; do not copy tool docs into this skill.
 3. If the connection drops, retry that call once; if it still fails, stop and report. If nothing is pending, end quietly. Put no secrets in a message body or in this skill. Outbound send/reply still need the user's normal approval.
 
-## Report after setup (ONE message, ONE code block)
+## Report setup in one code block
 - skill path saved
 - scheduler line or watch script path, and the interval
 - one test run: number of messages handled, or "none pending"
@@ -77,7 +77,7 @@ The hub cannot wake you. A scheduler runs a condition check that must not start 
 2. When a full run starts, call `p-999k_wait` (timeout_ms <= 10000) until nothing is pending. For each message, read it, act within your normal rules, then `p-999k_reply` once on that message_id. Call the mailbox tools on demand; do not copy tool docs into this skill.
 3. If the connection drops, retry that call once; if it still fails, stop and report. If nothing is pending, end quietly. Put no secrets in a message body, script, or this skill.
 
-## Report after setup (ONE message, ONE code block)
+## Report setup in one code block
 - skill path and condition script path saved
 - scheduler line and the interval
 - one test run: number of messages handled, or "none pending"
@@ -85,7 +85,10 @@ The hub cannot wake you. A scheduler runs a condition check that must not start 
 
 ## Type A (wake + pull)
 
-Use this when an inbound webhook or trigger can start a run. The wake may carry a message id, never secrets or message text. The agent must still drain the inbox itself. A lost wake loses nothing if a fallback poll exists. This repo implements Grok Bot wake on the hub side. The block below is the agent-side skill.
+Use this template for a webhook or another trigger that can start a run.
+The hub keeps the request queued if a wake is lost. Use a fallback poll
+if the platform supports one. For GrokBot, configure the
+[webhook wake](quickstart.md#5-optional-grok-bot-wake) first.
 
 ```text
 ---
@@ -101,7 +104,7 @@ A webhook or trigger is only a nudge. It may carry a message id, never secrets. 
 2. If the connection drops, retry that call once; if it still fails, stop and report. If nothing is pending, end quietly.
 3. If the platform allows it, keep a fallback poll in persistent storage. Put no secrets in a message body or in this skill. Outbound send/reply still need the user's normal approval.
 
-## Report after setup (ONE message, ONE code block)
+## Report setup in one code block
 - skill path saved
 - webhook or trigger setup (no secrets), and any fallback poll
 - one test run: number of messages handled, or "none pending"
@@ -109,7 +112,9 @@ A webhook or trigger is only a nudge. It may carry a message id, never secrets. 
 
 ## Type C (Events)
 
-This repo implements MCP Events delivery for Codex Cloud. When the platform supports event subscriptions, the hub pushes an event and the agent then calls the hub. Treat the event as a nudge, not as the message body, and drain the inbox the same way as type A.
+Use this template for Codex Cloud or Dot with a verified MCP Events
+subscription. When an event arrives, read the message from the hub.
+[Connection evidence for each agent](agents.md#deployment-matrix)
 
 ```text
 ---
@@ -125,7 +130,7 @@ A platform event is only a nudge, not the message body. Then drain the inbox.
 2. If the connection drops, retry that call once; if it still fails, stop and report. If nothing is pending, end quietly.
 3. Put no secrets in a message body or in this skill. Outbound send/reply still need the user's normal approval.
 
-## Report after setup (ONE message, ONE code block)
+## Report setup in one code block
 - skill path saved
 - event subscription (no secrets)
 - one test run: number of messages handled, or "none pending"

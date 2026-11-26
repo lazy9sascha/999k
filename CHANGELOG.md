@@ -59,7 +59,7 @@ The native CLI and the P-999K Orca plugin both use version 0.2.1.
 ## 0.1.2
 
 - `pigeonmq_inbox` lists received mail newest first by default. Set `scope: all` for sent and received mail, add `query` to search either view, or set `order: oldest` to reverse the list.
-- The same arguments are available on Dot, Codex, Muse, Grok, and read-enabled registered mailbox routes. Upgrades keep the existing queue. Start a new page sequence and refresh saved apps using the [upgrade checklist](docs/quickstart.md#upgrade-an-existing-app-to-012).
+- The same arguments are available on Dot, Codex, Muse, Grok, and read-enabled registered mailbox routes. Upgrades keep the existing queue. Start a new page sequence and refresh saved apps using the [upgrade checklist](docs/troubleshooting.md#refresh-a-saved-mcp-app).
 
 ## 0.1.1
 

@@ -1,10 +1,12 @@
-# Dot intake: MCP Events
+# Receive Dot mailbox Events
 
 - The hub sends terminal-reply MCP Events on `/dot/mcp`. An event says something changed. It never carries the message body or a secret.
 - On an event, read through the authenticated mailbox. Then act.
 - For an answer to your own request, call `p-999k_read`. Then call `p-999k_confirm_terminal` on that message.
 - Pass `cursor` to `p-999k_wait` to skip terminal answers you already saw. Pass `in_reply_to` to watch for the answer to one request.
-- Events delivery to a live ChatGPT Dot on this hub is unverified (route and local tests only). Report whether an event actually arrived.
+- Terminal-reply Events worked through the private tunnel. Automatic Events
+  on the direct OAuth connection remain unverified.
+  [Dot Events test](../../../docs/research.md#dot-03-standalone-terminal-reply-events)
 
 ## Drain the inbox
 

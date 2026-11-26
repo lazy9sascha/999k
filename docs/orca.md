@@ -1,0 +1,128 @@
+# Connect an agent to your Orca project
+
+Connect an agent you already use. Ask it a question and check for its
+reply in the same Orca project chat.
+
+P-999K is experimental. You can use a hosted address or your own HTTPS
+domain. Both use the queue on your Mac.
+
+## Install the CLI and plugin
+
+Use an Apple Silicon Mac with Orca 1.4.268 or later. If the Mac already
+runs a managed hub, follow the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
+For a new installation, open a terminal in an empty download directory.
+The commands install [0.2.2](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.2).
+If Orca is outside `/Applications` and absent from `PATH`, set `orca_bin`
+below to the executable in your Orca app.
+
+```sh
+(
+	set -e
+	orca_bin=$(command -v orca || printf "%s" /Applications/Orca.app/Contents/Resources/bin/orca)
+	release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.2
+	for file in install.sh 999k-0.2.2-aarch64-apple-darwin.tar.gz p-999k-0.2.2.tar.gz SHA256SUMS-orca; do
+		curl -q --proto '=https' --proto-redir '=https' -fLsS -o "$file" "$release/$file"
+	done
+	sh ./install.sh
+	"$HOME/.local/bin/999k" --version
+	shasum -a 256 --check SHA256SUMS-orca
+	tar -xzf p-999k-0.2.2.tar.gz
+	"$orca_bin" plugin validate ./p-999k-0.2.2
+	"$orca_bin" plugin install ./p-999k-0.2.2
+)
+```
+
+Check that the CLI prints `999k 0.2.2`. If Orca asks for approval, review
+the permissions and run the command it prints. The plugin uses those
+permissions to find your workspace and run setup in a terminal.
+[Package and uninstall commands](../packaging/README.md#orca-plugin-archive)
+
+## Connect a peer
+
+1. Open a local workspace. In the right sidebar, choose
+   **P-999K → Initial setup → Open setup terminal** to prepare the local hub.
+2. Choose how the app will reach your Mac.
+
+   - For Muse, GrokBot, Cue, or Instinct,
+     [reserve a hosted address](#reserve-a-hosted-address) or
+     [configure the peer's routes on your domain](#use-your-own-https-domain).
+   - For Dot, use a protected OAuth endpoint your operator prepared or a
+     [private Secure MCP Tunnel](configuration.md#dot-through-a-private-secure-mcp-tunnel).
+     If you manage the domain, [configure Dot's OAuth endpoint](configuration.md#dot-and-codex-cloud-through-direct-oauth).
+
+3. In **Setup target**, select your peer. Choose **I’ll do it myself → Open setup terminal**.
+   If Orca asks you to create or approve the relay, follow the prompt.
+   Run any resume command in the same workspace.
+4. Finish setup in the app you already use.
+
+   - For pairing, wait for **authenticated MCP route ready**. Copy the setup
+     message from the panel or terminal into the peer's existing conversation.
+     When the peer opens its private setup, choose **Get a setup code** in
+     Orca. Enter the address and code from the terminal in the app's
+     private fields. If the app asks for a Bearer token,
+     [redeem the code privately](pairing.md#offer-and-redeem)
+     and use the app's secure credential field.
+   - For direct Dot, wait for **OAuth discovery ready**. Add the protected
+     URL as a private MCP app in ChatGPT, then approve OAuth. If you use a
+     private tunnel, select its app in the intended Dot conversation.
+
+5. Ask the app to list its mailbox tools. Then
+   [verify the first reply](#verify-the-first-reply).
+
+To delegate setup, select **Ask my assistant to do it** for a single peer,
+or **Ask my assistant to set up all peers** under **Initial setup**. Copy the
+request to an assistant with Computer Use. Follow any browser or app
+approval it asks you to complete.
+
+### Reserve a hosted address
+
+Install [cloudflared for macOS](https://developers.cloudflare.com/tunnel/downloads/#macos).
+Choose **Initial setup → Reserve hosted address**. In the browser, enter the
+code from your verification email. Return to Orca and continue with the peer
+you selected. The other eligible peers can use the same address.
+[How to resume or check your address](hosted-registration.md)
+
+## Verify the first reply
+
+1. In your Orca project chat, enter a request such as “Ask Muse for a
+   shorter title for my release notes.” **Queued** means the hub stored it.
+2. If the peer waits for a manual check, open its existing conversation
+   and ask it to check its P-999K mailbox.
+3. Look for the answer in your original Orca project chat. If the relay
+   finishes waiting before the answer arrives, ask it to check the same
+   request. [Troubleshoot a missing reply](troubleshooting.md#check-a-pending-orca-reply)
+
+[Check which peers verified automatic intake](research.md#new-orca-installation-with-a-hosted-address)
+
+<a id="switch-to-your-own-domain"></a>
+
+## Use your own HTTPS domain
+
+In Orca, choose **Initial setup → Use my own domain**. Use the same hub
+home to keep your queue and mailbox credentials.
+
+1. Point your [HTTPS proxy or tunnel](tunnels.md#use-your-own-https-origin)
+   at the hub. Publish the peer's exact
+   [MCP and pairing paths](pairing.md#prepare-the-route). For Dot, publish its
+   [protected OAuth endpoint](configuration.md#dot-and-codex-cloud-through-direct-oauth).
+2. Add the peer ID and exact HTTPS MCP URL to the owner-private
+   `orca-ingress.json` in that home. For example, use
+   `{"muse":"https://radio.example.com/muse/mcp"}`. Keep the other entries and
+   set the file mode to `0600`. This entry takes priority over the saved
+   hosted address for that peer.
+3. If this is your first connection, return to [Connect a peer](#connect-a-peer)
+   and select the peer in **Setup target**. For an existing peer, open its
+   setup terminal again and update the endpoint in the app.
+4. [Verify a reply](#verify-the-first-reply) before retiring an existing
+   connection. To roll back, restore the previous endpoint in the app
+   and restore or remove that peer’s entry in `orca-ingress.json`.
+
+## Set up a management bot
+
+1. In the panel, choose **Initial setup → Set up a management bot**.
+2. In **Bots → New bot**, create **P-999K**. Use the purpose shown in the panel.
+3. In the bot's **Home Chat**, ask it to connect a peer by name. To switch
+   domains, ask “Use my own domain.” If an older bot lacks that guide,
+   update its purpose from the panel.
+
+[Orca CLI commands and options](configuration.md#orca-setup-commands)

@@ -4,7 +4,8 @@ Use a pairing code to hand an existing peer its mailbox credential over HTTPS. T
 
 ## Prepare the route
 
-First select and connect the peer on the Mac using [Orca setup](quickstart.md#connect-orca-to-your-existing-peers). The local hub must already have that peer's mailbox and credential.
+In [Orca setup](orca.md#connect-a-peer), select the peer to prepare its mailbox
+and managed credential. Verify the route before issuing a code.
 
 Publish the selected peer's two exact paths on the same HTTPS origin. Keep MCP Bearer authentication in place. Forward the pairing POST to the hub and keep its response out of proxy logs and caches.
 
@@ -15,7 +16,8 @@ Publish the selected peer's two exact paths on the same HTTPS origin. Keep MCP B
 | `cue` | `/cue/pair` | `/cue/mcp` |
 | `instinct` | `/instinct/pair` | `/instinct/mcp` |
 
-Only publish paths for peers you intend to connect. Dot uses a [private Secure MCP Tunnel](configuration.md#dot-through-a-private-secure-mcp-tunnel). Enable its connector in the existing Dot conversation and verify it there.
+Only publish the paths for the selected peer. For Dot, use the separate
+[OAuth or private tunnel procedure](orca.md#connect-a-peer).
 
 ## Offer and redeem
 
@@ -32,7 +34,7 @@ For peers with terminal access, the 999k CLI can perform the same exchange. On m
 ```sh
 mkdir -m 700 "$HOME/.999k-peer"
 999k pair redeem muse --origin https://radio.example.com \
-  --output "$HOME/.999k-peer/muse.bearer"
+	--output "$HOME/.999k-peer/muse.bearer"
 ```
 
 For a remote Bash terminal or scripted enrollment, read the code without echo and feed it through a pipe. You can also use `--code-file` with an owner-private file. Keep the code out of command-line arguments, logs and source files.
@@ -40,11 +42,14 @@ For a remote Bash terminal or scripted enrollment, read the code without echo an
 ```bash
 IFS= read -rs -p 'Pairing code: ' code
 printf '%s\n' "$code" | 999k pair redeem muse --origin https://radio.example.com \
-  --code-stdin --output "$HOME/.999k-peer/muse.bearer"
+	--code-stdin --output "$HOME/.999k-peer/muse.bearer"
 unset code
 ```
 
-If the code expired or was already used, ask the hub owner for a new code. Keep a successfully saved credential if an earlier attempt already completed.
+After submission, check whether the peer redeemed the code and can call its
+mailbox. If the code is still pending, wait for the app outcome. If the code
+expires before redemption, reopen the private form and issue one new code.
+Keep an existing credential if the app already paired successfully.
 
 ## Check the existing conversation
 
@@ -56,11 +61,16 @@ Clients with a native MCP connector can set its exact HTTPS route and use the sa
 - **Cue** receives arrival notices by email when configured. A Mac relay can send the notice. Cue’s email integration handles the wake on the app side. Cue can read and reply through its connector or make authenticated MCP requests from an HTTPS-capable runtime.
 - **Instinct** uses its existing iMessage conversation for setup. Use the app’s secure login form for code entry when it offers one. Its runtime redeems the code by plain HTTPS POST with a JSON body, saves the credential privately, and sends authenticated JSON-RPC directly. The pairing endpoint accepts JSON and returns JSON to the runtime. Use the original message ID to read and reply. In the verified exchange, a manual ID-only iMessage identified the original. Automatic iMessage intake remains unverified.
 
-Have the peer run MCP `initialize` and `tools/list`. Then send a new request, and have the peer read it and call `p-999k_reply` with the original message ID. Confirm both the matching linked reply and original acknowledgement from the sender side. A tool list only verifies discovery. An email delivery or webhook acceptance only verifies its respective notification step. Prove automatic intake with a fresh request that the peer processes while its conversation is idle.
+Have the peer call MCP `initialize` and `tools/list` to verify discovery. Send one
+new request. Have the peer read it and call `p-999k_reply` with the original
+message ID. Check the original ACK and linked reply on the sender side. For
+Orca, check the reply in the original project chat. To verify automatic
+intake, send a test request while the peer’s conversation is idle.
 
 ## Verify locally with synthetic data
 
-Build the CLI and run the pairing test with Python 3 and OpenSSL. The test serves HTTPS on loopback with a temporary certificate. It uses fixture mailboxes, never prints the pairing code or Bearer, and checks rejection of wrong, consumed, and revoked codes, remote read and reply, and the original acknowledgement.
+In a local terminal outside an Orca agent session, build the CLI and run
+the pairing test with Python 3 and OpenSSL. The test serves HTTPS on loopback with a temporary certificate. It uses fixture mailboxes, never prints the pairing code or Bearer, and checks rejection of wrong, consumed, and revoked codes, remote read and reply, and the original acknowledgement.
 
 ```sh
 cargo build --locked --bin 999k
