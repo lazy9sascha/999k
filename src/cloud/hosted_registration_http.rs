@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::enrollment_store::{PENDING_SECONDS, UNOPENED_SECONDS};
 use super::hosted_origin::UnixOrigin;
 use super::hosted_supabase::{normalized_email, valid_otp};
 use base64::{
@@ -375,6 +376,8 @@ pub(crate) fn login_form(
     {
         return Err(TemporarilyUnavailable);
     }
+    let approval_minutes = PENDING_SECONDS / 60;
+    let unopened_hours = UNOPENED_SECONDS / 3600;
     let mut response = html_response(format!(
         r#"<!doctype html>
 <html lang="en">
@@ -383,6 +386,18 @@ pub(crate) fn login_form(
 <title>Register 999K</title>
 <h1>Register 999K</h1>
 <p>Proposed hostname: <strong>{hostname}</strong></p>
+<h2>About hosted setup</h2>
+<p>Supabase Auth receives your email address and verifies your one-time code.
+The registration service stores your verified account ID, installation status,
+and Cloudflare resource references so it can resume or revoke your registration.</p>
+<p>Cloudflare provides the public address and carries requests to the 999K hub
+on your Mac. Requests can contain message text and authentication headers.
+Your Mac stores the message queue and mailbox credentials.</p>
+<p>Approve a pending registration within {approval_minutes} minutes. Starting {unopened_hours} hours after
+the hosted address is issued, the service may remove the address and tunnel
+for a registration that has never connected.
+The operator can revoke public access on request. The registration record stays
+in the operator registry. Contact your operator to ask about your registration.</p>
 <p id="missing">Open the installation link from 999K on your Mac.</p>
 <form id="request" method="post" action="/register/{installation_id}">
 <input id="handoff" name="handoff" type="hidden" value="">
@@ -427,7 +442,7 @@ pub(crate) fn approval_result() -> RegistrationResponse {
     let mut response = html_response(
         "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">\
          <title>999K registration approved</title><h1>Registration approved</h1>\
-         <p>Return to 999K on your Mac to finish setup.</p></html>"
+         <p>Return to 999K on your Mac to finish reserving the address. +         Connect each peer in its own app to allow it to use your mailbox.</p></html>"
             .to_owned(),
     );
     set_attempt_cookie(&mut response, "", 0);
