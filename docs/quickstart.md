@@ -54,6 +54,11 @@ or have an assistant with Computer Use transfer them. Check the peer’s tool
 list, then verify a linked reply in the originating Orca project chat.
 [Cloudflare downloads for macOS](https://developers.cloudflare.com/tunnel/downloads/#macos)
 
+| Peer | Address or route | App approval |
+| --- | --- | --- |
+| Muse, GrokBot, Cue, Instinct | Select the peer after reserving a hosted address, or configure its exact MCP endpoint for your own ingress. | Open the private form and redeem one setup code for each peer, including when you use the reserved address. |
+| Dot | Use the exact operator-protected OAuth endpoint for a new direct connection. An existing Secure MCP Tunnel connector can stay active. | Add the protected URL to ChatGPT and approve OAuth. |
+
 If you use the legacy RC3 pilot, see its
 [release-specific instructions](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.1-rc.3).
 

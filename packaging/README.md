@@ -1,6 +1,6 @@
 # Release installers
 
-To build for a hosted pilot, set `RADIO999K_RELEASE_REGISTRATION_URL` to the approved public HTTPS registration origin before running `scripts/package-release.sh`. The release workflow reads the repository variable with the same name. The build embeds this public address in the CLI. The bundled pilot accepts Cue. An explicitly configured different provider can serve other supported peers through the CLI. Leave the variable unset for a local distribution. Users request browser enrollment with `init --reserve-address` or with `--orca-reserve-address` when setting up an Orca peer. Keep management credentials on the operator Mac.
+To build for hosted setup, set `RADIO999K_RELEASE_REGISTRATION_URL` to the approved public HTTPS registration origin before running `scripts/package-release.sh`. The release workflow reads the repository variable with the same name. The build embeds this public address in the CLI. The registration service controls which peer routes each installation can attach. Leave the variable unset for a local distribution. Users request browser enrollment with `init --reserve-address` or with `--orca-reserve-address` when setting up an Orca peer. Keep management credentials on the operator Mac.
 
 Build and smoke-test each native archive before rendering its installers.
 
