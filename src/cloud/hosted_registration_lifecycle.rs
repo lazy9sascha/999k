@@ -3,8 +3,15 @@ use enrollment_store::{LifecyclePhase, LifecycleRecord};
 use hosted_cloudflare::lifecycle::{
     ConnectionHistory, ProviderLifecycleOutcome, SavedCloudflareInstallation,
 };
+use hosted_email::NoticeDeliveryError;
 use serde::Serialize;
 use std::fs::File;
+
+const HOSTED_RESET_SECONDS: i64 = 5 * 24 * 60 * 60;
+
+fn hosted_reset_cutoff(first_reset_at: i64, now: i64) -> Option<i64> {
+    (now >= first_reset_at).then(|| now - (now - first_reset_at) % HOSTED_RESET_SECONDS)
+}
 
 #[derive(Deserialize, Serialize)]
 struct BoundResources {
@@ -220,24 +227,107 @@ impl Operator {
         }
     }
 
+    fn request_hosted_reset(&self, cutoff: i64) -> io::Result<()> {
+        let _guard = self.provider_guard()?;
+        let count = self
+            .record(|registry| registry.request_hosted_reset(cutoff))
+            .map_err(|_| unavailable())?;
+        if count > 0 {
+            tracing::info!(count, "scheduled hosted address reset requested");
+        }
+        Ok(())
+    }
+
+    async fn cleanup_tunnels(&self, now: i64) {
+        if let Some(cutoff) = self
+            .first_hosted_reset_at
+            .and_then(|first| hosted_reset_cutoff(first, now))
+            && self.request_hosted_reset(cutoff).is_err()
+        {
+            tracing::warn!("scheduled hosted address reset pending");
+        }
+        let Ok(candidates) = self.record(|registry| {
+            registry.expire_email_attempts(now)?;
+            registry.lifecycle_candidates(now)
+        }) else {
+            tracing::warn!("registration lifecycle candidates unavailable");
+            return;
+        };
+        for record in candidates {
+            if self.expire_if_unopened(record.id).await.is_err() {
+                tracing::warn!("registration lifecycle operation pending");
+            }
+        }
+    }
+
+    pub(super) async fn deliver_issuance_notices(&self) {
+        let Some(recipient) = &self.notice_to else {
+            return;
+        };
+        let Ok(notices) = self.record(|registry| registry.issuance_notices()) else {
+            tracing::warn!("registration notification queue unavailable");
+            return;
+        };
+        for (id, issued_at) in notices {
+            // Claim before SMTP. If acceptance is uncertain, retrying can send a duplicate.
+            match self.record(|registry| registry.take_issuance_notice(id, issued_at)) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => {
+                    tracing::warn!("registration notification claim unavailable");
+                    return;
+                }
+            }
+            match self.mailer.send_issuance_notice(recipient, issued_at).await {
+                Ok(()) => {}
+                Err(NoticeDeliveryError::TryAgain) => {
+                    if self
+                        .record(|registry| registry.retry_issuance_notice(id, issued_at))
+                        .is_err()
+                    {
+                        tracing::warn!("registration notification could not be queued for retry");
+                    }
+                }
+                Err(NoticeDeliveryError::Failed) => {
+                    tracing::warn!("registration notification delivery could not be confirmed");
+                }
+            }
+        }
+    }
+
+    pub(super) async fn cleanup_once(&self, now: i64) {
+        tokio::join!(self.cleanup_tunnels(now), self.deliver_issuance_notices());
+    }
+
     pub(super) async fn cleanup_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(Duration::from_secs(15 * 60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
             let Ok(now) = epoch_seconds() else { continue };
-            let Ok(candidates) = self.record(|registry| {
-                registry.expire_email_attempts(now)?;
-                registry.lifecycle_candidates(now)
-            }) else {
-                tracing::warn!("registration lifecycle candidates unavailable");
-                continue;
-            };
-            for record in candidates {
-                if self.expire_if_unopened(record.id).await.is_err() {
-                    tracing::warn!("registration lifecycle operation pending");
-                }
-            }
+            self.cleanup_once(now).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hosted_reset_cutoff;
+
+    #[test]
+    fn reset_uses_the_latest_elapsed_five_day_boundary_after_downtime() {
+        let day = 24 * 60 * 60;
+        let first = 100 * day;
+        assert_eq!(hosted_reset_cutoff(first, first - 1), None);
+        assert_eq!(hosted_reset_cutoff(first, first), Some(first));
+        assert_eq!(hosted_reset_cutoff(first, first + 5 * day - 1), Some(first));
+        assert_eq!(
+            hosted_reset_cutoff(first, first + 5 * day),
+            Some(first + 5 * day)
+        );
+        assert_eq!(
+            hosted_reset_cutoff(first, first + 16 * day),
+            Some(first + 15 * day)
+        );
     }
 }

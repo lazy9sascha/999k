@@ -40,6 +40,106 @@ fn connector_list(method: &'static str, result: serde_json::Value) -> Step {
 }
 
 #[tokio::test]
+async fn scheduled_reset_revokes_owned_connected_tunnels_and_resumes_after_restart() {
+    use crate::enrollment_store::LifecyclePhase;
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let (home, operator) = crate::tests::fixture();
+    let first_reset = 1_800_000_000;
+    let proof = URL_SAFE_NO_PAD.encode([7; 32]);
+    let issue = |at| {
+        let id = operator
+            .record(|registry| {
+                let id = registry
+                    .begin(Uuid::new_v4(), &proof, "A1B2C3D4", at - 3)?
+                    .id;
+                registry.approve_for_test(id, &proof, at - 1)?;
+                Ok(id)
+            })
+            .unwrap();
+        operator.persist_resources(id, &saved_resources()).unwrap();
+        operator
+            .record(|registry| {
+                registry.mark_ready(id, at, false)?;
+                registry.retain_connected(id, LifecyclePhase::Ready)
+            })
+            .unwrap();
+        id
+    };
+    let old = issue(first_reset - 30);
+    let boundary = issue(first_reset);
+    let hostname = operator.hostname(old);
+    let replace = |value: &str| {
+        value
+            .replace(ACCOUNT, &operator.account_id)
+            .replace(ZONE, &operator.zone_id)
+            .replace(INSTALLATION, &old.to_string())
+            .replace(HOST, &hostname)
+    };
+    let (provider, server) = fixture(
+        vec![
+            tunnel_exact("GET", "healthy"),
+            dns_exact("GET"),
+            dns_exact("DELETE"),
+            dns_exact("GET").status(503),
+            tunnel_exact("GET", "healthy"),
+            dns_exact("GET").status(404),
+            connector_list("GET", json!([{}])),
+            connector_list("DELETE", json!(null)),
+            tunnel_exact("DELETE", "down"),
+            tunnel_exact("GET", "down").status(404),
+        ]
+        .into_iter()
+        .map(|step| Step {
+            path: replace(&step.path),
+            result: serde_json::from_str(&replace(&step.result.to_string())).unwrap(),
+            ..step
+        })
+        .collect(),
+    )
+    .await;
+    let settings_path = home.path().join("settings.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_slice(&crate::read_private(&settings_path).unwrap()).unwrap();
+    settings["first_hosted_reset_at"] = json!("2027-01-15T08:00:00Z");
+    radio999k::private_file::replace_private(
+        &settings_path,
+        &serde_json::to_vec(&settings).unwrap(),
+    )
+    .unwrap();
+    radio999k::private_file::replace_private(&home.path().join("cloudflare.key"), API.as_bytes())
+        .unwrap();
+    let open = || {
+        let mut operator = crate::Operator::from_home(home.path()).unwrap();
+        operator.cloudflare.api = provider.api.clone();
+        operator
+    };
+    let phase = |operator: &crate::Operator, id| {
+        operator
+            .record(|registry| registry.lifecycle(id))
+            .unwrap()
+            .phase
+    };
+    drop(operator);
+    let operator = open();
+    operator.cleanup_once(first_reset - 1).await;
+    assert_eq!(phase(&operator, old), LifecyclePhase::Ready);
+    operator.cleanup_once(first_reset).await;
+    assert_eq!(phase(&operator, old), LifecyclePhase::Revoking);
+    assert_eq!(phase(&operator, boundary), LifecyclePhase::Ready);
+
+    drop(operator);
+    let operator = open();
+    operator.cleanup_once(first_reset + 60).await;
+    assert_eq!(phase(&operator, old), LifecyclePhase::Revoked);
+    operator
+        .cleanup_once(first_reset + 5 * 24 * 60 * 60 - 1)
+        .await;
+    assert_eq!(phase(&operator, boundary), LifecyclePhase::Ready);
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn tracked_dot_access_removal_resumes_and_rejects_shared_apps() {
     let mut shared = dot_access_step("GET");
     shared.result["destinations"]

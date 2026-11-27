@@ -73,13 +73,15 @@ approval it asks you to complete.
 
 P-999K resets its hosted tunnel addresses every 5 days. Peers using those
 addresses lose access at each reset. Your queue stays on your Mac.
+Contact your operator to restore a hosted address.
 For a stable address, [use your own HTTPS domain](#use-your-own-https-domain).
 
 With direct email delivery, your operator's email provider receives the
 address and one-time code to send the message. The registrar keeps temporary
 verification digests. After approval, it keeps the verification result,
-installation status, and tunnel references. The email provider applies its
-own mail retention policy.
+installation status, and tunnel references. If enabled, the operator email
+contains only the time when the address was first issued. The email provider
+applies its own mail retention policy.
 
 If the registration page names Supabase Auth, that service stores the email
 with its account record. [Supabase Auth user records](https://supabase.com/docs/guides/auth/users)
