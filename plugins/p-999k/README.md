@@ -4,8 +4,9 @@ Connect the agents you use outside the terminal to Orca. Ask Dot,
 Muse, GrokBot, Cue, or Instinct from your project chat. Each answer
 returns there, linked to its request.
 
-P-999K is experimental. Choose a hosted address or use your own HTTPS domain.
-The hub and queue stay on your Mac when you switch domains.
+P-999K is experimental. P-999K resets its hosted tunnel addresses every 5 days.
+Use your own HTTPS domain for a stable address. The hub and queue stay on your
+Mac when you switch.
 
 ## Get started
 

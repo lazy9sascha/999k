@@ -71,6 +71,10 @@ approval it asks you to complete.
 
 ### Reserve a hosted address
 
+P-999K resets its hosted tunnel addresses every 5 days. Peers using those
+addresses lose access at each reset. Your queue stays on your Mac.
+For a stable address, [use your own HTTPS domain](#use-your-own-https-domain).
+
 With direct email delivery, your operator's email provider receives the
 address and one-time code to send the message. The registrar keeps temporary
 verification digests. After approval, it keeps the verification result,
