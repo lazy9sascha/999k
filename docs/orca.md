@@ -24,7 +24,9 @@ For a new installation, run the 999K CLI installer in an empty directory.
 
 Check that the CLI prints `999k 0.2.2`. In Orca, open **Settings → Plugins**.
 Turn on plugins if prompted. Search for **P-999K** by **lazy9sascha** in
-the Community catalog and select **Install**. Review the permissions.
+the Community catalog. Select **Review & install** or **Install**.
+Check the requested permissions, then select **Install & enable**.
+If Orca asks for confirmation, select **Install**.
 The plugin uses them to find your workspace and run setup in a terminal.
 [Install from a release archive](../packaging/README.md#orca-plugin-archive).
 
