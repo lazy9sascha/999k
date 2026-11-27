@@ -1,8 +1,8 @@
 # P-999K
 
-Ask Dot, Muse, GrokBot, Cue, or Instinct from your Orca project chat. Your
-agents stay in their existing apps. Each answer returns to the Orca
-project chat, linked to its request.
+Connect the agents you use outside the terminal to Orca. Ask Dot,
+Muse, GrokBot, Cue, or Instinct from your project chat. Each answer
+returns there, linked to its request.
 
 P-999K is experimental. Choose a hosted address or use your own HTTPS domain.
 The hub and queue stay on your Mac when you switch domains.

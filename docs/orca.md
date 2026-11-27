@@ -1,8 +1,7 @@
-# Use Dot, Muse, and other agents in Orca
+# Connect your agents to Orca
 
-Connect Dot (ChatGPT), Muse, GrokBot, Cue, or Instinct. Once you connect
-a peer, ask it for help from your Orca project chat. Check for its reply
-in the chat that sent the request.
+Connect Dot (ChatGPT), Muse, GrokBot, Cue, or Instinct (Messages). Ask an
+agent from your Orca project chat and check for its linked reply there.
 
 P-999K is experimental. You can use a hosted address or your own HTTPS
 domain. Both use the queue on your Mac.
