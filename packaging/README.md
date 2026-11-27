@@ -53,32 +53,41 @@ and `999k-dot-resolve`. The npm package is named `@lazy9sascha/999k`.
 
 ## Orca plugin archive
 
-The release workflow builds a separate Orca plugin archive once, with its own
-checksum. Build it locally with Python 3:
+Install the [0.2.2 CLI](../docs/orca.md#install-the-cli-and-plugin) first.
+The plugin runs `$HOME/.local/bin/999k` and requires Orca 1.4.268 or later.
+Download `p-999k-0.2.2.tar.gz` and `SHA256SUMS-orca` from the
+[0.2.2 release](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.2).
+Run these commands in the download directory.
 
 ```sh
-python3 packaging/package_orca.py 0.2.2 target/orca-plugin
-python3 tests/orca_release_package.py
-(cd target/orca-plugin && shasum -a 256 p-999k-0.2.2.tar.gz > SHA256SUMS-orca)
-```
-
-The plugin version comes from its manifest and can differ from the CLI version. The archive contains a single
-installable folder, `p-999k-0.2.2`. Keep the Orca checksum with the Orca
-archive in its own directory. The native installer checksum file lists platform
-archives only.
-
-Install the [0.2.2 CLI](../docs/orca.md#install-the-cli-and-plugin) first. The plugin runs `$HOME/.local/bin/999k`. Use Orca 1.4.268 or newer
-and run these commands from the directory containing the Orca archive and its release checksum file.
-
-```sh
-shasum -a 256 --check SHA256SUMS-orca
-tar -xzf p-999k-0.2.2.tar.gz
-orca plugin validate ./p-999k-0.2.2
-orca plugin install ./p-999k-0.2.2
+(
+	set -e
+	orca_bin=$(command -v orca || printf "%s" /Applications/Orca.app/Contents/Resources/bin/orca)
+	shasum -a 256 --check SHA256SUMS-orca
+	tar -xzf p-999k-0.2.2.tar.gz
+	"$orca_bin" plugin validate ./p-999k-0.2.2
+	"$orca_bin" plugin install ./p-999k-0.2.2
+)
 ```
 
 The catalog ID is `lazy9sascha.p-999k`. Existing local installations of 0.2.0 use `local.radio999k`. The trusted worker uses `workspace:read` to find the active local workspace and `terminal:send` to run the setup command in a terminal there. To remove the installed plugin and its approval, run `orca plugin uninstall lazy9sascha.p-999k`. The first install can stop to request approval. Review the access and use the approval command Orca prints for that exact archive. After installation, open **P-999K** in your local workspace. For a custom 999K
 executable path, run that executable's `init --orca` in a local Orca terminal.
+
+### Build a plugin archive
+
+The archive version comes from the plugin manifest. Run these commands
+from the repository root with Python 3 and `jq`.
+
+```sh
+(
+	set -e
+	version=$(jq -er .version plugins/p-999k/orca-plugin.json)
+	python3 packaging/package_orca.py "$version" target/orca-plugin
+	python3 tests/orca_release_package.py
+	cd target/orca-plugin
+	shasum -a 256 "p-999k-$version.tar.gz" > SHA256SUMS-orca
+)
+```
 
 For a catalog release, commit the new plugin version in `plugins/p-999k`.
 Run `orca plugin release-entry plugins/p-999k` and add its output to the
