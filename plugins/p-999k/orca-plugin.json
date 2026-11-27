@@ -4,7 +4,7 @@
   "name": "P-999K",
   "publisher": "lazy9sascha",
   "version": "0.2.2",
-  "description": "Ask one existing peer from your project chat. The relay retrieves the linked answer. The first check can be empty.",
+  "description": "Ask Dot, Muse, GrokBot, Cue, or Instinct from your Orca project chat. Get each answer in the chat that asked.",
   "author": { "name": "999K" },
   "license": "MIT",
   "engines": { "orca": ">=1.4.268" },
