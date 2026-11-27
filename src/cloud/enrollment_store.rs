@@ -15,7 +15,7 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 const APPLICATION_ID: i64 = 0x504D_5145; // PMQE
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 pub(crate) const PENDING_SECONDS: i64 = 15 * 60;
 const BROWSER_SECONDS: i64 = 5 * 60;
 pub(crate) const UNOPENED_SECONDS: i64 = 12 * 60 * 60;
@@ -75,6 +75,14 @@ CREATE TABLE browser_attempts (
     sent INTEGER NOT NULL DEFAULT 0 CHECK (sent IN (0, 1)),
     expires_at INTEGER NOT NULL
 );
+";
+
+const ADD_ISSUANCE_NOTICE: &str = "
+ALTER TABLE enrollments ADD COLUMN first_issue_seen INTEGER NOT NULL DEFAULT 0
+    CHECK (first_issue_seen IN (0, 1));
+ALTER TABLE enrollments ADD COLUMN issuance_notice_at INTEGER
+    CHECK (issuance_notice_at IS NULL OR first_issue_seen = 1);
+UPDATE enrollments SET first_issue_seen = 1 WHERE issued_at IS NOT NULL OR ever_connected = 1;
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +261,7 @@ impl Registry {
             tx.execute_batch(ADD_LIFECYCLE)?;
             tx.execute_batch(ADD_ORIGIN)?;
             tx.execute_batch(ADD_EMAIL_VERIFICATION)?;
+            tx.execute_batch(ADD_ISSUANCE_NOTICE)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
@@ -270,6 +279,9 @@ impl Registry {
             }
             if version < 4 {
                 tx.execute_batch(ADD_EMAIL_VERIFICATION)?;
+            }
+            if version < 5 {
+                tx.execute_batch(ADD_ISSUANCE_NOTICE)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
         }
@@ -685,7 +697,7 @@ impl Registry {
         Ok(())
     }
 
-    pub(crate) fn mark_ready(&mut self, id: Uuid, now: i64) -> Result<Enrollment> {
+    pub(crate) fn mark_ready(&mut self, id: Uuid, now: i64, notify: bool) -> Result<Enrollment> {
         let id = id.to_string();
         let tx = self
             .connection
@@ -698,12 +710,44 @@ impl Registry {
             return Err(RegistryError::Unavailable);
         }
         tx.execute(
-            "UPDATE enrollments SET state = 'ready', issued_at = ?2 WHERE id = ?1",
-            params![id, now],
+            "UPDATE enrollments SET state = 'ready', issued_at = ?2,
+                 issuance_notice_at = CASE WHEN first_issue_seen = 0 AND ?3 THEN ?2 ELSE issuance_notice_at END,
+                 first_issue_seen = 1 WHERE id = ?1",
+            params![id, now, notify],
         )?;
         let enrollment = load(&tx, &id)?;
         tx.commit()?;
         Ok(enrollment)
+    }
+
+    pub(crate) fn issuance_notices(&self) -> Result<Vec<(Uuid, i64)>> {
+        let mut query = self.connection.prepare(
+            "SELECT id, issuance_notice_at FROM enrollments WHERE issuance_notice_at IS NOT NULL
+             ORDER BY issuance_notice_at, id",
+        )?;
+        let mut rows = query.query([])?;
+        let mut notices = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let id = Uuid::parse_str(&id).map_err(|_| RegistryError::Unavailable)?;
+            notices.push((id, row.get(1)?));
+        }
+        Ok(notices)
+    }
+
+    pub(crate) fn take_issuance_notice(&mut self, id: Uuid, issued_at: i64) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE enrollments SET issuance_notice_at = NULL WHERE id = ?1 AND issuance_notice_at = ?2",
+            params![id.to_string(), issued_at],
+        )? == 1)
+    }
+
+    pub(crate) fn retry_issuance_notice(&mut self, id: Uuid, issued_at: i64) -> Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE enrollments SET issuance_notice_at = ?2 WHERE id = ?1 AND issuance_notice_at IS NULL",
+            params![id.to_string(), issued_at],
+        )?;
+        require_change(changed)
     }
 
     pub(crate) fn lifecycle(&self, id: Uuid) -> Result<LifecycleRecord> {
@@ -735,6 +779,14 @@ impl Registry {
             records.push(lifecycle_row(row)?);
         }
         Ok(records)
+    }
+
+    pub(crate) fn request_hosted_reset(&mut self, cutoff: i64) -> Result<usize> {
+        Ok(self.connection.execute(
+            "UPDATE enrollments SET state = 'revoked', removal = 'revoking'
+             WHERE state = 'ready' AND resources IS NOT NULL AND issued_at < ?1",
+            [cutoff],
+        )?)
     }
 
     pub(crate) fn request_revoke(&mut self, id: Uuid) -> Result<LifecycleRecord> {
@@ -1048,6 +1100,27 @@ mod tests {
     }
 
     #[test]
+    fn address_reissue_does_not_queue_a_second_first_issuance_notice() {
+        let home = private_home();
+        let mut registry = Registry::open(&home.path().join("registry.db")).unwrap();
+        let id = approved(&mut registry);
+        registry.save_resources(id, b"old resource", 80).unwrap();
+        registry.mark_ready(id, 80, true).unwrap();
+        registry.mark_ready(id, 81, true).unwrap();
+        assert_eq!(registry.issuance_notices().unwrap(), vec![(id, 80)]);
+        assert!(registry.take_issuance_notice(id, 80).unwrap());
+        assert!(!registry.take_issuance_notice(id, 80).unwrap());
+        registry.request_revoke(id).unwrap();
+        registry
+            .complete_removal(id, LifecyclePhase::Revoking)
+            .unwrap();
+        registry.request_reissue(id).unwrap();
+        registry.save_resources(id, b"new resource", 90).unwrap();
+        registry.mark_ready(id, 90, true).unwrap();
+        assert!(registry.issuance_notices().unwrap().is_empty());
+    }
+
+    #[test]
     fn inspection_lists_existing_records_without_creating_or_changing_the_database() {
         let home = private_home();
         let path = home.path().join("registry.db");
@@ -1235,7 +1308,7 @@ mod tests {
             registry
                 .save_resources(id, b"synthetic", issued_at)
                 .unwrap();
-            registry.mark_ready(id, issued_at).unwrap();
+            registry.mark_ready(id, issued_at, false).unwrap();
         }
 
         let cutoff = issued_at + UNOPENED_SECONDS;
@@ -1256,7 +1329,7 @@ mod tests {
             LifecyclePhase::Expiring
         );
         assert_eq!(
-            registry.mark_ready(id, cutoff).err(),
+            registry.mark_ready(id, cutoff, false).err(),
             Some(RegistryError::Unavailable)
         );
         assert_eq!(
@@ -1303,7 +1376,7 @@ mod tests {
         let mut registry = Registry::open(&path).unwrap();
         let id = approved(&mut registry);
         registry.save_resources(id, b"old resource", 80).unwrap();
-        registry.mark_ready(id, 80).unwrap();
+        registry.mark_ready(id, 80, false).unwrap();
         registry
             .retain_connected(id, LifecyclePhase::Ready)
             .unwrap();
@@ -1342,7 +1415,10 @@ mod tests {
         assert_eq!(enrollment.state, EnrollmentState::Approved);
         assert_eq!(enrollment.issued_at, None);
         registry.save_resources(id, b"new resource", 100).unwrap();
-        assert_eq!(registry.mark_ready(id, 100).unwrap().issued_at, Some(100));
+        assert_eq!(
+            registry.mark_ready(id, 100, false).unwrap().issued_at,
+            Some(100)
+        );
         assert!(
             registry
                 .lifecycle_candidates(100 + UNOPENED_SECONDS)
@@ -1648,11 +1724,11 @@ mod tests {
         assert_eq!(retried.id, original.id);
         assert_eq!(retried.state, EnrollmentState::Approved);
         assert_eq!(retried.resources.as_deref(), Some(resources.as_slice()));
-        let ready = registry.mark_ready(original.id, later).unwrap();
+        let ready = registry.mark_ready(original.id, later, false).unwrap();
         assert_eq!(ready.issued_at, Some(later));
         drop(registry);
         let mut registry = Registry::open(&path).unwrap();
-        let ready = registry.mark_ready(original.id, later + 1).unwrap();
+        let ready = registry.mark_ready(original.id, later + 1, false).unwrap();
         assert_eq!(ready.state, EnrollmentState::Ready);
         assert_eq!(ready.issued_at, Some(later));
         assert_eq!(ready.resources.as_deref(), Some(resources.as_slice()));

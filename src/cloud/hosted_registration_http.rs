@@ -393,7 +393,8 @@ for a stable address. Keep the same hub on your Mac and update each peer's
 connector after you switch.</p>
 <p>The email delivery provider receives your address and verification code to send the message.
 The registration service keeps temporary verification digests, then records verification
-completion, installation status, and Cloudflare resource references.</p>
+completion, installation status, and Cloudflare resource references.
+If enabled, the operator email contains only the time when the address was first issued.</p>
 <p>Cloudflare provides the public address and carries requests to the 999K hub
 on your Mac. Requests can contain message text and authentication headers.
 Your Mac stores the message queue and mailbox credentials.</p>

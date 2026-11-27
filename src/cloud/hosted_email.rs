@@ -1,5 +1,5 @@
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::Mailbox,
+    Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::Mailbox,
     transport::smtp::authentication::Credentials,
 };
 use serde::Deserialize;
@@ -17,6 +17,11 @@ pub(crate) struct SmtpSettings {
 pub(crate) struct SmtpMailer {
     transport: AsyncSmtpTransport<Tokio1Executor>,
     from: Mailbox,
+}
+
+pub(crate) enum NoticeDeliveryError {
+    TryAgain,
+    Failed,
 }
 
 impl SmtpMailer {
@@ -45,6 +50,30 @@ impl SmtpMailer {
             .ok()?;
         self.transport.send(message).await.ok()?;
         Some(())
+    }
+
+    pub(crate) async fn send_issuance_notice(
+        &self,
+        recipient: &Address,
+        issued_at: i64,
+    ) -> Result<(), NoticeDeliveryError> {
+        let issued_at =
+            chrono::DateTime::from_timestamp(issued_at, 0).ok_or(NoticeDeliveryError::Failed)?;
+        let issued_at = issued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let message = Message::builder()
+            .from(self.from.clone())
+            .to(Mailbox::new(None, recipient.clone()))
+            .subject("999K hosted address issued")
+            .body(format!("A hosted address was issued at {issued_at}.\n"))
+            .map_err(|_| NoticeDeliveryError::Failed)?;
+        self.transport.send(message).await.map_err(|error| {
+            if error.is_transient() {
+                NoticeDeliveryError::TryAgain
+            } else {
+                NoticeDeliveryError::Failed
+            }
+        })?;
+        Ok(())
     }
 
     #[cfg(test)]

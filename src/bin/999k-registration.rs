@@ -78,6 +78,8 @@ struct Options {
 struct Config {
     registration_origin: String,
     email_smtp: Option<SmtpSettings>,
+    registration_notice_to: Option<String>,
+    first_hosted_reset_at: Option<String>,
     #[serde(default, rename = "supabase_url")]
     _supabase_url: Option<serde::de::IgnoredAny>,
     #[serde(default, rename = "supabase_publishable_key")]
@@ -123,6 +125,8 @@ fn installation_hostname(id: Uuid, zone: &str) -> String {
 struct Operator {
     origin: Url,
     mailer: SmtpMailer,
+    notice_to: Option<lettre::Address>,
+    first_hosted_reset_at: Option<i64>,
     email_key: [u8; 32],
     cloudflare: CloudflareProvisioner,
     zone: String,
@@ -199,6 +203,19 @@ impl Operator {
             .trim();
         let mailer = SmtpMailer::new(config.email_smtp.ok_or_else(unavailable)?, password)
             .ok_or_else(unavailable)?;
+        let notice_to = config
+            .registration_notice_to
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| io::Error::other("registration_notice_to must be an email address"))?;
+        let first_hosted_reset_at = config
+            .first_hosted_reset_at
+            .as_deref()
+            .map(chrono::DateTime::parse_from_rfc3339)
+            .transpose()
+            .map_err(|_| io::Error::other("first_hosted_reset_at must be an RFC 3339 timestamp"))?
+            .map(|date| date.timestamp());
         let email_key = read_private(&home.join("email-otp.key"))?
             .try_into()
             .map_err(|_| unavailable())?;
@@ -224,6 +241,8 @@ impl Operator {
         }
         Ok(Self {
             mailer,
+            notice_to,
+            first_hosted_reset_at,
             email_key,
             cloudflare,
             origin,
@@ -361,7 +380,7 @@ impl Operator {
             .await
             .map_err(|_| HttpError::TemporarilyUnavailable)?;
         let now = epoch_seconds()?;
-        self.record(|reg| reg.mark_ready(id, now))?;
+        self.record(|reg| reg.mark_ready(id, now, self.notice_to.is_some()))?;
         let public_url = provisioned.origin.clone();
         let mut response = json!({
             "state": "ready", "public_url": public_url,
@@ -587,6 +606,10 @@ async fn main() -> io::Result<()> {
     let operator = Arc::new(Operator::from_home(&home)?);
     let listener =
         TcpListener::bind((Ipv4Addr::LOCALHOST, options.port.ok_or_else(unavailable)?)).await?;
+    let _ = tracing_subscriber::fmt()
+        .with_writer(io::stderr)
+        .with_target(false)
+        .try_init();
     tokio::spawn(Arc::clone(&operator).cleanup_loop());
     let connections = Arc::new(Semaphore::new(32));
     loop {
@@ -705,9 +728,15 @@ mod tests {
         assert!(operator.bound_resources(Some(&wrong_zone)).is_err());
     }
 
+    enum SmtpReply {
+        Accept,
+        Decline,
+        Disconnect,
+    }
+
     async fn smtp_fixture(
         operator: &mut Operator,
-        accepts_delivery: bool,
+        reply: SmtpReply,
     ) -> tokio::task::JoinHandle<String> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -747,10 +776,10 @@ mod tests {
                         }
                         message.push_str(&line);
                     }
-                    if accepts_delivery {
-                        b"250 queued\r\n"
-                    } else {
-                        b"451 unavailable\r\n"
+                    match reply {
+                        SmtpReply::Accept => b"250 queued\r\n",
+                        SmtpReply::Decline => b"451 unavailable\r\n",
+                        SmtpReply::Disconnect => break,
                     }
                 } else if line == "QUIT\r\n" {
                     stream.get_mut().write_all(b"221 bye\r\n").await.unwrap();
@@ -765,9 +794,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn issuance_notice_survives_restart_and_retries_only_a_declined_delivery() {
+        let (home, operator) = fixture();
+        let settings_path = home.path().join("settings.json");
+        let mut settings: Value =
+            serde_json::from_slice(&read_private(&settings_path).unwrap()).unwrap();
+        settings["registration_notice_to"] = json!("operator@example.test");
+        private_file::replace_private(&settings_path, &serde_json::to_vec(&settings).unwrap())
+            .unwrap();
+
+        let issued_at = 1_800_000_000;
+        let proof = URL_SAFE_NO_PAD.encode([7; 32]);
+        let issue = |operator: &Operator, at| {
+            operator
+                .record(|registry| {
+                    let id = registry
+                        .begin(Uuid::new_v4(), &proof, "A1B2C3D4", at - 5)?
+                        .id;
+                    registry.approve_for_test(id, &proof, at - 1)?;
+                    registry.save_resources(id, b"fixture resource", at)?;
+                    registry.mark_ready(id, at, true)?;
+                    Ok(id)
+                })
+                .unwrap()
+        };
+        let id = issue(&operator, issued_at);
+        drop(operator);
+
+        let mut operator = Operator::from_home(home.path()).unwrap();
+        let declined = smtp_fixture(&mut operator, SmtpReply::Decline).await;
+        operator.deliver_issuance_notices().await;
+        declined.await.unwrap();
+        let accepted = smtp_fixture(&mut operator, SmtpReply::Accept).await;
+        operator.deliver_issuance_notices().await;
+        let message = accepted.await.unwrap();
+        assert!(message.contains("To: operator@example.test"));
+        assert!(message.contains("A hosted address was issued at 2027-01-15T08:00:00Z."));
+        assert!(!message.contains(&id.to_string()));
+        assert!(!message.contains("fixture@example.test"));
+        assert!(!message.contains("A1B2C3D4"));
+        assert!(
+            operator
+                .record(|r| r.issuance_notices())
+                .unwrap()
+                .is_empty()
+        );
+        issue(&operator, issued_at + 60);
+        let disconnected = smtp_fixture(&mut operator, SmtpReply::Disconnect).await;
+        operator.deliver_issuance_notices().await;
+        assert!(disconnected.await.unwrap().contains("2027-01-15T08:01:00Z"));
+        drop(operator);
+        let operator = Operator::from_home(home.path()).unwrap();
+        assert!(
+            operator
+                .record(|r| r.issuance_notices())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn installer_retry_keeps_its_address_and_cannot_finish_before_approval() {
         let (_home, mut operator) = fixture();
-        let upstream = smtp_fixture(&mut operator, false).await;
+        let upstream = smtp_fixture(&mut operator, SmtpReply::Decline).await;
         let proof = URL_SAFE_NO_PAD.encode([1; 32]);
         let other_proof = URL_SAFE_NO_PAD.encode([2; 32]);
         let begin = json!({ "request_id": Uuid::new_v4().to_string(), "user_code": "A1B2C3D4" });
@@ -849,7 +938,7 @@ mod tests {
     async fn email_otp_is_bound_to_one_installation_and_one_attempt() {
         let (home, mut operator) = fixture();
         let db = home.path().join("enrollments.sqlite3");
-        let upstream = smtp_fixture(&mut operator, true).await;
+        let upstream = smtp_fixture(&mut operator, SmtpReply::Accept).await;
 
         let now = epoch_seconds().unwrap();
         let proof_a = URL_SAFE_NO_PAD.encode([1; 32]);
