@@ -166,6 +166,8 @@ fn map_error(status: reqwest::StatusCode, body: &str) -> String {
         (410, Some("registration_expired")) => return "registration_expired".into(),
         (410, Some("registration_revoked")) => return "registration_revoked".into(),
         (409, Some("login_pending")) => return "login_pending".into(),
+        (409, Some("active_hosted_address")) => return "active_hosted_address".into(),
+        (503, Some("hosted_capacity")) => return "hosted_capacity".into(),
         _ => {}
     }
     format!("http_{}", status.as_u16())

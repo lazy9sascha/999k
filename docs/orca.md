@@ -76,9 +76,15 @@ addresses lose access at each reset. Your queue stays on your Mac.
 Contact your operator to restore a hosted address.
 For a stable address, [use your own HTTPS domain](#use-your-own-https-domain).
 
+Each verified email address can hold one hosted address. Add peers to your
+existing installation to share that address. If hosted capacity is full,
+try again later or use your own HTTPS domain.
+
 With direct email delivery, your operator's email provider receives the
 address and one-time code to send the message. The registrar keeps temporary
-verification digests. After approval, it keeps the verification result,
+verification digests. After approval, it keeps a keyed digest of your email
+address until it confirms removal of your hosted address. The digest enforces
+the one-address limit. The registrar also keeps the verification result,
 installation status, and tunnel references. If enabled, the operator email
 contains only the time when the address was first issued. The email provider
 applies its own mail retention policy.

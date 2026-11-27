@@ -44,6 +44,8 @@ Email verification authorizes address reservation. Cloudflare carries remote
 MCP traffic. The queue and mailbox credentials stay on your Mac.
 The registrar can revoke its hosted tunnel addresses on a five-day schedule
 and email the operator the time of each installation's first address issue.
+It uses a keyed email digest to limit each verified address to one hosted
+reservation and checks available capacity before it approves the reservation.
 You can route peers through [your own HTTPS domain](orca.md#use-your-own-https-domain)
 using the same hub and queue.
 

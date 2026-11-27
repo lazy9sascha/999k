@@ -15,11 +15,12 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 const APPLICATION_ID: i64 = 0x504D_5145; // PMQE
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 pub(crate) const PENDING_SECONDS: i64 = 15 * 60;
 const BROWSER_SECONDS: i64 = 5 * 60;
 pub(crate) const UNOPENED_SECONDS: i64 = 12 * 60 * 60;
 const MAX_PENDING: i64 = 32;
+pub(crate) const DEFAULT_HOSTED_CAPACITY: u32 = 32;
 const MAX_RESOURCES: usize = 16 * 1024;
 
 const SCHEMA: &str = "
@@ -85,6 +86,15 @@ ALTER TABLE enrollments ADD COLUMN issuance_notice_at INTEGER
 UPDATE enrollments SET first_issue_seen = 1 WHERE issued_at IS NOT NULL OR ever_connected = 1;
 ";
 
+const ADD_HOSTED_ADMISSION: &str = "
+ALTER TABLE enrollments ADD COLUMN active_email_digest BLOB
+    CHECK (active_email_digest IS NULL OR length(active_email_digest) = 32);
+CREATE UNIQUE INDEX enrollment_active_email ON enrollments(active_email_digest)
+    WHERE active_email_digest IS NOT NULL;
+ALTER TABLE browser_attempts ADD COLUMN blocked TEXT
+    CHECK (blocked IS NULL OR (blocked IN ('active_address', 'hosted_capacity') AND code_digest IS NULL));
+";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RegistryError {
     InvalidRequest,
@@ -93,6 +103,8 @@ pub(crate) enum RegistryError {
     Pending,
     Revoked,
     RateLimited,
+    ActiveAddress,
+    HostedCapacity,
     Unavailable,
 }
 
@@ -151,6 +163,7 @@ pub(crate) struct Enrollment {
     pub issued_at: Option<i64>,
     pub resources: Option<Vec<u8>>,
     pub phase: LifecyclePhase,
+    has_email_claim: bool,
 }
 
 pub(crate) struct LoginRecord {
@@ -262,6 +275,7 @@ impl Registry {
             tx.execute_batch(ADD_ORIGIN)?;
             tx.execute_batch(ADD_EMAIL_VERIFICATION)?;
             tx.execute_batch(ADD_ISSUANCE_NOTICE)?;
+            tx.execute_batch(ADD_HOSTED_ADMISSION)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
@@ -282,6 +296,9 @@ impl Registry {
             }
             if version < 5 {
                 tx.execute_batch(ADD_ISSUANCE_NOTICE)?;
+            }
+            if version < 6 {
+                tx.execute_batch(ADD_HOSTED_ADMISSION)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
         }
@@ -348,6 +365,7 @@ impl Registry {
             issued_at: None,
             resources: None,
             phase: LifecyclePhase::Pending,
+            has_email_claim: false,
         })
     }
 
@@ -366,7 +384,20 @@ impl Registry {
         if !bool::from(expected.as_slice().ct_eq(&digest)) {
             return Err(RegistryError::NotFound);
         }
-        unexpired(load(&self.connection, &id)?, now)
+        let enrollment = unexpired(load(&self.connection, &id)?, now)?;
+        if enrollment.state == EnrollmentState::Pending {
+            let blocked: Option<String> = self.connection.query_row(
+                "SELECT blocked FROM browser_attempts WHERE installation_id = ?1 AND expires_at > ?2 AND blocked IS NOT NULL",
+                params![id, now],
+                |row| row.get(0),
+            ).optional()?;
+            match blocked.as_deref() {
+                Some("active_address") => return Err(RegistryError::ActiveAddress),
+                Some("hosted_capacity") => return Err(RegistryError::HostedCapacity),
+                _ => {}
+            }
+        }
+        Ok(enrollment)
     }
 
     /// Pin one origin under the verified installation before any provider writes.
@@ -581,6 +612,10 @@ impl Registry {
         Ok(())
     }
 
+    pub(crate) fn expire_unstarted_approvals(&mut self, now: i64) -> Result<()> {
+        expire_unstarted_approvals(&self.connection, now)
+    }
+
     pub(crate) fn verify_email_code(
         &mut self,
         id: Uuid,
@@ -588,18 +623,19 @@ impl Registry {
         code: &str,
         key: &[u8; 32],
         now: i64,
+        capacity: u32,
     ) -> Result<Enrollment> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let id_text = id.to_string();
         let attempt_text = attempt.to_string();
-        let (expected, expires_at): (Vec<u8>, i64) = tx
+        let (expected, expires_at, email_digest): (Vec<u8>, i64, Vec<u8>) = tx
             .query_row(
-                "SELECT code_digest, expires_at FROM browser_attempts
+                "SELECT code_digest, expires_at, email_digest FROM browser_attempts
                  WHERE id = ?1 AND installation_id = ?2 AND sent = 1 AND code_digest IS NOT NULL",
                 params![attempt_text, id_text],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?
             .ok_or(RegistryError::NotFound)?;
@@ -616,10 +652,37 @@ impl Registry {
             tx.commit()?;
             return Err(RegistryError::NotFound);
         }
+        expire_unstarted_approvals(&tx, now)?;
+        let address_exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM enrollments WHERE active_email_digest = ?1)",
+            [&email_digest],
+            |row| row.get(0),
+        )?;
+        let allocated: u32 = tx.query_row(
+            "SELECT count(*) FROM enrollments WHERE state IN ('approved', 'ready') OR removal = 'revoking'",
+            [],
+            |row| row.get(0),
+        )?;
+        let rejection = if address_exists {
+            Some(("active_address", RegistryError::ActiveAddress))
+        } else if allocated >= capacity {
+            Some(("hosted_capacity", RegistryError::HostedCapacity))
+        } else {
+            None
+        };
+        if let Some((reason, error)) = rejection {
+            tx.execute(
+                "UPDATE browser_attempts SET code_digest = NULL, blocked = ?2 WHERE id = ?1",
+                params![attempt_text, reason],
+            )?;
+            tx.commit()?;
+            return Err(error);
+        }
         tx.execute(
-            "UPDATE enrollments SET state = 'approved', email_verified = 1, code_digest = NULL
+            "UPDATE enrollments SET state = 'approved', email_verified = 1, code_digest = NULL,
+                    active_email_digest = ?2
              WHERE id = ?1",
-            [&id_text],
+            params![id_text, email_digest],
         )?;
         tx.execute(
             "DELETE FROM browser_attempts WHERE id = ?1",
@@ -641,10 +704,17 @@ impl Registry {
             .handoff_url_secret(id, proof, now)?
             .ok_or(RegistryError::NotFound)?;
         let key = [42; 32];
-        let attempt =
-            self.start_handoff_attempt(id, &handoff, "fixture@example.test", &key, now)?;
+        let email = format!("fixture+{id}@example.test");
+        let attempt = self.start_handoff_attempt(id, &handoff, &email, &key, now)?;
         self.mark_email_sent(attempt.id, id, now)?;
-        self.verify_email_code(id, attempt.id, &attempt.code, &key, now)
+        self.verify_email_code(
+            id,
+            attempt.id,
+            &attempt.code,
+            &key,
+            now,
+            DEFAULT_HOSTED_CAPACITY,
+        )
     }
 
     /// Save caller-projected resource metadata. The caller must omit credentials.
@@ -806,7 +876,9 @@ impl Registry {
                     "revoking"
                 };
                 tx.execute(
-                    "UPDATE enrollments SET state = 'revoked', removal = ?2 WHERE id = ?1",
+                    "UPDATE enrollments SET state = 'revoked', removal = ?2,
+                         active_email_digest = CASE WHEN ?2 = 'revoking' THEN active_email_digest END
+                     WHERE id = ?1",
                     params![id, removal],
                 )?;
             }
@@ -846,7 +918,7 @@ impl Registry {
                 return Err(RegistryError::Unavailable);
             }
             tx.execute(
-                "UPDATE enrollments SET state = 'revoked', removal = ?2 WHERE id = ?1",
+                "UPDATE enrollments SET state = 'revoked', removal = ?2, active_email_digest = NULL WHERE id = ?1",
                 params![id, removal],
             )?;
             Ok(())
@@ -1004,24 +1076,19 @@ fn code_digest(id: Uuid, code: &str) -> [u8; 32] {
 }
 
 fn load(connection: &Connection, id: &str) -> Result<Enrollment> {
-    let (state, expires_at, issued_at, resources, removal): (
-        String,
-        i64,
-        Option<i64>,
-        Option<Vec<u8>>,
-        Option<String>,
-    ) = connection
+    let (state, expires_at, issued_at, resources, removal, has_email_claim) = connection
         .query_row(
-            "SELECT state, expires_at, issued_at, resources, removal
+            "SELECT state, expires_at, issued_at, resources, removal, active_email_digest IS NOT NULL
              FROM enrollments WHERE id = ?1",
             [id],
             |row| {
                 Ok((
-                    row.get(0)?,
+                    row.get::<_, String>(0)?,
                     row.get(1)?,
                     row.get(2)?,
                     row.get(3)?,
-                    row.get(4)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get(5)?,
                 ))
             },
         )
@@ -1043,11 +1110,25 @@ fn load(connection: &Connection, id: &str) -> Result<Enrollment> {
         issued_at,
         resources,
         phase,
+        has_email_claim,
     })
 }
 
+fn expire_unstarted_approvals(connection: &Connection, now: i64) -> Result<()> {
+    connection.execute(
+        "UPDATE enrollments SET state = 'revoked', removal = 'expired', active_email_digest = NULL
+         WHERE state = 'approved' AND resources IS NULL AND active_email_digest IS NOT NULL AND expires_at <= ?1",
+        [now],
+    )?;
+    Ok(())
+}
+
 fn unexpired(enrollment: Enrollment, now: i64) -> Result<Enrollment> {
-    if enrollment.state == EnrollmentState::Pending && enrollment.expires_at <= now {
+    let waiting_for_resources = enrollment.resources.is_none()
+        && (enrollment.has_email_claim || enrollment.phase == LifecyclePhase::Expired);
+    if (enrollment.state == EnrollmentState::Pending || waiting_for_resources)
+        && enrollment.expires_at <= now
+    {
         return Err(RegistryError::Expired);
     }
     Ok(enrollment)
@@ -1097,6 +1178,104 @@ mod tests {
             .approve_for_test(enrollment.id, &proof(7), 1)
             .unwrap();
         enrollment.id
+    }
+
+    fn verify_address(
+        registry: &mut Registry,
+        email: &str,
+        now: i64,
+        capacity: u32,
+    ) -> (Uuid, Result<Enrollment>) {
+        let proof = proof(7);
+        let id = registry
+            .begin(Uuid::new_v4(), &proof, CODE, now)
+            .unwrap()
+            .id;
+        let handoff = registry
+            .handoff_url_secret(id, &proof, now)
+            .unwrap()
+            .unwrap();
+        let attempt = registry
+            .start_handoff_attempt(id, &handoff, email, &OTP_KEY, now)
+            .unwrap();
+        registry.mark_email_sent(attempt.id, id, now).unwrap();
+        (
+            id,
+            registry.verify_email_code(id, attempt.id, &attempt.code, &OTP_KEY, now, capacity),
+        )
+    }
+
+    #[test]
+    fn verified_email_and_capacity_stay_claimed_until_provider_removal() {
+        let home = private_home();
+        let path = home.path().join("registry.db");
+        let mut registry = Registry::open(&path).unwrap();
+        let email = "pilot@example.test";
+        let (first, admitted) = verify_address(&mut registry, email, 0, 1);
+        assert!(admitted.is_ok());
+        registry
+            .save_resources(first, b"fixture resource", 0)
+            .unwrap();
+        registry.mark_ready(first, 0, false).unwrap();
+        drop(registry);
+
+        let mut registry = Registry::open(&path).unwrap();
+        let (duplicate, denied) = verify_address(&mut registry, email, 1, 1);
+        assert_eq!(denied.err(), Some(RegistryError::ActiveAddress));
+        assert_eq!(
+            registry.get(duplicate, &proof(8), 1).err(),
+            Some(RegistryError::NotFound)
+        );
+        assert_eq!(
+            registry.get(duplicate, &proof(7), 1).err(),
+            Some(RegistryError::ActiveAddress)
+        );
+        assert_eq!(
+            verify_address(&mut registry, "other@example.test", 1, 1)
+                .1
+                .err(),
+            Some(RegistryError::HostedCapacity)
+        );
+
+        assert_eq!(registry.request_hosted_reset(1).unwrap(), 1);
+        assert_eq!(
+            verify_address(&mut registry, email, BROWSER_SECONDS + 1, 1)
+                .1
+                .err(),
+            Some(RegistryError::ActiveAddress)
+        );
+        registry
+            .complete_removal(first, LifecyclePhase::Revoking)
+            .unwrap();
+        assert!(
+            verify_address(&mut registry, email, 2 * BROWSER_SECONDS + 1, 1)
+                .1
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_abandoned_approval_releases_its_claim_without_allowing_a_late_finish() {
+        let home = private_home();
+        let mut registry = Registry::open(&home.path().join("registry.db")).unwrap();
+        let email = "pilot@example.test";
+        let (first, admitted) = verify_address(&mut registry, email, 0, 1);
+        assert!(admitted.is_ok());
+        assert_eq!(
+            registry
+                .save_resources(first, b"too late", PENDING_SECONDS)
+                .err(),
+            Some(RegistryError::Expired)
+        );
+        assert!(
+            verify_address(&mut registry, email, PENDING_SECONDS, 1)
+                .1
+                .is_ok()
+        );
+        assert_eq!(
+            registry.get(first, &proof(7), PENDING_SECONDS).err(),
+            Some(RegistryError::Expired)
+        );
     }
 
     #[test]
@@ -1226,7 +1405,14 @@ mod tests {
         );
         assert_eq!(
             registry
-                .verify_email_code(pending, old_attempt, "123456", &OTP_KEY, 4)
+                .verify_email_code(
+                    pending,
+                    old_attempt,
+                    "123456",
+                    &OTP_KEY,
+                    4,
+                    DEFAULT_HOSTED_CAPACITY
+                )
                 .err(),
             Some(RegistryError::NotFound)
         );
@@ -1614,7 +1800,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             registry
-                .verify_email_code(record.id, attempt.id, &attempt.code, &OTP_KEY, 1)
+                .verify_email_code(
+                    record.id,
+                    attempt.id,
+                    &attempt.code,
+                    &OTP_KEY,
+                    1,
+                    DEFAULT_HOSTED_CAPACITY
+                )
                 .err(),
             Some(RegistryError::NotFound)
         );
@@ -1626,7 +1819,8 @@ mod tests {
                     attempt.id,
                     &attempt.code,
                     &OTP_KEY,
-                    BROWSER_SECONDS
+                    BROWSER_SECONDS,
+                    DEFAULT_HOSTED_CAPACITY
                 )
                 .err(),
             Some(RegistryError::Expired)
@@ -1664,7 +1858,7 @@ mod tests {
         };
         assert_eq!(
             registry
-                .verify_email_code(id, attempt.id, wrong, &OTP_KEY, 1)
+                .verify_email_code(id, attempt.id, wrong, &OTP_KEY, 1, DEFAULT_HOSTED_CAPACITY)
                 .err(),
             Some(RegistryError::NotFound)
         );
@@ -1672,7 +1866,14 @@ mod tests {
         let mut registry = Registry::open(&db).unwrap();
         assert_eq!(
             registry
-                .verify_email_code(id, attempt.id, &attempt.code, &OTP_KEY, 2)
+                .verify_email_code(
+                    id,
+                    attempt.id,
+                    &attempt.code,
+                    &OTP_KEY,
+                    2,
+                    DEFAULT_HOSTED_CAPACITY
+                )
                 .err(),
             Some(RegistryError::NotFound)
         );
@@ -1715,9 +1916,7 @@ mod tests {
         assert_eq!(approved.state, EnrollmentState::Approved);
         let later = original.expires_at + 1;
         let resources = br#"{"tunnel_id":"synthetic"}"#;
-        registry
-            .save_resources(original.id, resources, later)
-            .unwrap();
+        registry.save_resources(original.id, resources, 2).unwrap();
         drop(registry);
         let mut registry = Registry::open(&path).unwrap();
         let retried = registry.begin(request, &proof(7), CODE, later).unwrap();
