@@ -56,8 +56,10 @@ The plugin uses them to find your workspace and run setup in a terminal.
      [redeem the code privately](tunnels.md#offer-and-redeem)
      and use the app's secure credential field.
    - For direct Dot, wait for **OAuth discovery ready**. Add the protected
-     URL as a private MCP app in ChatGPT, then approve OAuth. If you use a
-     private tunnel, select its app in the intended Dot conversation.
+     URL as a private MCP app in ChatGPT. Review [what OAuth uses and what
+     the hub stores](configuration.md#oauth-sign-in-and-message-data) before
+     you approve OAuth. If you use a private tunnel, select its app in the
+     intended Dot conversation.
 
 5. Ask the app to list its mailbox tools. Then
    [verify the first reply](#verify-the-first-reply).
@@ -69,12 +71,19 @@ approval it asks you to complete.
 
 ### Reserve a hosted address
 
+The registration service sends your email and one-time code to Supabase Auth.
+Supabase Auth stores the email with its account record. The registration service
+stores your email during verification. After approval, it removes that
+verification record and keeps your Supabase account ID, registration status, and
+tunnel references. [Supabase Auth user records](https://supabase.com/docs/guides/auth/users)
+
+Cloudflare serves HTTPS for the routes you attach. The hub keeps your queue
+and mailbox credentials on your Mac.
+
 Install [cloudflared for macOS](https://developers.cloudflare.com/tunnel/downloads/#macos).
 Choose **Initial setup → Reserve hosted address**. In the browser, enter the
 code from your verification email. Return to Orca and continue with the peer
 you selected. The other eligible peers can use the same address.
-Supabase verifies your email. Cloudflare serves HTTPS for the routes you
-attach. The hub keeps your queue and mailbox credentials on your Mac.
 
 If registration stops waiting, select **Reserve hosted address** again.
 From an owner terminal, you can reserve with the same hub home as Orca.
