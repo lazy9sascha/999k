@@ -2,12 +2,12 @@
 mod enrollment_store;
 #[path = "../cloud/hosted_cloudflare.rs"]
 mod hosted_cloudflare;
+#[path = "../cloud/hosted_email.rs"]
+mod hosted_email;
 #[path = "../cloud/hosted_registration_http.rs"]
 mod hosted_registration_http;
 #[path = "../cloud/hosted_registration_lifecycle.rs"]
 mod hosted_registration_lifecycle;
-#[path = "../cloud/hosted_supabase.rs"]
-mod hosted_supabase;
 
 use clap::{ArgGroup, Parser};
 use enrollment_store::{Enrollment, EnrollmentState, LifecycleRecord, Registry, RegistryError};
@@ -15,12 +15,12 @@ use enrollment_store::{Enrollment, EnrollmentState, LifecycleRecord, Registry, R
 mod hosted_origin;
 use hosted_cloudflare::lifecycle::SavedCloudflareInstallation;
 use hosted_cloudflare::{CloudflareProvisioner, CloudflareResources, valid_public_mcp_path};
+use hosted_email::{SmtpMailer, SmtpSettings};
 use hosted_origin::UnixOrigin;
 use hosted_registration_http::{
     RegistrationHttpError as HttpError, RegistrationResponse, RequestKind, approval_result,
     json_response, login_form, otp_form, parse_request,
 };
-use hosted_supabase::SupabaseAuth;
 use http::{Method, Request, StatusCode, header};
 use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -77,8 +77,11 @@ struct Options {
 #[serde(deny_unknown_fields)]
 struct Config {
     registration_origin: String,
-    supabase_url: String,
-    supabase_publishable_key: String,
+    email_smtp: Option<SmtpSettings>,
+    #[serde(default, rename = "supabase_url")]
+    _supabase_url: Option<serde::de::IgnoredAny>,
+    #[serde(default, rename = "supabase_publishable_key")]
+    _supabase_publishable_key: Option<serde::de::IgnoredAny>,
     // Read older settings without treating an obsolete list as authorization.
     #[serde(default)]
     invited_accounts: Option<serde::de::IgnoredAny>,
@@ -119,7 +122,8 @@ fn installation_hostname(id: Uuid, zone: &str) -> String {
 
 struct Operator {
     origin: Url,
-    auth: SupabaseAuth,
+    mailer: SmtpMailer,
+    email_key: [u8; 32],
     cloudflare: CloudflareProvisioner,
     zone: String,
     hub_port: u16,
@@ -175,7 +179,7 @@ fn epoch_seconds() -> Result<i64, HttpError> {
 fn registry_error(error: RegistryError) -> HttpError {
     match error {
         RegistryError::InvalidRequest => HttpError::InvalidRequest,
-        RegistryError::NotFound | RegistryError::Forbidden => HttpError::RegistrationNotFound,
+        RegistryError::NotFound => HttpError::RegistrationNotFound,
         RegistryError::Expired => HttpError::RegistrationExpired,
         RegistryError::Pending => HttpError::LoginPending,
         RegistryError::Revoked => HttpError::RegistrationRevoked,
@@ -188,8 +192,16 @@ impl Operator {
     fn from_home(home: &Path) -> io::Result<Self> {
         let config = Config::read(home)?;
         let origin = https_origin(&config.registration_origin)?;
-        let auth_origin = https_origin(&config.supabase_url)?;
         let cloudflare = config.cloudflare(home)?;
+        let password = read_private(&home.join("smtp.key"))?;
+        let password = std::str::from_utf8(&password)
+            .map_err(|_| unavailable())?
+            .trim();
+        let mailer = SmtpMailer::new(config.email_smtp.ok_or_else(unavailable)?, password)
+            .ok_or_else(unavailable)?;
+        let email_key = read_private(&home.join("email-otp.key"))?
+            .try_into()
+            .map_err(|_| unavailable())?;
         if config.invited_accounts.is_some() {
             eprintln!("Warning: invited_accounts is obsolete and does not restrict registration.");
         }
@@ -211,8 +223,8 @@ impl Operator {
             return Err(unavailable());
         }
         Ok(Self {
-            auth: SupabaseAuth::new(auth_origin.as_str(), &config.supabase_publishable_key)
-                .map_err(|_| unavailable())?,
+            mailer,
+            email_key,
             cloudflare,
             origin,
             zone: config.cloudflare_zone_name,
@@ -445,10 +457,16 @@ impl Operator {
                 email,
             } => {
                 let attempt = self.record(|reg| {
-                    reg.start_handoff_attempt(installation_id, &handoff, &email, now)
+                    reg.start_handoff_attempt(
+                        installation_id,
+                        &handoff,
+                        &email,
+                        &self.email_key,
+                        now,
+                    )
                 })?;
                 // Keep success and delivery failure indistinguishable in the request form.
-                if self.auth.request_otp(&attempt.email).await.is_ok() {
+                if self.mailer.send_code(&email, &attempt.code).await.is_some() {
                     let now = epoch_seconds()?;
                     self.record(|reg| reg.mark_email_sent(attempt.id, installation_id, now))?;
                 }
@@ -459,22 +477,8 @@ impl Operator {
                 otp,
                 attempt,
             } => {
-                let attempt =
-                    self.record(|reg| reg.take_email_attempt(attempt, Some(installation_id), now))?;
-                let account = self
-                    .auth
-                    .verify_otp(&attempt.email, &otp)
-                    .await
-                    .map_err(|_| HttpError::RegistrationNotFound)?;
-                let now = epoch_seconds()?;
                 self.record(|reg| {
-                    reg.approve_verified_email(
-                        installation_id,
-                        attempt.id,
-                        &attempt.email,
-                        account,
-                        now,
-                    )
+                    reg.verify_email_code(installation_id, attempt, &otp, &self.email_key, now)
                 })?;
                 Ok(approval_result())
             }
@@ -630,8 +634,12 @@ mod tests {
         .unwrap();
         let settings = json!({
             "registration_origin": "https://init.example.com",
-            "supabase_url": "https://identity.example.com",
-            "supabase_publishable_key": "sb_publishable_fixture",
+            "email_smtp": {
+                "host": "smtp.example.test",
+                "port": 587,
+                "username": "mailer@example.test",
+                "from": "mailer@example.test"
+            },
             "cloudflare_account_id": "a".repeat(32),
             "cloudflare_zone_id": "b".repeat(32),
             "cloudflare_zone_name": "example.com",
@@ -644,6 +652,8 @@ mod tests {
         )
         .unwrap();
         private_file::replace_private(&home.path().join("cloudflare.key"), b"fixture").unwrap();
+        private_file::replace_private(&home.path().join("smtp.key"), b"fixture").unwrap();
+        private_file::replace_private(&home.path().join("email-otp.key"), &[42; 32]).unwrap();
         let operator = Operator::from_home(home.path()).unwrap();
         (home, operator)
     }
@@ -695,26 +705,69 @@ mod tests {
         assert!(operator.bound_resources(Some(&wrong_zone)).is_err());
     }
 
+    async fn smtp_fixture(
+        operator: &mut Operator,
+        accepts_delivery: bool,
+    ) -> tokio::task::JoinHandle<String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        operator
+            .mailer
+            .use_loopback_fixture(listener.local_addr().unwrap().port());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            stream
+                .get_mut()
+                .write_all(b"220 fixture ESMTP\r\n")
+                .await
+                .unwrap();
+            let mut message = String::new();
+            loop {
+                let mut line = String::new();
+                if stream.read_line(&mut line).await.unwrap() == 0 {
+                    break;
+                }
+                let response: &[u8] = if line.starts_with("EHLO ") {
+                    b"250 fixture\r\n"
+                } else if line.starts_with("MAIL FROM:") || line.starts_with("RCPT TO:") {
+                    b"250 ok\r\n"
+                } else if line == "DATA\r\n" {
+                    stream
+                        .get_mut()
+                        .write_all(b"354 send mail\r\n")
+                        .await
+                        .unwrap();
+                    loop {
+                        line.clear();
+                        assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                        if line == ".\r\n" {
+                            break;
+                        }
+                        message.push_str(&line);
+                    }
+                    if accepts_delivery {
+                        b"250 queued\r\n"
+                    } else {
+                        b"451 unavailable\r\n"
+                    }
+                } else if line == "QUIT\r\n" {
+                    stream.get_mut().write_all(b"221 bye\r\n").await.unwrap();
+                    break;
+                } else {
+                    panic!("unexpected SMTP command");
+                };
+                stream.get_mut().write_all(response).await.unwrap();
+            }
+            message
+        })
+    }
+
     #[tokio::test]
     async fn installer_retry_keeps_its_address_and_cannot_finish_before_approval() {
         let (_home, mut operator) = fixture();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        operator
-            .auth
-            .use_loopback_fixture(listener.local_addr().unwrap().port());
-        let upstream = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let handler = service_fn(|req: Request<hyper::body::Incoming>| async move {
-                assert_eq!(req.uri().path(), "/auth/v1/otp");
-                let _ = req.into_body().collect().await.unwrap();
-                Ok::<_, Infallible>(json_response(StatusCode::SERVICE_UNAVAILABLE, json!({})))
-            });
-            http1::Builder::new()
-                .keep_alive(false)
-                .serve_connection(TokioIo::new(stream), handler)
-                .await
-                .unwrap();
-        });
+        let upstream = smtp_fixture(&mut operator, false).await;
         let proof = URL_SAFE_NO_PAD.encode([1; 32]);
         let other_proof = URL_SAFE_NO_PAD.encode([2; 32]);
         let begin = json!({ "request_id": Uuid::new_v4().to_string(), "user_code": "A1B2C3D4" });
@@ -793,245 +846,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires isolated Docker GoTrue and Mailpit on loopback"]
-    async fn hosted_auth_docker_fresh_email_without_preseed() {
-        let port = |name| std::env::var(name).unwrap().parse::<u16>().unwrap();
-        let upstream_port = port("PMQ_FIXTURE_GOTRUE_PORT");
-        let mail_port = port("PMQ_FIXTURE_MAILPIT_PORT");
-        let (_home, mut operator) = fixture();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        operator
-            .auth
-            .use_loopback_fixture(listener.local_addr().unwrap().port());
-        let connector = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
-        let forwarding = connector.clone();
-        let proxy = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let forwarding = forwarding.clone();
-                tokio::spawn(async move {
-                    let transport = service_fn(move |req: Request<hyper::body::Incoming>| {
-                        let forwarding = forwarding.clone();
-                        async move {
-                            let (parts, body) = req.into_parts();
-                            let route = parts.uri.path().strip_prefix("/auth/v1").unwrap();
-                            assert!(matches!(route, "/otp" | "/verify" | "/user"));
-                            let bytes = body.collect().await.unwrap().to_bytes();
-                            let mut forward = forwarding.request(
-                                parts.method,
-                                format!("http://127.0.0.1:{upstream_port}{route}"),
-                            );
-                            for key in [header::AUTHORIZATION, header::CONTENT_TYPE] {
-                                if let Some(value) = parts.headers.get(&key) {
-                                    forward = forward.header(key, value);
-                                }
-                            }
-                            let result = forward.body(bytes).send().await.unwrap();
-                            let status = result.status();
-                            let body = result.bytes().await.unwrap();
-                            let response = http::Response::builder()
-                                .status(status)
-                                .body(Full::new(body))
-                                .unwrap();
-                            Ok::<_, Infallible>(response)
-                        }
-                    });
-                    let _ = http1::Builder::new()
-                        .keep_alive(false)
-                        .serve_connection(TokioIo::new(stream), transport)
-                        .await;
-                });
-            }
-        });
-        let mail =
-            |suffix: &str| connector.get(format!("http://127.0.0.1:{mail_port}/api/v1/{suffix}"));
-        let list = || async {
-            mail("messages")
-                .send()
-                .await
-                .unwrap()
-                .json::<Value>()
-                .await
-                .unwrap()
-        };
-        let now = epoch_seconds().unwrap();
-        let create = |marker: u8| {
-            let proof = URL_SAFE_NO_PAD.encode([marker; 32]);
-            let id = operator
-                .record(|reg| reg.begin(Uuid::new_v4(), &proof, "A1B2C3D4", now))
-                .unwrap()
-                .id;
-            (id, proof)
-        };
-        let a = create(1);
-        let b = create(2);
-        let browser = |path: String, cookie: Option<&str>, body: String| {
-            let mut req = Request::builder()
-                .method(Method::POST)
-                .uri(path)
-                .header(header::HOST, "init.example.com")
-                .header(header::ORIGIN, "https://init.example.com")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
-            if let Some(cookie) = cookie {
-                req = req.header(header::COOKIE, cookie);
-            }
-            req.body(Full::new(Bytes::from(body))).unwrap()
-        };
-        let request = |installation: &(Uuid, String), email: &str| {
-            let (id, proof) = installation;
-            let handoff = operator
-                .record(|reg| reg.handoff_url_secret(*id, proof, now))
-                .unwrap()
-                .unwrap();
-            browser(
-                format!("/register/{id}"),
-                None,
-                format!("handoff={handoff}&email={email}"),
-            )
-        };
-        let a_path = format!("/v1/enrollments/{}", a.0);
-        let (wrong_proof, _) = call(&operator, Method::GET, &a_path, &b.1, None).await;
-        assert_eq!(wrong_proof, StatusCode::NOT_FOUND);
-        assert_eq!(list().await["total"], 0);
-        let accepted = operator
-            .dispatch(request(&a, "fresh.mailbox%40example.test"))
-            .await
-            .unwrap();
-        let cookie = accepted.headers()[header::SET_COOKIE]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap();
-        assert!(matches!(
-            operator
-                .dispatch(request(&b, "fresh.mailbox%40example.test"))
-                .await,
-            Err(HttpError::RateLimited)
-        ));
-        let messages = list().await;
-        assert_eq!(messages["total"], 1);
-        let msg = messages["messages"][0]["ID"].as_str().unwrap();
-        let details = mail(&format!("message/{msg}"))
-            .send()
-            .await
-            .unwrap()
-            .json::<Value>()
-            .await
-            .unwrap();
-        let body = details["HTML"].as_str().unwrap();
-        let mut candidates = body
-            .split(|ch: char| !ch.is_ascii_digit())
-            .filter(|part| hosted_supabase::valid_otp(part));
-        let otp = candidates
-            .next()
-            .expect("message has a synthetic numeric OTP");
-        assert!(candidates.next().is_none());
-        let verify = |id| {
-            browser(
-                format!("/register/{id}/verify"),
-                Some(cookie),
-                format!("otp={otp}"),
-            )
-        };
-        assert!(matches!(
-            operator.dispatch(verify(b.0)).await,
-            Err(HttpError::RegistrationNotFound)
-        ));
-        assert!(operator.dispatch(verify(a.0)).await.is_ok());
-        assert!(matches!(
-            operator.dispatch(verify(a.0)).await,
-            Err(HttpError::RegistrationNotFound)
-        ));
-        assert_eq!(list().await["total"], 1);
-        for (installation, expected) in [
-            (&a, EnrollmentState::Approved),
-            (&b, EnrollmentState::Pending),
-        ] {
-            assert_eq!(
-                operator
-                    .record(|reg| reg.get(installation.0, &installation.1, now))
-                    .unwrap()
-                    .state,
-                expected
-            );
-        }
-        proxy.abort();
-        eprintln!("Mailpit messages=1; exact installation approved; second installation pending");
-    }
-
-    #[tokio::test]
     async fn email_otp_is_bound_to_one_installation_and_one_attempt() {
-        let (_home, mut operator) = fixture();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        operator
-            .auth
-            .use_loopback_fixture(listener.local_addr().unwrap().port());
-        let emails = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let verifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        use std::sync::atomic::Ordering::SeqCst;
-        let fixture_emails = emails.clone();
-        let fixture_verifications = verifications.clone();
-        let upstream = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let fixture_emails = fixture_emails.clone();
-                let fixture_verifications = fixture_verifications.clone();
-                tokio::spawn(async move {
-                    let handler = service_fn(move |req: Request<hyper::body::Incoming>| {
-                        let fixture_emails = fixture_emails.clone();
-                        let fixture_verifications = fixture_verifications.clone();
-                        async move {
-                            let path = req.uri().path().to_owned();
-                            let bytes = req.into_body().collect().await.unwrap().to_bytes();
-                            let response = match path.as_str() {
-                                "/auth/v1/otp" => {
-                                    fixture_emails.fetch_add(1, SeqCst);
-                                    let body: Value = serde_json::from_slice(&bytes).unwrap();
-                                    assert_eq!(
-                                        body,
-                                        json!({"email":"invited@example.test","create_user":true})
-                                    );
-                                    json_response(StatusCode::OK, json!({}))
-                                }
-                                "/auth/v1/verify" => {
-                                    fixture_verifications.fetch_add(1, SeqCst);
-                                    let body: Value = serde_json::from_slice(&bytes).unwrap();
-                                    assert_eq!(body["email"], "invited@example.test");
-                                    assert_eq!(body["type"], "email");
-                                    if body["token"] == "123456" {
-                                        json_response(
-                                            StatusCode::OK,
-                                            json!({"access_token":"fixture-access"}),
-                                        )
-                                    } else {
-                                        json_response(StatusCode::BAD_REQUEST, json!({}))
-                                    }
-                                }
-                                "/auth/v1/user" => json_response(
-                                    StatusCode::OK,
-                                    json!({
-                                        "id":"11111111-1111-4111-8111-111111111111",
-                                        "role":"authenticated","is_anonymous":false,
-                                        "email":"invited@example.test","email_confirmed_at":"2026-11-01T00:00:00Z"
-                                    }),
-                                ),
-                                _ => panic!("unexpected auth request"),
-                            };
-                            Ok::<_, Infallible>(response)
-                        }
-                    });
-                    let _ = http1::Builder::new()
-                        .keep_alive(false)
-                        .serve_connection(TokioIo::new(stream), handler)
-                        .await;
-                });
-            }
-        });
+        let (home, mut operator) = fixture();
+        let db = home.path().join("enrollments.sqlite3");
+        let upstream = smtp_fixture(&mut operator, true).await;
 
         let now = epoch_seconds().unwrap();
         let proof_a = URL_SAFE_NO_PAD.encode([1; 32]);
@@ -1083,29 +901,43 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        assert_eq!(emails.load(SeqCst), 1);
+        let mail = upstream.await.unwrap();
+        assert!(mail.contains("invited@example.test"));
+        let otp = mail
+            .split_once("verification code is ")
+            .unwrap()
+            .1
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap();
+        assert!(hosted_email::valid_otp(otp));
+        let form_code = format!("otp={otp}");
+        let pending = std::fs::read(&db).unwrap();
+        assert!(
+            !pending
+                .windows(b"invited@example.test".len())
+                .any(|bytes| bytes == b"invited@example.test")
+        );
         assert!(matches!(
             operator.dispatch(request_otp(b.id, &proof_b)).await,
             Err(HttpError::RateLimited)
         ));
         assert!(matches!(
             operator
-                .dispatch(submit(b.id, cookie.clone(), "otp=123456"))
+                .dispatch(submit(b.id, cookie.clone(), &form_code))
                 .await,
             Err(HttpError::RegistrationNotFound)
         ));
-        assert_eq!(verifications.load(SeqCst), 0);
         assert!(
             operator
-                .dispatch(submit(a.id, cookie.clone(), "otp=123456"))
+                .dispatch(submit(a.id, cookie.clone(), &form_code))
                 .await
                 .is_ok()
         );
         assert!(matches!(
-            operator.dispatch(submit(a.id, cookie, "otp=123456")).await,
+            operator.dispatch(submit(a.id, cookie, &form_code)).await,
             Err(HttpError::RegistrationNotFound)
         ));
-        assert_eq!(verifications.load(SeqCst), 1);
         assert_eq!(
             operator
                 .record(|reg| reg.get(a.id, &proof_a, now))
@@ -1121,34 +953,16 @@ mod tests {
             EnrollmentState::Pending
         );
 
-        let cookie = read_cookie(
-            operator
-                .dispatch(request_otp(b.id, &proof_b))
-                .await
-                .unwrap(),
-        );
-        assert!(matches!(
-            operator
-                .dispatch(submit(b.id, cookie.clone(), "otp=654321"))
-                .await,
-            Err(HttpError::RegistrationNotFound)
-        ));
-        assert!(matches!(
-            operator.dispatch(submit(b.id, cookie, "otp=123456")).await,
-            Err(HttpError::RegistrationNotFound)
-        ));
-        assert_eq!(verifications.load(SeqCst), 2);
-        assert_eq!(
-            operator
-                .record(|reg| reg.get(b.id, &proof_b, now))
-                .unwrap()
-                .state,
-            EnrollmentState::Pending
-        );
         assert!(matches!(
             operator.finish(b.id, proof_b).await,
             Err(HttpError::LoginPending)
         ));
-        upstream.abort();
+        let connection = rusqlite::Connection::open(db).unwrap();
+        let attempts = connection
+            .query_row("SELECT COUNT(*) FROM browser_attempts", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(attempts, 0);
     }
 }

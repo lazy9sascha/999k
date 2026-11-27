@@ -40,8 +40,8 @@ relay finds the reply, Orca uses the question ID to return it to the
 originating project chat. [Pending replies](troubleshooting.md#check-a-pending-orca-reply)
 
 For hosted addresses, the registrar provisions the HTTPS route and tunnel.
-Supabase verifies email during address reservation. Cloudflare carries
-remote MCP traffic. The queue and mailbox credentials stay on your Mac.
+Email verification authorizes address reservation. Cloudflare carries remote
+MCP traffic. The queue and mailbox credentials stay on your Mac.
 You can route peers through [your own HTTPS domain](orca.md#use-your-own-https-domain)
 using the same hub and queue.
 

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use super::enrollment_store::{PENDING_SECONDS, UNOPENED_SECONDS};
+use super::hosted_email::{normalized_email, valid_otp};
 use super::hosted_origin::UnixOrigin;
-use super::hosted_supabase::{normalized_email, valid_otp};
 use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -390,9 +390,9 @@ pub(crate) fn login_form(
 <p>P-999K is experimental. You can use your own HTTPS domain now or switch to
 one later. Keep the same hub on your Mac and update each peer's connector
 after you switch.</p>
-<p>Supabase Auth receives your email address and verifies your one-time code.
-The registration service stores your verified account ID, installation status,
-and Cloudflare resource references so it can resume or revoke your registration.</p>
+<p>The email delivery provider receives your address and verification code to send the message.
+The registration service keeps temporary verification digests, then records verification
+completion, installation status, and Cloudflare resource references.</p>
 <p>Cloudflare provides the public address and carries requests to the 999K hub
 on your Mac. Requests can contain message text and authentication headers.
 Your Mac stores the message queue and mailbox credentials.</p>
