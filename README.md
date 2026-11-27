@@ -1,11 +1,11 @@
 # P-999K
 
-**Ask Dot, Muse, and GrokBot for help from your Orca project chat.**
+**Connect the agents you use outside the terminal to Orca.**
 
-Ask Dot to challenge a migration plan. Ask Muse to shorten the release
-notes. Send each request from the same Orca project chat and get the
-answer there, linked to the original question. If a peer takes longer,
-the relay can check the same request again.
+Ask Dot (ChatGPT), Muse, GrokBot, Cue, or Instinct (Messages) from your
+Orca project chat. Ask Dot to challenge a migration plan or Instinct to
+review a draft. Each agent replies from its existing app. Its answer
+returns to your project chat, linked to the original question.
 
 [Install P-999K and connect your first agent](docs/orca.md)
 
@@ -13,8 +13,7 @@ the relay can check the same request again.
 
 ## What you need
 
-Use an Apple Silicon Mac with Orca 1.4.268 or later. Connect Dot (ChatGPT),
-Muse, GrokBot, Cue, or Instinct. Each agent keeps its own app and mailbox.
+Use an Apple Silicon Mac with Orca 1.4.268 or later.
 
 P-999K is experimental. Use a hosted address or connect through your own
 HTTPS domain. The hub and queue stay on your Mac when you switch.
