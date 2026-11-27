@@ -189,7 +189,7 @@ fn enroll(
 ) -> Result<String, String> {
     let path = home.join(FILE);
     let _lock = lock_state(&path).map_err(|_| "hosted enrollment is busy or its lock is unsafe")?;
-    let mut saved = match load(&path)? {
+    let mut saved = match reusable_enrollment(home)? {
         Some(saved) if saved.origin != origin.as_str() => {
             return Err("use the original HTTPS registration origin for this home".into());
         }
@@ -376,6 +376,9 @@ fn enroll(
 
     match procedure {
         Err(reason) if reason == "registration_expired" => {
+            if crate::hosted_connector::load_connection(home)?.is_some() {
+                return Err("The saved hosted connection expired. Contact your operator to restore the address.".into());
+            }
             fs::remove_file(&path).map_err(|_| "cannot clear expired enrollment state")?;
             fs::File::open(home)
                 .and_then(|dir| dir.sync_all())
@@ -397,6 +400,18 @@ fn enroll(
         Err(reason) => Err(format!("{reason}. {RESUME}")),
         Ok(url) => Ok(url),
     }
+}
+
+fn reusable_enrollment(home: &Path) -> Result<Option<Enrollment>, String> {
+    let saved = load(&home.join(FILE))?;
+    if let Some((url, id)) = crate::hosted_connector::load_connection(home)? {
+        let binding = saved.as_ref().and_then(|record| record.binding.as_ref());
+        if binding.is_none_or(|binding| binding.public_url != url || binding.installation_id != id)
+        {
+            return Err("Restore this hub's hosted-enrollment.json to reuse its existing hosted connection.".into());
+        }
+    }
+    Ok(saved)
 }
 
 pub(crate) fn address_only_home(home: &Path) -> Result<bool, Box<dyn std::error::Error>> {
@@ -451,7 +466,7 @@ fn exact_peer_scope(paths: &[String], selected: &str) -> bool {
 const RELEASE_ORIGIN: &str = env!("RADIO999K_COMPILED_REGISTRATION_ORIGIN");
 
 pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
-    let saved = load(&home.join(FILE))?;
+    let saved = reusable_enrollment(home)?;
     let intent = match saved.as_ref() {
         Some(saved) if saved.requested_routes.is_some() => OriginIntent::SelectableUnix,
         Some(saved) if saved.unix_nonce.is_some() => OriginIntent::UnixV1,
@@ -466,11 +481,14 @@ pub(crate) fn run(home: &Path, unix: bool) -> Result<(), String> {
     reserve(home, &origin, intent, None).map(|_| ())
 }
 
-pub(crate) fn selected_provider(peer: &str) -> Result<Url, String> {
+pub(crate) fn selected_provider(home: &Path, peer: &str) -> Result<Url, String> {
     if crate::pairing::route(peer).is_none() {
         return Err("The selected peer does not support hosted HTTPS enrollment.".into());
     }
-    registration_origin()
+    match reusable_enrollment(home)? {
+        Some(saved) => https_origin(&saved.origin),
+        None => registration_origin(),
+    }
 }
 
 pub(crate) fn reserve_selected_peer(
@@ -1036,6 +1054,77 @@ mod tests {
             current.unix_descriptor.unwrap().mcp_paths,
             ["/cue/mcp", "/muse/mcp"]
         );
+    }
+
+    #[test]
+    fn missing_registration_proof_keeps_staged_connection_and_skips_begin() {
+        let home = temp_home();
+        crate::hosted_connector::stage(home.path(), PUBLIC, ID, "fixture-token").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+
+        let result = enroll(
+            home.path(),
+            &https_origin(ORIGIN).unwrap(),
+            &api,
+            Duration::ZERO,
+            Duration::ZERO,
+            OriginIntent::SelectableUnix,
+            None,
+            |_| panic!("the existing connection must be kept"),
+            |_, _, _| panic!("a second connection must not be staged"),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Restore this hub's hosted-enrollment.json to reuse its existing hosted connection."
+        );
+        assert!(!home.path().join(FILE).exists());
+        assert_eq!(
+            crate::hosted_connector::load_connection(home.path()).unwrap(),
+            Some((PUBLIC.into(), ID.into()))
+        );
+    }
+
+    #[test]
+    fn explicit_peer_setup_uses_the_enrollment_provider() {
+        let home = temp_home();
+        let origin = https_origin(ORIGIN).unwrap();
+        let path = home.path().join(FILE);
+        save(&path, &new_enrollment(&origin)).unwrap();
+        assert_eq!(selected_provider(home.path(), "muse").unwrap(), origin);
+    }
+
+    #[test]
+    fn expired_response_preserves_the_proof_for_a_staged_connection() {
+        let home = temp_home();
+        let path = home.path().join(FILE);
+        let mut saved = new_enrollment(&https_origin(ORIGIN).unwrap());
+        saved.binding = Some(Binding {
+            installation_id: ID.into(),
+            public_url: PUBLIC.into(),
+            expires_at: "2026-11-27T00:00:00Z".into(),
+        });
+        save(&path, &saved).unwrap();
+        crate::hosted_connector::stage(home.path(), PUBLIC, ID, "fixture-token").unwrap();
+        let (api, server) = operator(
+            home.path(),
+            vec![(BEGIN, Some((410, json!({"error":"registration_expired"}))))],
+        );
+        let error = fixture(
+            home.path(),
+            &api,
+            |_| panic!("unexpected opener"),
+            |_, _, _| panic!("unexpected finalize"),
+        )
+        .unwrap_err();
+        assert!(error.contains("Contact your operator to restore the address"));
+        assert!(
+            load(&path)
+                .unwrap()
+                .is_some_and(|record| record.proof == saved.proof)
+        );
+        server.join().unwrap();
     }
 
     #[test]

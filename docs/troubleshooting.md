@@ -102,6 +102,10 @@ An unused address can expire if its tunnel never connects. If access expires
 or is revoked, contact the operator who provided it. Your queue and mailbox
 credentials stay on your Mac.
 
+If setup finds a saved connection without its registration proof, restore
+`hosted-enrollment.json` from a private backup of the same hub home. Then
+repeat setup in that home to reuse the address.
+
 ## Check a pending Orca reply
 
 If Orca already reported **Queued**, ask the relay to check the same request.
