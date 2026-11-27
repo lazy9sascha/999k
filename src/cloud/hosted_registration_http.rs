@@ -387,9 +387,10 @@ pub(crate) fn login_form(
 <h1>Register 999K</h1>
 <p>Proposed hostname: <strong>{hostname}</strong></p>
 <h2>About hosted setup</h2>
-<p>P-999K is experimental. You can use your own HTTPS domain now or switch to
-one later. Keep the same hub on your Mac and update each peer's connector
-after you switch.</p>
+<p>P-999K is experimental. P-999K resets its hosted tunnel addresses every 5 days.
+Peers using those addresses lose access at each reset. Use your own HTTPS domain
+for a stable address. Keep the same hub on your Mac and update each peer's
+connector after you switch.</p>
 <p>The email delivery provider receives your address and verification code to send the message.
 The registration service keeps temporary verification digests, then records verification
 completion, installation status, and Cloudflare resource references.</p>
@@ -591,6 +592,7 @@ mod tests {
         let html = page.into_body().collect().await.unwrap().to_bytes();
         let html = std::str::from_utf8(&html).unwrap();
         assert!(html.contains(hostname) && html.contains(ID));
+        assert!(html.contains("resets its hosted tunnel addresses every 5 days"));
         assert!(!html.contains(USER_CODE));
         assert!(!html.contains("name=\"user_code\""));
         assert!(html.contains("history.replaceState"));

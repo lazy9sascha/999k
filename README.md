@@ -15,8 +15,9 @@ returns to your project chat, linked to the original question.
 
 Use an Apple Silicon Mac with Orca 1.4.268 or later.
 
-P-999K is experimental. Use a hosted address or connect through your own
-HTTPS domain. The hub and queue stay on your Mac when you switch.
+P-999K is experimental. P-999K resets its hosted tunnel addresses every 5 days.
+Use your own HTTPS domain for a stable address. The hub and queue stay on your
+Mac when you switch.
 [Switch to your own domain](docs/orca.md#switch-to-your-own-domain)
 
 ## Use the hub without Orca

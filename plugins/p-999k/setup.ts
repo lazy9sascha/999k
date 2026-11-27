@@ -13,7 +13,7 @@ export const setupTargets = [
 const setupCommand = '"$HOME/.local/bin/999k" init --orca'
 const setupTitle = 'P-999K setup'
 
-export const previewNotice = 'P-999K is experimental. Use a hosted address or connect through your own HTTPS domain. You can switch later and keep the same hub and queue.'
+export const previewNotice = 'P-999K is experimental. P-999K resets its hosted tunnel addresses every 5 days. Peers using those addresses lose access at each reset. Use your own HTTPS domain for a stable address. Your queue stays on your Mac.'
 export const ownDomainSetupGuide = [
   'Point your HTTPS proxy or tunnel at the existing hub on this Mac. Keep the current hub home and publish only the selected peer’s authenticated MCP and pairing routes. Dot uses a protected OAuth endpoint.',
   'In the owner-private orca-ingress.json in that hub home, set the peer ID to its exact HTTPS MCP URL. For example, use {"muse":"https://radio.example.com/muse/mcp"}. Keep entries for other peers.',

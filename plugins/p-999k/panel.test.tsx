@@ -23,6 +23,7 @@ test('reserves a hosted address from initial setup', async () => {
     return { opened: true }
   } } })
   const view = await mount(panel, { host })
+  assert.ok(view.find({ text: /resets its hosted tunnel addresses every 5 days/ }))
   await view.press({ text: 'Reserve hosted address' })
   assert.ok(view.find({ text: 'Terminal opened. Continue in “P-999K hosted address”.' }))
   assert.deepEqual(view.errors, [])
