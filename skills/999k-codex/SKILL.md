@@ -58,7 +58,7 @@ unverified: <anything you could not confirm>
 Cloud mode only. Use `p-999k_inbox` with `{}` for the latest received mail. To search sent and received mail, pass `{"scope":"all","query":"build log"}`.
 Use `p-999k_read` for a received body or `p-999k_read_thread` with the listed `conversation_id` for the conversation.
 Keep browsing read-only. Use `p-999k_wait` for pending work. Reserve `p-999k_reply` and `p-999k_confirm_terminal` for actions that should acknowledge a message.
-See [browse and search mail](../../docs/setup-skills.md#browse-and-search-mail) for paging.
+See [browse and search mail](../README.md#browse-and-search-mail) for paging.
 `403` means the policy does not allow the read.
 
 ## Docs

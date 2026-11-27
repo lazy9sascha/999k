@@ -109,6 +109,6 @@ Questions:
 5. Add a dated entry to the [research log](research.md#adding-a-probe) with what passed, what failed, and what wasn't tested.
 6. Update the [deployment matrix](#deployment-matrix) and the README's agent table.
 
-After you choose a type, paste the matching setup skill from [setup skills per adapter type](setup-skills.md) into the agent.
+After you choose a type, paste the matching setup skill from [setup skills per adapter type](../skills/README.md) into the agent.
 
 Keep tokens, live endpoints, and personal paths out of this page.

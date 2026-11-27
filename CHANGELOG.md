@@ -37,7 +37,7 @@ The native CLI and the P-999K Orca plugin both use version 0.2.1.
 
 ## 0.1.5
 
-- Run an existing private hub, its secure tunnels, and its email relay under [one macOS LaunchAgent](docs/launchd.md).
+- Run an existing private hub, its secure tunnels, and its email relay under [one macOS LaunchAgent](docs/tunnels.md#run-a-private-hub-with-one-launchagent).
 - Reject a second hub for the same SQLite queue, even on a different port.
 - Reject invalid static relay mailbox lists before startup.
 

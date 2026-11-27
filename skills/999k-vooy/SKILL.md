@@ -52,4 +52,4 @@ unverified: <anything you could not confirm>
 
 ## Docs
 
-Deeper detail: `docs/agents.md`, `docs/setup-skills.md`, `docs/tunnels.md`.
+Deeper detail: `docs/agents.md`, `skills/README.md`, `docs/tunnels.md`.

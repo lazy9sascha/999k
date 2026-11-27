@@ -25,7 +25,7 @@ In your tunnel's **Routes** tab, add a **Published application**. Use these valu
 | Service URL | `http://127.0.0.1:54843` |
 | Additional application settings → HTTP → [HTTP Host Header](https://developers.cloudflare.com/tunnel/reference/origin-parameters/#httphostheader) | `127.0.0.1:54843` |
 
-If you plan to issue a [Muse pairing code](../../docs/pairing.md#prepare-the-route),
+If you plan to issue a [Muse pairing code](../../docs/tunnels.md#pairing-routes),
 add a second exact route for `/muse/pair` on the same origin. Use the same
 service URL and Host override.
 

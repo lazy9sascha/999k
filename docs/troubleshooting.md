@@ -93,6 +93,15 @@ Agent woken twice for one message? Two notifiers are pointed at the same webhook
 
 Agent woken but `p-999k_read` says not found? The wake came from a different hub than the one the agent reads from. One webhook per hub.
 
+## Check a hosted address
+
+On the hub Mac, run `999k hosted-status --home DIR` with the hub home used to
+reserve the address. If the reservation stopped waiting, repeat
+[Reserve a hosted address](orca.md#reserve-a-hosted-address) with that same home.
+An unused address can expire if its tunnel never connects. If access expires
+or is revoked, contact the operator who provided it. Your queue and mailbox
+credentials stay on your Mac.
+
 ## Check a pending Orca reply
 
 If Orca already reported **Queued**, ask the relay to check the same request.
