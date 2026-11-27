@@ -10,32 +10,23 @@ domain. Both use the queue on your Mac.
 
 Use an Apple Silicon Mac with Orca 1.4.268 or later. If the Mac already
 runs a managed hub, follow the [upgrade steps](../packaging/README.md#upgrade-an-existing-installation).
-For a new installation, open a terminal in an empty download directory.
-The commands install [0.2.2](https://github.com/lazy9sascha/p-999k/releases/tag/0.2.2).
-If Orca is outside `/Applications` and absent from `PATH`, set `orca_bin`
-below to the executable in your Orca app.
+For a new installation, run the 999K CLI installer in an empty directory.
 
 ```sh
 (
 	set -e
-	orca_bin=$(command -v orca || printf "%s" /Applications/Orca.app/Contents/Resources/bin/orca)
-	release=https://github.com/lazy9sascha/p-999k/releases/download/0.2.2
-	for file in install.sh 999k-0.2.2-aarch64-apple-darwin.tar.gz p-999k-0.2.2.tar.gz SHA256SUMS-orca; do
-		curl -q --proto '=https' --proto-redir '=https' -fLsS -o "$file" "$release/$file"
-	done
+	curl -q --proto '=https' --proto-redir '=https' -fLsS -o install.sh \
+		https://github.com/lazy9sascha/p-999k/releases/download/0.2.2/install.sh
 	sh ./install.sh
 	"$HOME/.local/bin/999k" --version
-	shasum -a 256 --check SHA256SUMS-orca
-	tar -xzf p-999k-0.2.2.tar.gz
-	"$orca_bin" plugin validate ./p-999k-0.2.2
-	"$orca_bin" plugin install ./p-999k-0.2.2
 )
 ```
 
-Check that the CLI prints `999k 0.2.2`. If Orca asks for approval, review
-the permissions and run the command it prints. The plugin uses those
-permissions to find your workspace and run setup in a terminal.
-[Package and uninstall commands](../packaging/README.md#orca-plugin-archive)
+Check that the CLI prints `999k 0.2.2`. In Orca, open **Settings → Plugins**.
+Turn on plugins if prompted. Search for **P-999K** by **lazy9sascha** in
+the Community catalog and select **Install**. Review the permissions.
+The plugin uses them to find your workspace and run setup in a terminal.
+[Install from a release archive](../packaging/README.md#orca-plugin-archive).
 
 ## Connect a peer
 
