@@ -20,6 +20,7 @@ plist = "1"
 rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["rt", "sync", "macros", "net", "time", "process", "io-util", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "blocking", "json"] }
+lettre = { version = "=0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
 hmac = "0.13"
 base64 = "0.22"
 url = "2"

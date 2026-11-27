@@ -226,7 +226,10 @@ impl Operator {
         loop {
             interval.tick().await;
             let Ok(now) = epoch_seconds() else { continue };
-            let Ok(candidates) = self.record(|registry| registry.lifecycle_candidates(now)) else {
+            let Ok(candidates) = self.record(|registry| {
+                registry.expire_email_attempts(now)?;
+                registry.lifecycle_candidates(now)
+            }) else {
                 tracing::warn!("registration lifecycle candidates unavailable");
                 continue;
             };

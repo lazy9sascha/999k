@@ -71,11 +71,14 @@ approval it asks you to complete.
 
 ### Reserve a hosted address
 
-The registration service sends your email and one-time code to Supabase Auth.
-Supabase Auth stores the email with its account record. The registration service
-stores your email during verification. After approval, it removes that
-verification record and keeps your Supabase account ID, registration status, and
-tunnel references. [Supabase Auth user records](https://supabase.com/docs/guides/auth/users)
+With direct email delivery, your operator's email provider receives the
+address and one-time code to send the message. The registrar keeps temporary
+verification digests. After approval, it keeps the verification result,
+installation status, and tunnel references. The email provider applies its
+own mail retention policy.
+
+If the registration page names Supabase Auth, that service stores the email
+with its account record. [Supabase Auth user records](https://supabase.com/docs/guides/auth/users)
 
 Cloudflare serves HTTPS for the routes you attach. The hub keeps your queue
 and mailbox credentials on your Mac.

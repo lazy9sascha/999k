@@ -576,18 +576,8 @@ async fn operator_reopens_sqlite_and_reconciles_a_lost_tunnel_create_response() 
     assert_eq!(status, StatusCode::OK);
     let id = Uuid::parse_str(initial["installation_id"].as_str().unwrap()).unwrap();
     let now = crate::epoch_seconds().unwrap();
-    let account = Uuid::from_u128(1);
     operator
-        .record(|registry| {
-            let attempt = registry.start_browser(id, "A1B2C3D4", now)?;
-            registry.take_browser(attempt.id, now)?;
-            registry.approve(
-                id,
-                account,
-                &std::collections::HashSet::from([account]),
-                now,
-            )
-        })
+        .record(|registry| registry.approve_for_test(id, &proof, now))
         .unwrap();
 
     let hostname = operator.hostname(id);
@@ -696,18 +686,8 @@ async fn approved_reservation_attaches_peers_to_the_same_owned_tunnel() {
     assert_eq!(status, StatusCode::OK);
     let id = Uuid::parse_str(enrollment["installation_id"].as_str().unwrap()).unwrap();
     let now = crate::epoch_seconds().unwrap();
-    let account = Uuid::from_u128(1);
     operator
-        .record(|registry| {
-            let attempt = registry.start_browser(id, "A1B2C3D4", now)?;
-            registry.take_browser(attempt.id, now)?;
-            registry.approve(
-                id,
-                account,
-                &std::collections::HashSet::from([account]),
-                now,
-            )
-        })
+        .record(|registry| registry.approve_for_test(id, &proof, now))
         .unwrap();
     let nonce = "0123456789abcdef0123456789abcdef";
     let configure = |paths: &[&str]| {
