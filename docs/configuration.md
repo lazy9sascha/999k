@@ -217,8 +217,23 @@ mailbox credential. Cloudflare Access serves the OAuth discovery response.
 For Dot in Orca, set `dot` in the hub's private `orca-ingress.json` to the
 protected HTTPS `/dot/mcp` URL. Restart the hub after changing the Access
 binding. Run `999k init --orca --orca-peer dot` and wait for
-`OAuth discovery ready`. Add the endpoint as a private MCP app in ChatGPT
-and approve OAuth. [Verify the first reply](orca.md#verify-the-first-reply)
+`OAuth discovery ready`. Add the endpoint as a private MCP app in ChatGPT.
+Review [what OAuth uses](#oauth-sign-in-and-message-data), then approve the
+connection. [Verify the first reply](orca.md#verify-the-first-reply)
+
+### OAuth sign-in and message data
+
+Cloudflare Access handles sign-in and sends a signed assertion with your
+email address and account identifier to 999K. The hub checks the assertion
+in memory for each request and compares the email with the allowed address
+in your private hub configuration. Cloudflare records sign-in attempts,
+including the time, account, and access decision.
+[Cloudflare Access authentication logs](https://developers.cloudflare.com/cloudflare-one/insights/logs/dashboard-logs/access-authentication-logs/)
+
+Approval grants the app access to its configured 999K mailbox. The hub
+stores mailbox messages on your Mac and delivers them to the connected app.
+The public HTTPS endpoint can read message text and authentication headers
+in transit. [HTTPS and TLS termination](tunnels.md#use-your-own-https-origin)
 
 ## Dot through a private Secure MCP Tunnel
 
