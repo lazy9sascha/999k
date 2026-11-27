@@ -248,6 +248,7 @@ impl Operator {
         }
         let Ok(candidates) = self.record(|registry| {
             registry.expire_email_attempts(now)?;
+            registry.expire_unstarted_approvals(now)?;
             registry.lifecycle_candidates(now)
         }) else {
             tracing::warn!("registration lifecycle candidates unavailable");

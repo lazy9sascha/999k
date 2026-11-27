@@ -10,7 +10,9 @@ mod hosted_registration_http;
 mod hosted_registration_lifecycle;
 
 use clap::{ArgGroup, Parser};
-use enrollment_store::{Enrollment, EnrollmentState, LifecycleRecord, Registry, RegistryError};
+use enrollment_store::{
+    DEFAULT_HOSTED_CAPACITY, Enrollment, EnrollmentState, LifecycleRecord, Registry, RegistryError,
+};
 #[path = "../cloud/hosted_origin.rs"]
 mod hosted_origin;
 use hosted_cloudflare::lifecycle::SavedCloudflareInstallation;
@@ -18,8 +20,8 @@ use hosted_cloudflare::{CloudflareProvisioner, CloudflareResources, valid_public
 use hosted_email::{SmtpMailer, SmtpSettings};
 use hosted_origin::UnixOrigin;
 use hosted_registration_http::{
-    RegistrationHttpError as HttpError, RegistrationResponse, RequestKind, approval_result,
-    json_response, login_form, otp_form, parse_request,
+    RegistrationHttpError as HttpError, RegistrationResponse, RequestKind, approval_blocked,
+    approval_result, json_response, login_form, otp_form, parse_request,
 };
 use http::{Method, Request, StatusCode, header};
 use hyper::{server::conn::http1, service::service_fn};
@@ -32,6 +34,7 @@ use std::{
     convert::Infallible,
     io::{self, Read},
     net::Ipv4Addr,
+    num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -80,6 +83,7 @@ struct Config {
     email_smtp: Option<SmtpSettings>,
     registration_notice_to: Option<String>,
     first_hosted_reset_at: Option<String>,
+    max_hosted_addresses: Option<NonZeroU32>,
     #[serde(default, rename = "supabase_url")]
     _supabase_url: Option<serde::de::IgnoredAny>,
     #[serde(default, rename = "supabase_publishable_key")]
@@ -127,6 +131,7 @@ struct Operator {
     mailer: SmtpMailer,
     notice_to: Option<lettre::Address>,
     first_hosted_reset_at: Option<i64>,
+    hosted_capacity: u32,
     email_key: [u8; 32],
     cloudflare: CloudflareProvisioner,
     zone: String,
@@ -188,6 +193,8 @@ fn registry_error(error: RegistryError) -> HttpError {
         RegistryError::Pending => HttpError::LoginPending,
         RegistryError::Revoked => HttpError::RegistrationRevoked,
         RegistryError::RateLimited => HttpError::RateLimited,
+        RegistryError::ActiveAddress => HttpError::ActiveAddress,
+        RegistryError::HostedCapacity => HttpError::HostedCapacity,
         RegistryError::Unavailable => HttpError::TemporarilyUnavailable,
     }
 }
@@ -243,6 +250,9 @@ impl Operator {
             mailer,
             notice_to,
             first_hosted_reset_at,
+            hosted_capacity: config
+                .max_hosted_addresses
+                .map_or(DEFAULT_HOSTED_CAPACITY, NonZeroU32::get),
             email_key,
             cloudflare,
             origin,
@@ -496,10 +506,19 @@ impl Operator {
                 otp,
                 attempt,
             } => {
-                self.record(|reg| {
-                    reg.verify_email_code(installation_id, attempt, &otp, &self.email_key, now)
-                })?;
-                Ok(approval_result())
+                match self.record(|reg| {
+                    reg.verify_email_code(
+                        installation_id,
+                        attempt,
+                        &otp,
+                        &self.email_key,
+                        now,
+                        self.hosted_capacity,
+                    )
+                }) {
+                    Ok(_) => Ok(approval_result()),
+                    Err(error) => approval_blocked(error).ok_or(error),
+                }
             }
         }
     }
@@ -1043,7 +1062,7 @@ mod tests {
         );
 
         assert!(matches!(
-            operator.finish(b.id, proof_b).await,
+            operator.finish(b.id, proof_b.clone()).await,
             Err(HttpError::LoginPending)
         ));
         let connection = rusqlite::Connection::open(db).unwrap();
@@ -1053,5 +1072,47 @@ mod tests {
             })
             .unwrap();
         assert_eq!(attempts, 0);
+
+        let second = operator
+            .record(|reg| {
+                let handoff = reg.handoff_url_secret(b.id, &proof_b, now)?.unwrap();
+                let attempt = reg.start_handoff_attempt(
+                    b.id,
+                    &handoff,
+                    "invited@example.test",
+                    &operator.email_key,
+                    now,
+                )?;
+                reg.mark_email_sent(attempt.id, b.id, now)?;
+                Ok(attempt)
+            })
+            .unwrap();
+        let response = operator
+            .dispatch(submit(
+                b.id,
+                format!("__Host-pigeonmq-registration={}", second.id),
+                &format!("otp={}", second.code),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let html = response.into_body().collect().await.unwrap().to_bytes();
+        let html = std::str::from_utf8(&html).unwrap();
+        assert!(html.contains("Use your existing installation"));
+        assert!(!html.contains("invited@example.test"));
+        let (status, body) = call(
+            &operator,
+            Method::GET,
+            &format!("/v1/enrollments/{}", b.id),
+            &proof_b,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body, json!({"error":"active_hosted_address"}));
+        assert!(matches!(
+            operator.finish(b.id, proof_b).await,
+            Err(HttpError::ActiveAddress)
+        ));
     }
 }

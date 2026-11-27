@@ -385,6 +385,12 @@ fn enroll(
         Err(reason) if reason == "registration_revoked" => Err(
             "Registration was revoked. Do not reuse this enrollment. Contact the operator.".into(),
         ),
+        Err(reason) if reason == "active_hosted_address" => Err(
+            "This email already has a hosted address. Use the existing installation or your own HTTPS domain.".into(),
+        ),
+        Err(reason) if reason == "hosted_capacity" => Err(
+            "Hosted addresses are full. Try again later or use your own HTTPS domain.".into(),
+        ),
         Err(reason) if required_path.is_some() => Err(format!(
             "{reason}. Repeat the same selected-peer setup command to resume."
         )),

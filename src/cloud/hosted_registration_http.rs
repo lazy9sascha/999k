@@ -66,6 +66,8 @@ pub(crate) enum RegistrationHttpError {
     RegistrationExpired,
     RegistrationRevoked,
     RateLimited,
+    ActiveAddress,
+    HostedCapacity,
     TemporarilyUnavailable,
 }
 
@@ -78,6 +80,8 @@ impl RegistrationHttpError {
             Self::RegistrationExpired => (StatusCode::GONE, "registration_expired"),
             Self::RegistrationRevoked => (StatusCode::GONE, "registration_revoked"),
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            Self::ActiveAddress => (StatusCode::CONFLICT, "active_hosted_address"),
+            Self::HostedCapacity => (StatusCode::SERVICE_UNAVAILABLE, "hosted_capacity"),
             Self::TemporarilyUnavailable => {
                 (StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
             }
@@ -391,9 +395,10 @@ pub(crate) fn login_form(
 Peers using those addresses lose access at each reset. Use your own HTTPS domain
 for a stable address. Keep the same hub on your Mac and update each peer's
 connector after you switch.</p>
+<p>Each verified email address can hold one hosted address, which peers in the same installation can share.</p>
 <p>The email delivery provider receives your address and verification code to send the message.
-The registration service keeps temporary verification digests, then records verification
-completion, installation status, and Cloudflare resource references.
+The registration service keeps a keyed email digest to enforce the limit until it confirms address removal.
+It records verification completion, installation status, and Cloudflare resource references.
 If enabled, the operator email contains only the time when the address was first issued.</p>
 <p>Cloudflare provides the public address and carries requests to the 999K hub
 on your Mac. Requests can contain message text and authentication headers.
@@ -452,6 +457,28 @@ pub(crate) fn approval_result() -> RegistrationResponse {
     );
     set_attempt_cookie(&mut response, "", 0);
     response
+}
+
+pub(crate) fn approval_blocked(error: RegistrationHttpError) -> Option<RegistrationResponse> {
+    let (status, title, message) = match error {
+        RegistrationHttpError::ActiveAddress => (
+            StatusCode::CONFLICT,
+            "This email already has a hosted address",
+            "Use your existing installation. If you lost access, contact your operator. You can also use your own HTTPS domain.",
+        ),
+        RegistrationHttpError::HostedCapacity => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Hosted addresses are full",
+            "Try again later or use your own HTTPS domain.",
+        ),
+        _ => return None,
+    };
+    let mut response = html_response(format!(
+        "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title><h1>{title}</h1><p>{message}</p></html>"
+    ));
+    *response.status_mut() = status;
+    set_attempt_cookie(&mut response, "", 0);
+    Some(response)
 }
 
 fn set_attempt_cookie(response: &mut RegistrationResponse, value: &str, ttl_seconds: u64) {
