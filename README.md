@@ -7,7 +7,7 @@ Orca project chat. Ask Dot to challenge a migration plan or Instinct to
 review a draft. Each agent replies from its existing app. Its answer
 returns to your project chat, linked to the original question.
 
-[Install P-999K and connect your first agent](docs/orca.md)
+[Install from Orca Community and connect your first agent](docs/orca.md)
 
 <img alt="A worn 999K field radio with a bent antenna" src="docs/assets/999k-field-radio-ink.png" width="200">
 
