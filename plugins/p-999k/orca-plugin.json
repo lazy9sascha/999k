@@ -3,7 +3,7 @@
   "id": "p-999k",
   "name": "P-999K",
   "publisher": "lazy9sascha",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Connect the agents you use outside the terminal to Orca. Ask Dot, Muse, GrokBot, Cue, or Instinct and get replies in your project chat.",
   "author": { "name": "999K" },
   "license": "MIT",

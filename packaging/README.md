@@ -80,4 +80,8 @@ orca plugin install ./p-999k-0.2.2
 The catalog ID is `lazy9sascha.p-999k`. Existing local installations of 0.2.0 use `local.radio999k`. The trusted worker uses `workspace:read` to find the active local workspace and `terminal:send` to run the setup command in a terminal there. To remove the installed plugin and its approval, run `orca plugin uninstall lazy9sascha.p-999k`. The first install can stop to request approval. Review the access and use the approval command Orca prints for that exact archive. After installation, open **P-999K** in your local workspace. For a custom 999K
 executable path, run that executable's `init --orca` in a local Orca terminal.
 
-For a catalog release, copy the extracted files and the plugin README to the root of the public plugin repository. Add the `orca-plugin` topic and tag the commit with the plugin version, such as `v0.2.2`.
+For a catalog release, commit the new plugin version in `plugins/p-999k`.
+Run `orca plugin release-entry plugins/p-999k` and add its output to the
+plugin's releases in `orca-catalog.json`. Validate the catalog with
+`orca plugin validate orca-catalog.json`. Tag the commit that contains the
+updated catalog with the plugin version, such as `v0.2.3`.
