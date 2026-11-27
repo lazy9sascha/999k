@@ -56,10 +56,10 @@ The plugin uses them to find your workspace and run setup in a terminal.
      [redeem the code privately](tunnels.md#offer-and-redeem)
      and use the app's secure credential field.
    - For direct Dot, wait for **OAuth discovery ready**. Add the protected
-     URL as a private MCP app in ChatGPT. Review [what OAuth uses and what
-     the hub stores](configuration.md#oauth-sign-in-and-message-data) before
-     you approve OAuth. If you use a private tunnel, select its app in the
-     intended Dot conversation.
+     URL as a private MCP app in ChatGPT. Before you approve OAuth, read the
+     notice in the setup terminal or [check what OAuth uses and what the hub
+     stores](configuration.md#oauth-sign-in-and-message-data).
+     If you use a private tunnel, select its app in the intended Dot conversation.
 
 5. Ask the app to list its mailbox tools. Then
    [verify the first reply](#verify-the-first-reply).
