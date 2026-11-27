@@ -28,9 +28,9 @@ Run `999k <command> --help` for exact flags.
 | `credentials --home DIR --app APP import --token-file PATH` | Recover an existing matching token from a private file. Keeps the policy unchanged. |
 | `credentials --home DIR --app APP reissue --token-file PATH [--use-stored-token]` | Explicit token repair. Save a private repair token and change only its policy digest. |
 | `credentials --home DIR --app APP export --token-file PATH [--format token\|authorization-header]` | Create a private credential file for an explicit client reference. |
-| `init --reserve-address --home DIR` | Reserve a [hosted HTTPS address](hosted-registration.md#reserve-an-address-without-starting-a-connector) through browser email verification. |
+| `init --reserve-address --home DIR` | Reserve a [hosted HTTPS address](orca.md#reserve-a-hosted-address) through browser email verification. |
 | `init --orca --orca-peer ID --home DIR` | Set up one [Orca relay](orca.md#connect-a-peer) and check its configured transport. |
-| `hosted-status --home DIR` | Read the [status of the saved hosted registration](hosted-registration.md#what-users-see). |
+| `hosted-status --home DIR` | Read the [status of the saved hosted registration](troubleshooting.md#check-a-hosted-address). |
 | `dot-tunnel-status --home DIR` | Show the local Dot tunnel state. |
 | `quickstart --home DIR` | Stage Instinct in a new local-only demo home. The command prints the loopback URL, the token file path, and how to start the hub. Use a new directory. |
 | `health --home DIR` | Check whether the supervised loopback hub answers. |
@@ -643,6 +643,39 @@ Muse and Grok Bot connectors still need their supported secure credential field.
 Check use through an authenticated request from the selected agent. A tool list establishes discovery only.
 
 Use the supported secure credential field or an explicit protected file reference. Remote agents without either mechanism need a separate reviewed handoff design.
+
+### Rotate the optional hosted Cue Bearer
+
+Finite Bearer mode applies to `/cue/mcp` on the managed hosted Unix origin.
+Local stdio and loopback keep their existing credential checks.
+
+Before the first rotation, stop the managed hub so an older process
+cannot accept the local Bearer on the hosted route. Choose a lifetime of
+1 to 2,592,000 seconds. Export the Bearer to a new path in an owner-private
+directory outside the hub home.
+
+```sh
+999k hosted-cue-bearer --home /private/hub rotate \
+	--lifetime-secs <seconds> --export-file /private/transfer/cue-bearer
+```
+
+Transfer the mode `0600` file through a private credential channel. After
+the first rotation, start the same hub with the current binary. The hosted
+route accepts the finite Bearer. Later rotations replace it without a
+restart. If a request is using the current grant, wait for it to finish
+and retry.
+
+If a rotation fails, keep the export file private. The grant may have
+changed before the command returned. Run
+`999k hosted-cue-bearer --home /private/hub status` to check the grant.
+Rotate to a new file to issue a known Bearer.
+
+Run `999k hosted-cue-bearer --home /private/hub revoke` to stop hosted
+access. Revocation keeps the mailbox, policy, and queue. A missing or
+expired grant also denies hosted access once finite mode is enabled.
+If revocation fails or status is unavailable, keep hosted access stopped.
+Keep the current lifecycle registry and binary so the old Bearer stays
+disabled during rollback.
 
 ## Grok Bot policy by hand
 

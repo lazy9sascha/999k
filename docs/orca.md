@@ -61,7 +61,7 @@ permissions to find your workspace and run setup in a terminal.
      When the peer opens its private setup, choose **Get a setup code** in
      Orca. Enter the address and code from the terminal in the app's
      private fields. If the app asks for a Bearer token,
-     [redeem the code privately](pairing.md#offer-and-redeem)
+     [redeem the code privately](tunnels.md#offer-and-redeem)
      and use the app's secure credential field.
    - For direct Dot, wait for **OAuth discovery ready**. Add the protected
      URL as a private MCP app in ChatGPT, then approve OAuth. If you use a
@@ -81,7 +81,18 @@ Install [cloudflared for macOS](https://developers.cloudflare.com/tunnel/downloa
 Choose **Initial setup → Reserve hosted address**. In the browser, enter the
 code from your verification email. Return to Orca and continue with the peer
 you selected. The other eligible peers can use the same address.
-[How to resume or check your address](hosted-registration.md)
+Supabase verifies your email. Cloudflare serves HTTPS for the routes you
+attach. The hub keeps your queue and mailbox credentials on your Mac.
+
+If registration stops waiting, select **Reserve hosted address** again.
+From an owner terminal, you can reserve with the same hub home as Orca.
+
+```sh
+999k init --reserve-address --home "$HOME/path/to/private-hub"
+```
+
+When the command reports `hosted_connector=staged`, return to Orca and
+select a peer. [Check a hosted address](troubleshooting.md#check-a-hosted-address)
 
 ## Verify the first reply
 
@@ -105,7 +116,7 @@ home to keep your queue and mailbox credentials.
 
 1. Point your [HTTPS proxy or tunnel](tunnels.md#use-your-own-https-origin)
    at the hub. Publish the peer's exact
-   [MCP and pairing paths](pairing.md#prepare-the-route). For Dot, publish its
+   [MCP and pairing paths](tunnels.md#pairing-routes). For Dot, publish its
    [protected OAuth endpoint](configuration.md#dot-and-codex-cloud-through-direct-oauth).
 2. Add the peer ID and exact HTTPS MCP URL to the owner-private
    `orca-ingress.json` in that home. For example, use

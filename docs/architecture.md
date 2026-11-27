@@ -183,9 +183,19 @@ Muse and Grok apply an authenticated cancellation only after rmcp accepts the no
 Dot serves its mailbox tools and configured Events on the same route.
 The opt-in generic MCP routes use rmcp core dispatch behind a separate HTTP adapter.
 
+### Mailbox body limits
+
+The Muse and GrokBot adapters accept decoded request and reply bodies up
+to 16 KiB (16384 UTF-8 bytes). They apply this limit during mailbox
+observation and reply. The HTTP envelope allows extra bytes for fields
+and JSON escaping. These limits apply to the 999K adapters.
+
+The Codex MCP send tool accepts up to 8 KiB (8192 UTF-8 bytes) per request. The shared Codex request reader uses the same bound. Terminal replies can hold up to 16 KiB.
+
 ### Queue schema essentials
 
-The queue supports schema version 4 only. New databases use this version. Older databases cause an error and remain unchanged. This release does not convert them.
+A setup command creates the queue at its configured path. The listener
+opens that queue. New queues use schema version 4. Older databases cause an error and remain unchanged. This release does not convert them.
 
 One `messages` table (plus `rpc_requests` for request/response calls and small per-adapter reply tables):
 
@@ -222,7 +232,8 @@ and inbox tools leave delivery state unchanged. A reply stores the answer and
 acknowledges the original in one SQLite transaction. The sender can
 acknowledge the answer separately with `p-999k_confirm_terminal`.
 Delivery to an Orca project chat happens after the relay reads the linked
-reply.
+reply. A permitted send to the caller's own mailbox uses the same delivery
+rules. Recipient discovery can omit the caller or require a grant.
 
 For leased requests, the next claim moves an ordinary request to
 `dead_lettered` after five expired attempts. The queue keeps the stored request and its metadata. [Inspect dead-lettered requests](configuration.md#dead-letter-inspection)
@@ -353,6 +364,19 @@ Save the record in `triage/<agent>.json` under the dedicated absolute `--home` u
 `init <agent>` checks the record before staging. It checks only the constraint forms used in the bundled triage schema, not arbitrary JSON Schemas. It only supports agent-initiated local MCP with Streamable HTTP and Bearer, no wake, an empty `send_to` list, and `read`, `wait`, or both. The selected tools use the existing local adapter and private bearer policy. Without a record, a new mailbox offers both read and wait. An existing mailbox's tools and credentials are never replaced by a triage record.
 
 A valid triage record is not proof of a connection. For example, the [Vooy candidate](../schemas/examples/vooy.json) still has unverified remote transport, auth, and wake. It cannot stage from that record. This command never starts a tunnel or configures a remote app.
+
+## Verify the queue and adapters
+
+| Promise | Tests |
+| --- | --- |
+| Queue acceptance and replay | `tests/queue.rs` |
+| SQLite persistence | `tests/queue_journal.rs` |
+| Muse read, reply, ACK, rollback, mailbox scope | `tests/muse_mailbox.rs` |
+| Grok Bot UTF-8 body boundaries and reply replay | `tests/grok_mailbox.rs` |
+| Bearer and policy checks | unit tests in `src/auth.rs` and `src/local_http.rs` |
+| Grok Bot wake | `src/adapters/grok_bot/grok_wake_tests.rs` |
+
+Run them with `cargo test --locked -- --test-threads=1`. Live tunnel and app behavior is recorded separately in [research log](research.md#key-findings).
 
 ## Limitations
 

@@ -3,7 +3,7 @@
 Use the tool names returned by `tools/list`. These examples use the
 `p-999k_` prefix. Release 0.2.0 advertises `radio999k_` names.
 
-Triage ends when you choose a connection mode (A–D). The modes are defined in [architecture](architecture.md#connection-modes). The next step is to give the agent a setup skill for that type.
+Triage ends when you choose a connection mode (A–D). The modes are defined in [architecture](../docs/architecture.md#connection-modes). The next step is to give the agent a setup skill for that type.
 
 After triage, copy the template for the selected mode into the agent’s
 instructions. Use the fenced block as the template. Ask the agent for its
@@ -20,17 +20,17 @@ its own poller or a request from the user.
 | Muse | [B](#type-b-pull-only) |
 | Pickle | [B scripted](#type-b-scripted-variant) |
 | Vooy | [B](#type-b-pull-only) (provisional) |
-| Instinct | [Private runtime pairing](pairing.md#check-the-existing-conversation) from its existing Messages conversation |
+| Instinct | [Private runtime pairing](../docs/tunnels.md#check-the-existing-conversation) from its existing Messages conversation |
 
-The table above is the inbox-handling template to paste after triage. Known agents also have a connect skill under `skills/`: [Grok](../skills/999k-grok/SKILL.md), [Muse](../skills/999k-muse/SKILL.md), [Dot](../skills/999k-dot/SKILL.md), [Codex](../skills/999k-codex/SKILL.md), [Pickle](../skills/999k-pickle/SKILL.md), [Vooy](../skills/999k-vooy/SKILL.md). For an unfamiliar agent, start with [agent triage](../skills/999k-cloud-triage/SKILL.md).
+The table above is the inbox-handling template to paste after triage. Known agents also have a connection skill: [Grok](999k-grok/SKILL.md), [Muse](999k-muse/SKILL.md), [Dot](999k-dot/SKILL.md), [Codex](999k-codex/SKILL.md), [Pickle](999k-pickle/SKILL.md), [Vooy](999k-vooy/SKILL.md). For an unfamiliar agent, start with [agent triage](999k-cloud-triage/SKILL.md).
 
 ## Browse and search mail
 
-Use `p-999k_inbox` with `{}` for the latest received mail. Use `{"query":"build log"}` to search received mail or `{"scope":"all","query":"build log"}` to also search sent mail. Follow `next_continuation` with the same filters until it is null. See the [mailbox tool contract](architecture.md#mcp-tools) for body reads and page options.
+Use `p-999k_inbox` with `{}` for the latest received mail. Use `{"query":"build log"}` to search received mail or `{"scope":"all","query":"build log"}` to also search sent mail. Follow `next_continuation` with the same filters until it is null. See the [mailbox tool contract](../docs/architecture.md#mcp-tools) for body reads and page options.
 
 Browsing is read-only. Use `p-999k_wait` to look for pending work. `p-999k_reply` stores the reply and acknowledges the original together. `p-999k_confirm_terminal` acknowledges a terminal answer.
 
-These skills are repository Markdown for a separate agent-side handoff. The hub advertises MCP tools and has no MCP Resources catalog. Update the copied or installed skill through the agent's own mechanism. The [app upgrade checklist](troubleshooting.md#refresh-a-saved-mcp-app) covers refreshing the MCP tool catalog.
+These skills are repository Markdown for a separate agent-side handoff. The hub advertises MCP tools and has no MCP Resources catalog. Update the copied or installed skill through the agent's own mechanism. The [app upgrade checklist](../docs/troubleshooting.md#refresh-a-saved-mcp-app) covers refreshing the MCP tool catalog.
 
 ## Type B (pull only)
 
@@ -88,7 +88,7 @@ The hub cannot wake you. A scheduler runs a condition check that must not start 
 Use this template for a webhook or another trigger that can start a run.
 The hub keeps the request queued if a wake is lost. Use a fallback poll
 if the platform supports one. For GrokBot, configure the
-[webhook wake](quickstart.md#5-optional-grok-bot-wake) first.
+[webhook wake](../docs/quickstart.md#5-optional-grok-bot-wake) first.
 
 ```text
 ---
@@ -114,7 +114,7 @@ A webhook or trigger is only a nudge. It may carry a message id, never secrets. 
 
 Use this template for Codex Cloud or Dot with a verified MCP Events
 subscription. When an event arrives, read the message from the hub.
-[Connection evidence for each agent](agents.md#deployment-matrix)
+[Connection evidence for each agent](../docs/agents.md#deployment-matrix)
 
 ```text
 ---
@@ -144,4 +144,4 @@ This repo implements the hub-side path for Codex Local: a native worker claims t
 
 ## Instinct
 
-Use the existing Messages conversation and its secure setup form. In the verified flow the private runtime redeemed a single-use code over HTTPS, then used MCP to read the original and post a linked reply. [Peer setup](pairing.md#check-the-existing-conversation)
+Use the existing Messages conversation and its secure setup form. In the verified flow the private runtime redeemed a single-use code over HTTPS, then used MCP to read the original and post a linked reply. [Peer setup](../docs/tunnels.md#check-the-existing-conversation)

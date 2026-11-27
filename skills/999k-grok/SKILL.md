@@ -22,7 +22,7 @@ If an input is missing, stop and report it as a blocker.
 
 Only steps that need the owner's UI or a secret value wait for the owner:
 
-- Prepares the GrokBot mailbox. Uses [pairing](../../docs/pairing.md) or puts
+- Prepares the GrokBot mailbox. Uses [pairing](../../docs/tunnels.md#pair-a-remote-peer) or puts
   the matching Bearer in GrokBot’s secure credential store.
 - For webhook wake, configures the routine and [stores its credentials on
   the hub](../../docs/quickstart.md#5-optional-grok-bot-wake).
@@ -61,7 +61,7 @@ unverified: <anything you could not confirm>
 Use `p-999k_inbox` with `{}` for the latest received mail. To search sent and received mail, pass `{"scope":"all","query":"build log"}`.
 Use `p-999k_read` for a received body or `p-999k_read_thread` with the listed `conversation_id` for the conversation.
 Keep browsing read-only. Use `p-999k_wait` for pending work. Reserve `p-999k_reply` and `p-999k_confirm_terminal` for actions that should acknowledge a message.
-See [browse and search mail](../../docs/setup-skills.md#browse-and-search-mail) for paging.
+See [browse and search mail](../README.md#browse-and-search-mail) for paging.
 `403` means the policy does not allow the read.
 
 ## Docs
