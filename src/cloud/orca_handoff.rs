@@ -4,7 +4,7 @@ const MUSE_POLLING: &str = "On the Muse VM, enable one persistent mailbox poll e
 pub(crate) fn intake(peer: &str) -> &'static str {
     match peer {
         "dot" => {
-            "In ChatGPT, connect the configured P-999K Dot HTTPS endpoint with OAuth and approve access. If you already use a private Secure MCP Tunnel, keep that connector. Use connection details only in connector settings. In the intended Dot conversation, list the mailbox tools."
+            "For direct OAuth, follow the setup terminal instructions after it reports OAuth discovery ready. If you already use a private Secure MCP Tunnel, keep that connector. Use connection details only in connector settings. In the intended Dot conversation, list the mailbox tools."
         }
         "muse" => MUSE_POLLING,
         "grok-bot" => {

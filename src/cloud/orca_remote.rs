@@ -292,9 +292,13 @@ fn dot_oauth_discovery(endpoint: &Url, issuer: &str) -> bool {
     check().unwrap_or(false)
 }
 
-fn prepare_dot(home: &Path, route: &str) -> Result<bool, String> {
+fn prepare_dot(
+    home: &Path,
+    route: &str,
+    discover: impl FnOnce(&Url, &str) -> bool,
+) -> Result<Option<&'static str>, String> {
     let Some(url) = dot_oauth_endpoint(home, route)? else {
-        return Ok(false);
+        return Ok(None);
     };
     let config = super::read_private_json::<Value>(&home.join("cloudflare-access.json"))
         .map_err(|_| "Check the owner-private cloudflare-access.json file.")?
@@ -303,10 +307,18 @@ fn prepare_dot(home: &Path, route: &str) -> Result<bool, String> {
         .as_str()
         .filter(|_| config["dot"].is_object())
         .ok_or("Configure the dedicated Cloudflare Access OAuth binding for Dot.")?;
-    if !dot_oauth_discovery(&url, issuer) {
+    if !discover(&url, issuer) {
         return Err("The configured Dot route did not expose matching OAuth discovery. Check the Cloudflare Access app, issuer, and published path.".into());
     }
-    Ok(true)
+    Ok(Some(concat!(
+        "Remote transport for dot: OAuth discovery ready.\n",
+        "Cloudflare Access handles sign-in and records login attempts. ",
+        "999K checks your email and account identifier in the signed assertion during each request.\n",
+        "Approval gives ChatGPT access to its 999K mailbox. The message queue stays on your Mac.\n",
+        "Read the OAuth data notice at https://github.com/lazy9sascha/p-999k/blob/main/docs/configuration.md#oauth-sign-in-and-message-data\n",
+        "Add the configured Dot URL in ChatGPT and approve the connection. ",
+        "Verify authenticated tools and a linked reply in the original project."
+    )))
 }
 
 pub(super) fn prepare(home: &Path, peer: &str, options: Options<'_>) {
@@ -318,11 +330,9 @@ pub(super) fn prepare(home: &Path, peer: &str, options: Options<'_>) {
         println!("Remote transport for {peer}: waiting. {reason}");
     };
     if peer == "dot" {
-        match prepare_dot(home, route) {
-            Ok(true) => println!(
-                "Remote transport for dot: OAuth discovery ready. Add the configured Dot URL in ChatGPT and approve the connection. Verify authenticated tools and a linked reply in the original project."
-            ),
-            Ok(false) => waiting(
+        match prepare_dot(home, route, dot_oauth_discovery) {
+            Ok(Some(instructions)) => println!("{instructions}"),
+            Ok(None) => waiting(
                 "For direct OAuth, configure the protected Dot endpoint in owner-private orca-ingress.json. If you already use a private Secure MCP Tunnel, keep its existing connection.",
             ),
             Err(reason) => waiting(&reason),
@@ -519,6 +529,11 @@ mod tests {
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
         hosted_enrollment::stage_unix_fixture(&home, uuid::Uuid::new_v4(), 54843, &["/cue/mcp"]);
         assert!(dot_oauth_endpoint(&home, "/dot/mcp").unwrap().is_none());
+        assert!(
+            prepare_dot(&home, "/dot/mcp", |_, _| panic!("No direct OAuth endpoint"))
+                .unwrap()
+                .is_none()
+        );
         let inventory = home.join(INVENTORY);
         radio999k::private_file::replace_private(
             &inventory,
@@ -533,10 +548,29 @@ mod tests {
             "https://fixture.example/dot/mcp"
         );
         assert!(
-            prepare_dot(&home, "/dot/mcp")
+            prepare_dot(&home, "/dot/mcp", |_, _| panic!("No Access binding"))
                 .unwrap_err()
                 .contains("Access OAuth binding")
         );
+        radio999k::private_file::replace_private(
+            &home.join("cloudflare-access.json"),
+            br#"{"issuer":"https://fixture.cloudflareaccess.com","dot":{}}"#,
+        )
+        .unwrap();
+        assert!(prepare_dot(&home, "/dot/mcp", |_, _| false).is_err());
+        let instructions = prepare_dot(&home, "/dot/mcp", |url, issuer| {
+            assert_eq!(url.as_str(), "https://fixture.example/dot/mcp");
+            assert_eq!(issuer, "https://fixture.cloudflareaccess.com");
+            true
+        })
+        .unwrap()
+        .unwrap();
+        assert!(instructions.starts_with("Remote transport for dot: OAuth discovery ready."));
+        let (notice, _) = instructions.split_once("approve the connection").unwrap();
+        assert!(notice.contains("Cloudflare Access handles sign-in"));
+        assert!(notice.contains("email and account identifier"));
+        assert!(notice.contains("The message queue stays on your Mac"));
+        assert!(notice.contains("#oauth-sign-in-and-message-data"));
         radio999k::private_file::replace_private(
             &inventory,
             br#"{"dot":"https://fixture.example/codex/mcp"}"#,
