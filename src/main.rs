@@ -499,6 +499,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // Check the requested provider before creating the local sender, peer, or enrollment.
                 let provider = if *orca_reserve_address {
                     Some(hosted_enrollment::selected_provider(
+                        &home,
                         explicit_peer.ok_or("select a hosted peer")?,
                     )?)
                 } else {
