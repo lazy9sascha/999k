@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>P-999K</title>
+  <meta name="description" content="Ask Dot, Muse, GrokBot, Cue, or Instinct from your Orca project chat and get the linked reply back there.">
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #4a453c;
+      --paper: #f7f4ee;
+      --line: #d8d0c3;
+      --link: #1d4e38;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0 auto;
+      max-width: 40rem;
+      padding: 2rem 1.25rem 3rem;
+      color: var(--ink);
+      background: var(--paper);
+      font: 1.0625rem/1.55 ui-sans-serif, system-ui, sans-serif;
+    }
+
+    img { max-width: 100%; height: auto; }
+
+    a { color: var(--link); }
+    a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+
+    header { display: flex; gap: 1.25rem; align-items: flex-start; }
+    .mark { width: 7.5rem; height: auto; flex: none; }
+
+    h1 { margin: 0.25rem 0 0; font-size: 1.5rem; line-height: 1.25; font-weight: 650; }
+    h2 { margin: 2rem 0 0.5rem; font-size: 1.15rem; }
+    p, li { color: var(--ink); }
+    .lede, .note { color: var(--muted); }
+
+    .name { margin: 0; font-size: 0.85rem; letter-spacing: 0.04em; text-transform: uppercase; }
+
+    ol { margin: 0.5rem 0 0; padding-left: 1.25rem; }
+    li + li { margin-top: 0.35rem; }
+
+    .paths { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; margin: 1rem 0 0; padding: 0; list-style: none; }
+    .paths a { font-weight: 650; }
+
+    .recording { margin: 1rem 0 0; }
+    .frame { margin: 0 0 0.75rem; }
+    .label { margin: 0 0 0.35rem; font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+    .frame img { display: block; width: 100%; background: #fff; border: 1px solid var(--line); }
+    .demo-clip { display: none; }
+    figcaption { color: var(--muted); font-size: 0.95rem; }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .demo-clip { display: block; }
+    }
+
+    @media (max-width: 36rem) {
+      header { display: block; }
+      .mark { margin-bottom: 0.75rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <img class="mark" src="assets/999k-field-radio-ink.png" width="160" alt="A worn 999K field radio with a bent antenna">
+    <div>
+      <p class="name">P-999K</p>
+      <h1>Ask Dot (ChatGPT), Muse, GrokBot, Cue, or Instinct (Messages) from your Orca project chat.</h1>
+    </div>
+  </header>
+
+  <p class="lede">Each agent works in its own app. P-999K brings each answer back to your project chat and links it to its question. If the first wait ends early, the relay can check the original request again.</p>
+
+  <section aria-labelledby="workflow-title">
+    <h2 id="workflow-title">From your project chat</h2>
+    <ol>
+      <li>Name the connected peer and give it the context it needs. For example: “Ask Dot to find missing steps in this migration plan.”</li>
+      <li>Look for <strong>Queued</strong>. The hub on your Mac stored the request. That mark is not the answer.</li>
+      <li>Check the same project chat for the linked reply. If the peer is waiting, open the app you already use and ask it to read its P-999K mailbox.</li>
+    </ol>
+    <p>You can ask more than one connected peer from that chat. Apps differ in how they notice new work. Some check on their own. Others move after a prompt or notice in the app.</p>
+  </section>
+
+  <section aria-labelledby="recording-title">
+    <h2 id="recording-title">Recording</h2>
+    <figure class="recording">
+      <div class="frame">
+        <p class="label">Still</p>
+        <img src="assets/orca-demo.png" alt="Still from an Orca demo with a test peer.">
+      </div>
+      <div class="frame demo-clip">
+        <p class="label">Short recording</p>
+        <img src="assets/orca-demo.gif" alt="Short recording of an Orca demo with a test peer.">
+      </div>
+      <figcaption>Orca demo with a test peer.</figcaption>
+    </figure>
+    <p class="note">When your system asks for reduced motion, the page keeps the still and does not play the recording.</p>
+  </section>
+
+  <section aria-labelledby="start-title">
+    <h2 id="start-title">Install and setup</h2>
+    <ul class="paths">
+      <li><a href="https://github.com/lazy9sascha/p-999k/blob/main/docs/orca.md#install-the-cli-and-plugin">Install from Orca Community</a></li>
+      <li><a href="https://github.com/lazy9sascha/p-999k/releases/tag/0.2.2">CLI downloads (0.2.2)</a></li>
+      <li><a href="https://github.com/lazy9sascha/p-999k/blob/main/docs/orca.md">Orca setup</a></li>
+      <li><a href="https://github.com/lazy9sascha/p-999k/blob/main/docs/configuration.md#orca-setup-commands">Setup commands</a></li>
+      <li><a href="https://github.com/lazy9sascha/p-999k/blob/main/docs/quickstart.md">Standalone quickstart</a></li>
+    </ul>
+    <p>Use an Apple Silicon Mac with Orca 1.4.268 or later. P-999K is experimental. The registrar can revoke hosted tunnel addresses on a five-day schedule. Your queue stays on your Mac. For a stable address, <a href="https://github.com/lazy9sascha/p-999k/blob/main/docs/orca.md#switch-to-your-own-domain">use the same hub with your own HTTPS domain</a>.</p>
+  </section>
+
+  <section aria-labelledby="a2a-title">
+    <h2 id="a2a-title">A2A, from main</h2>
+    <p>The Agent-to-Agent adapter is experimental. It is not in the 0.2.2 installer. Build <code>999k</code> from <code>main</code> when you want to hand a text task to one A2A 1.0 JSON-RPC endpoint that can return a final text answer. Any follow-up or sign-in stays with that agent.</p>
+    <p><a href="https://github.com/lazy9sascha/p-999k/blob/main/docs/configuration.md#a2a-receiver">Configure the A2A receiver</a></p>
+  </section>
+</body>
+</html>
