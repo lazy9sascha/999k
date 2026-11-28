@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
@@ -20,6 +20,7 @@ use std::{
 
 const TOKEN: &str = "synthetic-receiver-http-only";
 const OTHER_TOKEN: &str = "synthetic-other-owner-only";
+const A2A_TOKEN: &str = "synthetic-a2a-remote-only";
 
 fn digest(value: &impl serde::Serialize) -> String {
     Sha256::digest(serde_json::to_vec(value).unwrap())
@@ -42,6 +43,10 @@ impl Drop for Hub {
 }
 impl Hub {
     fn start(receiver: bool) -> Self {
+        Self::start_for(receiver, "codex-local")
+    }
+
+    fn start_for(receiver: bool, recipient: &str) -> Self {
         let home = tempfile::tempdir().unwrap();
         fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let db = home.path().join("queue.sqlite3");
@@ -54,7 +59,7 @@ impl Hub {
                 json!({
                     "id": id, "token_sha256": Sha256::digest(token).iter()
                         .map(|byte| format!("{byte:02x}")).collect::<String>(),
-                    "operations": ["receive", "reply"], "mailboxes": ["codex-local"],
+                    "operations": ["receive", "reply"], "mailboxes": [recipient],
                     "send_to": [], "revoked": false,
                 })
             })
@@ -64,7 +69,7 @@ impl Hub {
         fs::write(
             &registry,
             json!({
-                "codex-local": {"mailbox": "codex-local", "revoked": false},
+                (recipient): {"mailbox": recipient, "revoked": false},
                 "peer": {"mailbox": "peer", "revoked": false},
             })
             .to_string(),
@@ -125,11 +130,15 @@ impl Hub {
         hub
     }
     fn send(&self) -> Message {
+        self.send_to("codex-local")
+    }
+
+    fn send_to(&self, recipient: &str) -> Message {
         Queue::open_existing(&self.db)
             .unwrap()
             .send(Envelope {
                 sender: "peer".into(),
-                recipient: "codex-local".into(),
+                recipient: recipient.into(),
                 body: "synthetic receiver wire request".into(),
                 correlation_id: None,
                 in_reply_to: None,
@@ -166,6 +175,125 @@ impl Hub {
             [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).unwrap()
     }
+}
+
+#[test]
+fn a2a_receiver_commits_one_reply_and_resumes_only_known_tasks() {
+    let hub = Hub::start_for(true, "a2a");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let working = json!({"id":"fixture-task","status":{"state":"TASK_STATE_WORKING"}});
+        let completed = json!({"id":"fixture-task","status":{"state":"TASK_STATE_COMPLETED"},
+            "artifacts":[{"parts":[{"text":"delayed fixture answer"}]}]});
+        let steps = [
+            (
+                "SendMessage",
+                1,
+                Some(
+                    json!({"message":{"role":"ROLE_AGENT","parts":[{"text":"immediate fixture answer"}]}}),
+                ),
+            ),
+            ("SendMessage", 1, Some(json!({"task":working}))),
+            ("GetTask", 2, None),
+            ("GetTask", 2, Some(completed)),
+            ("SendMessage", 1, None),
+        ];
+        for (method, id, result) in steps {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut input = BufReader::new(stream);
+            let mut headers = String::new();
+            while !headers.ends_with("\r\n\r\n") {
+                assert_ne!(input.read_line(&mut headers).unwrap(), 0);
+            }
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains("a2a-version: 1.0\r\n")
+            );
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains(&format!("authorization: bearer {A2A_TOKEN}\r\n"))
+            );
+            let length: usize = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+                .unwrap()
+                .1
+                .trim()
+                .parse()
+                .unwrap();
+            let mut body = vec![0; length];
+            input.read_exact(&mut body).unwrap();
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request["method"], method);
+            assert_eq!(request["id"], id);
+            if method == "GetTask" {
+                assert_eq!(request["params"]["id"], "fixture-task");
+            } else {
+                assert_eq!(
+                    request["params"]["configuration"]["returnImmediately"],
+                    true
+                );
+            }
+            if let Some(result) = result {
+                let reply = json!({"jsonrpc":"2.0","id":id,"result":result}).to_string();
+                write!(input.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+            }
+        }
+    });
+    let token_file = hub._home.path().join("a2a-token");
+    radio999k::private_file::replace_private(&token_file, TOKEN.as_bytes()).unwrap();
+    let agent_token_file = hub._home.path().join("a2a-agent-token");
+    radio999k::private_file::replace_private(&agent_token_file, A2A_TOKEN.as_bytes()).unwrap();
+    let binding = hub._home.path().join("a2a.json");
+    radio999k::private_file::replace_private(
+        &binding,
+        &serde_json::to_vec(&json!({
+            "hub_port":hub.port,"hub_token_file":token_file,"endpoint":endpoint,"agent_token_file":agent_token_file
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_999k"))
+            .args(["a2a-receiver", "--once", "--binding"])
+            .arg(&binding)
+            .output()
+            .unwrap()
+    };
+    let release_lease = |id: &str| {
+        Connection::open(&hub.db)
+            .unwrap()
+            .execute("UPDATE messages SET lease_until_ms = 0 WHERE id = ?1", [id])
+            .unwrap();
+    };
+    let first = hub.send_to("a2a");
+    assert!(run().status.success());
+    assert_eq!(hub.stored(&first.id), (1, true, 1));
+
+    let delayed = hub.send_to("a2a");
+    assert!(!run().status.success());
+    assert_eq!(hub.stored(&delayed.id), (1, false, 0));
+    release_lease(&delayed.id);
+    assert!(run().status.success());
+    assert_eq!(hub.stored(&delayed.id), (2, true, 1));
+
+    let uncertain = hub.send_to("a2a");
+    assert!(!run().status.success());
+    release_lease(&uncertain.id);
+    let retry = run();
+    assert!(!retry.status.success());
+    assert!(
+        String::from_utf8_lossy(&retry.stderr).contains("a2a_submission_requires_reconciliation")
+    );
+    assert_eq!(hub.stored(&uncertain.id), (2, false, 0));
+    server.join().unwrap();
 }
 
 #[test]

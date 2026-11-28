@@ -23,6 +23,9 @@ pub(crate) fn intake(peer: &str) -> &'static str {
 pub(crate) const VERIFY: &str = "Report mailbox discovery and arrival handling separately. For a live check, read a new request and post a linked reply using its original message ID. If you enabled automatic intake, verify it with a new request while this chat is idle.";
 
 pub(crate) fn instructions(peer: &str) -> String {
+    if peer == crate::a2a_receiver::MAILBOX {
+        return "On the hub Mac, run `999k a2a-receiver --binding /private/path/a2a.json` in a terminal. Then ask the A2A relay a question from your Orca project chat and check for the linked answer there.".into();
+    }
     if peer == "dot" {
         return format!(
             "Paste in Dot's own chat:\n\n{} {VERIFY} Keep credentials out of chat.",

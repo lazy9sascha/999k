@@ -61,6 +61,7 @@ request from its own mailbox.
 | B. Pull only | The app polls the mailbox or checks it when prompted. | Muse |
 | C. MCP Events | A signed callback notifies a platform subscription. | Codex Work Cloud and Dot with a supported subscription |
 | D. Local bound receiver | A local worker claims the request and starts a turn in a bound app thread. | Codex Local |
+| E. A2A receiver | A local worker claims the request and calls the configured A2A agent. | [A2A setup](configuration.md#a2a-receiver) |
 
 <a id="a-wake--pull"></a>
 
@@ -113,6 +114,13 @@ private binding selects the Codex thread, native socket, and working
 directory. The hub owns claims, leases, and atomic completion. After an
 uncertain turn, the worker checks the existing native history before
 accepting more work. [Local Codex receiver](configuration.md#local-codex-receiver)
+
+### E. A2A receiver
+
+The A2A worker claims requests for `a2a` through the same `/receiver` API.
+It records the remote task ID in the existing admission record. If the worker
+restarts, it polls that task after reclaiming the request. The hub stores the
+linked answer and the original ACK in one transaction. [Configure the A2A receiver](configuration.md#a2a-receiver)
 
 ### Codex paths and shared operations
 

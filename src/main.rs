@@ -1,4 +1,6 @@
 use radio999k::{mailbox_catalog as catalog, mcp_sdk};
+#[path = "cloud/a2a_receiver.rs"]
+mod a2a_receiver;
 mod auth;
 #[path = "cloud/cloud_credentials.rs"]
 mod cloud_credentials;
@@ -118,6 +120,8 @@ struct ServeHubOptions {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Forward queued text to one configured A2A 1.0 agent.
+    A2aReceiver(a2a_receiver::Options),
     /// Supervise the hub until stopped.
     ///
     /// A tunnel mode is required. There is no default.
@@ -446,6 +450,7 @@ enum HostedCueBearerAction {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match &cli.command {
+        Command::A2aReceiver(options) => a2a_receiver::run(options).map_err(Into::into),
         Command::Pair(action) => pairing_cli::run(action).map_err(Into::into),
         Command::Credentials(options) => {
             cloud_credentials::run_credentials(options).map_err(Into::into)

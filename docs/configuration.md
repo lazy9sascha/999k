@@ -471,6 +471,46 @@ It has no fixed turn-duration limit. Lease, binding, and authorization checks re
 Saved uncertain work requires reconciliation. It does not automatically submit that input again.
 Reconciliation saves its history cursor between passes and restarts. Older work cannot fall permanently outside a fixed history window.
 The command does not install a background service. Synthetic receiver fixtures do not establish native or Cloud acceptance.
+
+## A2A receiver
+
+The foreground receiver forwards queued text from the `a2a` mailbox to one
+configured [A2A 1.0 JSON-RPC agent](https://a2a-protocol.org/latest/specification/#9-json-rpc-protocol-binding).
+Use the agent's Agent Card to find its JSON-RPC URL and authentication requirements.
+
+1. Register `a2a` and the Orca sender in the hub registration. Add `a2a` to
+   the sender's `send_to` list.
+2. Mount `/receiver` using the `codex-local` adapter in your private profile
+   manifest. Give the worker's token `receive` and `reply` for `a2a`.
+3. Save an owner-private binding file with mode `0600`. Use absolute paths
+   for token files. Omit `agent_token_file` if the agent requires no token.
+   Use HTTPS for remote endpoints. Local tests can use an HTTP loopback IP.
+
+   ```json
+   {
+     "endpoint": "https://agent.example.com/rpc",
+     "hub_port": 54843,
+     "hub_token_file": "/private/path/a2a-receiver-token",
+     "agent_token_file": "/private/path/a2a-agent-token"
+   }
+   ```
+
+4. Run `999k a2a-receiver --binding /private/path/a2a.json`. Pass `--once`
+   to claim at most one message and wait for its result.
+5. Enable the hub's [private stdio socket](#local-mcp-over-stdio). In an Orca
+   workspace on the hub Mac, run:
+
+   ```sh
+   999k init --orca --orca-peer a2a --home /private/path/hub \
+	   --orca-sender codex-cloud --orca-bearer-file /private/path/orca-sender-token
+   ```
+
+Ask the A2A relay a question from your Orca project chat. If the A2A agent
+returns a task ID, the receiver records it and polls for the answer. After a
+restart, it can claim the original again once the prior lease expires and look
+up the saved task. It stores the answer and acknowledges the original together.
+If the send outcome is uncertain and there is no task ID to look up, the
+receiver stops for reconciliation. Keep the original binding when restarting.
 See [Codex paths](architecture.md#codex-paths-and-shared-operations) for shared and adapter responsibilities.
 
 ## Files in the home
