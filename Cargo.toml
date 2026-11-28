@@ -2,7 +2,7 @@
 name = "radio999k"
 default-run = "999k"
 autobins = false
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 publish = false
 description = "999K is a self-hosted MCP hub for agent-to-agent messaging. The queue runs on your Mac. Cloud agents reach their mailboxes through a tunnel."
