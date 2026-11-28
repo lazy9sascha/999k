@@ -37,7 +37,7 @@
     h1 { margin: 0.25rem 0 0; font-size: 1.5rem; line-height: 1.25; font-weight: 650; }
     h2 { margin: 2rem 0 0.5rem; font-size: 1.15rem; }
     p, li { color: var(--ink); }
-    .lede, .note { color: var(--muted); }
+    .lede { color: var(--muted); }
 
     .name { margin: 0; font-size: 0.85rem; letter-spacing: 0.04em; text-transform: uppercase; }
 
@@ -47,20 +47,33 @@
     .paths { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; margin: 1rem 0 0; padding: 0; list-style: none; }
     .paths a { font-weight: 650; }
 
-    .recording { margin: 1rem 0 0; }
-    .frame { margin: 0 0 0.75rem; }
-    .label { margin: 0 0 0.35rem; font-size: 0.8rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
-    .frame img { display: block; width: 100%; background: #fff; border: 1px solid var(--line); }
-    .demo-clip { display: none; }
-    figcaption { color: var(--muted); font-size: 0.95rem; }
-
-    @media (prefers-reduced-motion: no-preference) {
-      .demo-clip { display: block; }
+    .recording { margin: 1.25rem 0 0; }
+    .stage {
+      aspect-ratio: 914 / 386;
+      background: #fff;
+      border: 1px solid var(--line);
     }
+    .stage img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .stage img[hidden] { display: none; }
+    .demo-play {
+      display: inline-block;
+      margin: 0.65rem 0 0;
+      padding: 0.35rem 0.7rem;
+      border: 1px solid var(--ink);
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      font-size: 0.95rem;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .demo-play:hover { background: #fffdf8; }
+    .demo-play:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+    figcaption { margin-top: 0.65rem; color: var(--muted); font-size: 0.95rem; }
 
     @media (max-width: 36rem) {
       header { display: block; }
-      .mark { margin-bottom: 0.75rem; }
+      .mark { width: 4.5rem; margin-bottom: 0.75rem; }
     }
   </style>
 </head>
@@ -75,30 +88,16 @@
 
   <p class="lede">Each agent works in its own app. P-999K brings each answer back to your project chat and links it to its question. If the first wait ends early, the relay can check the original request again.</p>
 
-  <section aria-labelledby="workflow-title">
-    <h2 id="workflow-title">From your project chat</h2>
-    <ol>
-      <li>Name the connected peer and give it the context it needs. For example: “Ask Dot to find missing steps in this migration plan.”</li>
-      <li>Look for <strong>Queued</strong>. The hub on your Mac stored the request. That mark is not the answer.</li>
-      <li>Check the same project chat for the linked reply. If the peer is waiting, open the app you already use and ask it to read its P-999K mailbox.</li>
-    </ol>
-    <p>You can ask more than one connected peer from that chat. Apps differ in how they notice new work. Some check on their own. Others move after a prompt or notice in the app.</p>
-  </section>
-
-  <section aria-labelledby="recording-title">
-    <h2 id="recording-title">Recording</h2>
+  <section aria-label="Demo">
     <figure class="recording">
-      <div class="frame">
-        <p class="label">Still</p>
-        <img src="assets/orca-demo.png" alt="Still from an Orca demo with a test peer.">
+      <div class="stage" id="demo-stage">
+        <img id="demo-still" src="assets/orca-demo.png" width="914" height="386" alt="An Orca project chat asks for a rollback check and receives advice to save the current configuration before deploying.">
       </div>
-      <div class="frame demo-clip">
-        <p class="label">Short recording</p>
-        <img src="assets/orca-demo.gif" alt="Short recording of an Orca demo with a test peer.">
-      </div>
-      <figcaption>Orca demo with a test peer.</figcaption>
+      <p>
+        <a class="demo-play" id="demo-play" href="assets/orca-demo.gif">Play demo GIF</a>
+      </p>
+      <figcaption>Shortened recording of an isolated Orca project chat with a local A2A test peer.</figcaption>
     </figure>
-    <p class="note">When your system asks for reduced motion, the page keeps the still and does not play the recording.</p>
   </section>
 
   <section aria-labelledby="start-title">
@@ -113,10 +112,60 @@
     <p>Use an Apple Silicon Mac with Orca 1.4.268 or later. P-999K is experimental. The registrar can revoke hosted tunnel addresses on a five-day schedule. Your queue stays on your Mac. For a stable address, <a href="https://github.com/lazy9sascha/p-999k/blob/main/docs/orca.md#switch-to-your-own-domain">use the same hub with your own HTTPS domain</a>.</p>
   </section>
 
+  <section aria-labelledby="workflow-title">
+    <h2 id="workflow-title">From your project chat</h2>
+    <ol>
+      <li>Name the connected peer and give it the context it needs. For example: “Ask Dot to find missing steps in this migration plan.”</li>
+      <li>Look for <strong>Queued</strong>. The hub on your Mac stored the request for the peer to read.</li>
+      <li>Check the same project chat for the linked reply. If the peer is waiting, open the app you already use and ask it to read its P-999K mailbox.</li>
+    </ol>
+    <p>You can ask more than one connected peer from that chat. Apps differ in how they notice new work. Some check on their own. Others move after a prompt or notice in the app.</p>
+  </section>
+
   <section aria-labelledby="a2a-title">
-    <h2 id="a2a-title">A2A, from main</h2>
-    <p>The Agent-to-Agent adapter is experimental. It is not in the 0.2.2 installer. Build <code>999k</code> from <code>main</code> when you want to hand a text task to one A2A 1.0 JSON-RPC endpoint that can return a final text answer. Any follow-up or sign-in stays with that agent.</p>
+    <h2 id="a2a-title">Connect an A2A agent</h2>
+    <p>Build <code>999k</code> from <code>main</code> to try the experimental Agent-to-Agent adapter. Use one A2A 1.0 JSON-RPC endpoint that can return a final text answer from one request. Handle any follow-up input or sign-in at the agent.</p>
     <p><a href="https://github.com/lazy9sascha/p-999k/blob/main/docs/configuration.md#a2a-receiver">Configure the A2A receiver</a></p>
   </section>
+  <script>
+    (function () {
+      var link = document.getElementById("demo-play");
+      var still = document.getElementById("demo-still");
+      var stage = document.getElementById("demo-stage");
+      if (!link || !still || !stage) return;
+      var play = document.createElement("button");
+      play.type = "button";
+      play.className = link.className;
+      play.textContent = link.textContent;
+      play.setAttribute("aria-controls", stage.id);
+      link.replaceWith(play);
+      var clip = null;
+
+      function showStill() {
+        if (clip) {
+          clip.remove();
+          clip = null;
+        }
+        still.hidden = false;
+        play.textContent = link.textContent;
+      }
+
+      play.addEventListener("click", function () {
+        if (clip) {
+          showStill();
+          return;
+        }
+        clip = document.createElement("img");
+        clip.width = 914;
+        clip.height = 386;
+        clip.alt = still.alt;
+        clip.addEventListener("error", showStill);
+        clip.src = link.href;
+        still.hidden = true;
+        stage.appendChild(clip);
+        play.textContent = "Back to still";
+      });
+    }());
+  </script>
 </body>
 </html>
