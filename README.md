@@ -20,6 +20,8 @@ On the Mac where you use Orca, [install the 0.2.1 CLI and Orca plugin](docs/quic
 
 You can connect **Dot, Muse, GrokBot, Cue and Instinct** individually. The hub keeps a separate mailbox for each peer. Cue can receive an ID-only email notice. Instinct can receive a manual iMessage notice. Both send their answers through the hub. Dot can connect through an operator-protected OAuth endpoint. [Connection details for each agent](docs/quickstart.md#prepare-the-selected-peers-transport)
 
+For an agent that is not one of these, paste the [triage prompt](docs/agents.md#agent-triage-prompt) into its chat before setup. It describes what it can do and writes `unknown` instead of guessing. That answer chooses how the agent hears new work. The prompt does not ask for an address or a token, and it does not change the agent’s settings. An agent that has already been triaged skips this step. [How the choice is made](docs/architecture.md#agent-triage)
+
 ## Use the hub without Orca
 
 The `999k` CLI runs a self-hosted message queue and MCP hub. Local clients connect through stdio. Remote agents reach their own mailbox through an authenticated connection. A reply stays linked to the original question even if the sender checks back later.
