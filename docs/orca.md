@@ -71,9 +71,10 @@ approval it asks you to complete.
 
 ### Reserve a hosted address
 
-P-999K resets its hosted tunnel addresses every 5 days. Peers using those
-addresses lose access at each reset. Your queue stays on your Mac.
-Contact your operator to restore a hosted address.
+P-999K resets hosted tunnel addresses on a five-day schedule. Peers using those
+addresses lose access at each reset. Your queue and pending requests stay
+on your Mac. Contact your operator to restore a hosted address. When the
+peer can reach your Mac again, [check the original request](troubleshooting.md#check-a-pending-orca-reply).
 For a stable address, [use your own HTTPS domain](#use-your-own-https-domain).
 
 Each verified email address can hold one hosted address. Add peers to your
@@ -112,16 +113,23 @@ select a peer. [Check a hosted address](troubleshooting.md#check-a-hosted-addres
 
 ## Verify the first reply
 
-1. In your Orca project chat, ask the project agent to consult a peer you
-   connected. For example, ask "Have Dot review this plan for missing
-   steps." **Queued** means the hub stored the request.
-2. If the peer waits for a manual check, open its existing conversation
-   and ask it to check its P-999K mailbox.
-3. Look for the answer in your original Orca project chat. If the relay
-   finishes waiting before the answer arrives, ask it to check the same
-   request. [Troubleshoot a missing reply](troubleshooting.md#check-a-pending-orca-reply)
+1. In your Orca project chat, name the connected peer and give it the
+   context it needs. Try "Ask Dot to find missing steps in this migration plan."
+2. Look for **Queued**. The hub stored your request. If the peer waits
+   for a prompt, open its existing app conversation and ask it to check
+   its P-999K mailbox.
+3. Check the original project chat for the linked reply. If the first wait
+   ends before the answer arrives, the relay can check the same request
+   later. [Check a pending reply](troubleshooting.md#check-a-pending-orca-reply)
 
-[Check which peers verified automatic intake](research.md#new-orca-installation-with-a-hosted-address)
+You can consult more than one connected peer from the same chat. Try
+"Ask Muse to turn this plan into a rollout checklist. Ask GrokBot to
+challenge the rollback steps. Show me their replies separately."
+
+Apps pick up requests in different ways. In the isolated installation test,
+Muse checked on a schedule and a webhook started GrokBot. Dot, Cue, and
+Instinct picked up their requests after a prompt or notice.
+[See how each app completed its first exchange](research.md#new-orca-installation-with-a-hosted-address)
 
 <a id="switch-to-your-own-domain"></a>
 

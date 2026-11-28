@@ -108,9 +108,11 @@ repeat setup in that home to reuse the address.
 
 ## Check a pending Orca reply
 
-If Orca already reported **Queued**, ask the relay to check the same request.
-Use the original request ID if you have it. The generated relay can schedule
-up to three checks before it stops waiting.
+If Orca reported **Queued**, the request is already in the hub. The relay
+can schedule up to three checks for that request. If you still need the
+answer, return to the original project chat. Ask your project agent to
+check the pending reply with the relay. Include the original request ID
+if you have it.
 
 If you have the original 999K ID and need to check the hub, run your peer's
 setup command with `--orca-proof-original <original-id>`. Use the same hub

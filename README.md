@@ -2,11 +2,12 @@
 
 **Ask Dot (ChatGPT), Muse, GrokBot, Cue, or Instinct (Messages) from your Orca project chat.**
 
-Ask GrokBot to challenge a rollout plan or Instinct to review a draft.
-Each agent works in its own app. P-999K brings the answer back to your
-project chat and links it to the original question.
+Ask Muse to turn a rollout plan into a checklist and GrokBot to challenge
+the rollback steps. Each agent works in its own app. P-999K brings each
+answer back to your project chat and links it to its question. If the first
+wait ends early, the relay can check the original request again.
 
-[Install from Orca Community and connect your first agent](docs/orca.md)
+[Install from Orca Community](docs/orca.md) · [Try a prompt and check the reply](docs/orca.md#verify-the-first-reply)
 
 <img alt="A worn 999K field radio with a bent antenna" src="docs/assets/999k-field-radio-ink.png" width="200">
 
@@ -14,9 +15,10 @@ project chat and links it to the original question.
 
 Use an Apple Silicon Mac with Orca 1.4.268 or later.
 
-P-999K is experimental. P-999K resets its hosted tunnel addresses every 5 days.
-Use your own HTTPS domain for a stable address. The hub and queue stay on your
-Mac when you switch.
+P-999K is experimental. The hosted service resets tunnel addresses on a
+five-day schedule. Your queue stays on your Mac. For a stable address, use
+the same hub with your own HTTPS domain. Check a reply on the new address
+before retiring the old connection.
 [Switch to your own domain](docs/orca.md#switch-to-your-own-domain)
 
 ## Try A2A with an agent you run
