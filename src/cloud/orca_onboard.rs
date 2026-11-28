@@ -12,12 +12,13 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub(crate) const PEERS: [(&str, &str); 5] = [
+pub(crate) const PEERS: [(&str, &str); 6] = [
     ("dot", "Dot"),
     ("instinct", "Instinct"),
     ("cue", "Cue"),
     ("muse", "Muse"),
     ("grok-bot", "GrokBot"),
+    (crate::a2a_receiver::MAILBOX, "A2A"),
 ];
 const TOOL: &str = "p-999k";
 const PREVIOUS_TOOL: &str = "radio999k";
@@ -483,7 +484,7 @@ pub(crate) fn onboard(
     let mut configured_email = false;
     let peer = match authorized_peer(
         selected,
-        may_provision && !retry,
+        may_provision && !retry && selected != Some(crate::a2a_receiver::MAILBOX),
         || stdio_mcp::orca_recipients(&home, sender, bearer_file),
         |name| {
             match email_recipient {
