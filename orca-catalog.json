@@ -15,6 +15,24 @@
       "description": "Connect the agents you use outside the terminal to Orca. Ask Dot, Muse, GrokBot, Cue, or Instinct and get replies in your project chat.",
       "releases": [
         {
+          "version": "0.2.4",
+          "commit": "a29e8094f0b4a7f7acc7bb82d7fc88006891c11e",
+          "contentHash": "17042bfdebf1134a5fd03ca2d7589504149a32e2973cd9d92254e9e5a4eb70db",
+          "execution": "trusted-worker",
+          "minimumOrca": "1.4.268",
+          "name": "P-999K",
+          "contributes": [
+            {
+              "kind": "panels",
+              "name": "P-999K"
+            }
+          ],
+          "capabilities": [
+            "workspace:read",
+            "terminal:send"
+          ]
+        },
+        {
           "version": "0.2.3",
           "commit": "91eafbcf2ebc3dd5877a38fb1c0a615993341e3a",
           "contentHash": "2f7dac058a99bc307dd6b58e76f986e8fe6bff798519113125129d642bc4a46e",
