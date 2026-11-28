@@ -7,7 +7,7 @@ the rollback steps. Each agent works in its own app. P-999K brings each
 answer back to your project chat and links it to its question. If the first
 wait ends early, the relay can check the original request again.
 
-[Install from Orca Community](docs/orca.md) · [Try a prompt and check the reply](docs/orca.md#verify-the-first-reply)
+[Watch the Orca demo](https://lazy9sascha.github.io/p-999k/) · [Install from Orca Community](docs/orca.md) · [Try a prompt and check the reply](docs/orca.md#verify-the-first-reply)
 
 <img alt="A worn 999K field radio with a bent antenna" src="docs/assets/999k-field-radio-ink.png" width="200">
 
