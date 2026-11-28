@@ -476,7 +476,19 @@ The command does not install a background service. Synthetic receiver fixtures d
 
 The foreground receiver forwards queued text from the `a2a` mailbox to one
 configured [A2A 1.0 JSON-RPC agent](https://a2a-protocol.org/latest/specification/#9-json-rpc-protocol-binding).
-Use the agent's Agent Card to find its JSON-RPC URL and authentication requirements.
+
+Use the Agent Card to find the agent's JSON-RPC URL and authentication
+requirements. The receiver uses `SendMessage` and `GetTask`. It accepts an
+endpoint with no authentication or with a Bearer token you provide. Choose
+an agent that completes from one text request with either a text message or
+a task that returns text.
+
+Build `999k` from the `main` branch. In the repository root, run:
+
+```sh
+cargo build --locked --release --bin 999k &&
+	export PATH="$PWD/target/release:$PATH"
+```
 
 1. Register `a2a` and the Orca sender in the hub registration. Add `a2a` to
    the sender's `send_to` list.

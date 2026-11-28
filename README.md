@@ -1,11 +1,10 @@
 # P-999K
 
-**Connect the agents you use outside the terminal to Orca.**
+**Ask Dot (ChatGPT), Muse, GrokBot, Cue, or Instinct (Messages) from your Orca project chat.**
 
-Ask Dot (ChatGPT), Muse, GrokBot, Cue, or Instinct (Messages) from your
-Orca project chat. Ask Dot to challenge a migration plan or Instinct to
-review a draft. Each agent replies from its existing app. Its answer
-returns to your project chat, linked to the original question.
+Ask GrokBot to challenge a rollout plan or Instinct to review a draft.
+Each agent works in its own app. P-999K brings the answer back to your
+project chat and links it to the original question.
 
 [Install from Orca Community and connect your first agent](docs/orca.md)
 
@@ -19,6 +18,16 @@ P-999K is experimental. P-999K resets its hosted tunnel addresses every 5 days.
 Use your own HTTPS domain for a stable address. The hub and queue stay on your
 Mac when you switch.
 [Switch to your own domain](docs/orca.md#switch-to-your-own-domain)
+
+## Try A2A with an agent you run
+
+Use the experimental Agent-to-Agent (A2A) adapter to hand off a text task,
+such as asking an internal review agent for findings on a migration plan.
+Configure one A2A 1.0 JSON-RPC endpoint that can return a final text answer
+from one request. If the receiver restarts after it saves a task ID, it can
+look up the same task. Handle any follow-up input or sign-in at the agent.
+
+Build from `main` to try the adapter. [Configure the A2A receiver](docs/configuration.md#a2a-receiver)
 
 ## Use the hub without Orca
 
