@@ -148,6 +148,14 @@ fn purpose(peer: &str) -> String {
     )
 }
 
+fn manual_purpose(peer: &str) -> String {
+    format!(
+        "999K relay for {peer}. Send once with question ID as key. Wait by original message ID. \
+         If pending, schedule up to 3 same-ID checks here. Reply once to the original question. \
+         Keep IDs private."
+    )
+}
+
 fn relay_matches(bot: &Bot, peer: &str) -> bool {
     let description = bot.specialty.as_deref().unwrap_or_default().to_lowercase();
     let identity = description.split('.').next().unwrap_or_default().trim();
@@ -263,7 +271,7 @@ fn attach(
         return Err(format!(
             "Review the existing {} bot in Orca. To use it as this relay, set its identity to: {}",
             bot.name,
-            purpose(peer)
+            manual_purpose(peer)
         )
         .into());
     }
@@ -360,7 +368,7 @@ impl Setup<'_> {
                 false,
                 format!(
                     "Open Bots → New bot. Keep the default agent and select Create.\n\nName: {name}\nIdentity: {}\n\n{next}",
-                    purpose(peer)
+                    manual_purpose(peer)
                 ),
             ));
         }
@@ -643,6 +651,37 @@ mod tests {
         let (_, summary) = one_shot.pass(&state, false, &run).unwrap();
         assert!(summary.contains(&one_shot.resume_command()));
         assert!(!state.exists());
+    }
+
+    #[test]
+    fn first_bot_identity_fits_orca_form() {
+        let home = scratch();
+        let state = home.path().join("pending.json");
+        let run = |args: &[&str]| -> Result<Value> {
+            assert_eq!(args, ["bot", "list"]);
+            Ok(json!({"bots": []}))
+        };
+        for (peer, name) in PEERS {
+            let setup = Setup {
+                peer: (peer, name),
+                ..setup()
+            };
+            let (_, summary) = setup.pass(&state, false, &run).unwrap();
+            let identity = summary
+                .lines()
+                .find_map(|line| line.strip_prefix("Identity: "))
+                .unwrap();
+            assert!(identity.encode_utf16().count() <= 200, "{peer}");
+            assert!(relay_matches(
+                &Bot {
+                    id: name.into(),
+                    name: name.into(),
+                    specialty: Some(identity.into()),
+                    server: None,
+                },
+                peer
+            ));
+        }
     }
 
     #[test]
